@@ -8,7 +8,7 @@
  */
 
 import { Logger } from '../utils/logger';
-import { PaperEmbedding, IVectorStore, getVectorStore } from './storage-factory';
+import { PaperEmbedding, IVectorStore, IndexedTextMatch, getVectorStore } from './storage-factory';
 import { VectorStoreSQLite, TextSourceType } from './vector-store-sqlite';
 import { EmbeddingPipeline, embeddingPipeline } from './embedding-pipeline';
 import { identityFromItem } from './identity-resolver';
@@ -48,7 +48,7 @@ export interface SearchOptions {
 
 const DEFAULT_OPTIONS: Required<Omit<SearchOptions, 'libraryId' | 'excludeItemIds'>> = {
   topK: 20,
-  minSimilarity: 0.3,
+  minSimilarity: 0.7,
   returnAllChunks: false,
 };
 
@@ -116,6 +116,19 @@ export class SearchEngine {
       this.store = getVectorStore();
     }
     return this.store;
+  }
+
+  /** Exact lexical search over ZotSeek's stored chunk text, without model I/O. */
+  async searchIndexedText(
+    query: string,
+    options: { topK?: number; libraryId?: number } = {}
+  ): Promise<IndexedTextMatch[]> {
+    const store = this.getStore();
+    if (!store.isReady()) await store.init();
+    return store.searchText(query, {
+      limit: options.topK,
+      libraryId: options.libraryId,
+    });
   }
 
   /**

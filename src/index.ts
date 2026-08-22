@@ -118,6 +118,16 @@ function hasExcludeTag(item: any): boolean {
   }
 }
 
+function hashChunkContent(texts: string[]): string {
+  const content = texts.join('\n\n');
+  let hash = 0;
+  for (let index = 0; index < content.length; index++) {
+    hash = ((hash << 5) - hash) + content.charCodeAt(index);
+    hash &= hash;
+  }
+  return hash.toString(16);
+}
+
 interface ChunkForEmbedding { id: string; text: string; title: string; }
 interface EmbedChunksResult {
   embeddings: Map<string, { embedding: number[]; modelId: string }>;
@@ -200,7 +210,7 @@ class ZotSeekPlugin {
   public vectorStore: IVectorStore | null = null;  // Public for preference pane access
   private initialized = false;
   private indexing = false;
-  private cleanupNotifierID: string | null = null;
+  private collectionMenuRegistrationID: string | null = null;
 
   // Hooks for bootstrap.js
   public hooks = {
@@ -230,21 +240,23 @@ class ZotSeekPlugin {
     const Z = getZotero();
     if (!Z) return;
 
-    // Store minSimilarity as int (30 = 0.3, divide by 100 when reading)
-    // Using nomic-embed-text-v1.5 with 8192 token context window
+    // Store minSimilarity as int (70 = 0.7, divide by 100 when reading).
+    // Multilingual E5 similarities are concentrated near the high end.
+    // This Notes-focused build defaults to multilingual E5 for Chinese and
+    // mixed-language retrieval.
     const defaults: { [key: string]: any } = {
-      'zotseek.minSimilarityPercent': 30,  // 30% = 0.3
+      'zotseek.minSimilarityPercent': 70,  // 70% = 0.7
       'zotseek.topK': 20,
       'zotseek.autoIndex': false,
-      'zotseek.autoIndexDelay': 10,   // Seconds to wait after last item before auto-indexing
-      'zotseek.indexingMode': 'full',  // 'abstract' or 'full' - full paper mode is default for better search quality
-      'zotseek.maxTokens': 2000,       // Firefox 140+ handles larger chunks efficiently
+      'zotseek.indexingMode': 'full',  // 'abstract', 'notes', or 'full'
+      'zotseek.maxTokens': 450,        // Stay below multilingual E5's 512-token limit
       'zotseek.maxChunksPerPaper': 100,
       'zotseek.excludeBooks': true,        // Exclude books from search/indexing by default
       'zotseek.excludeTag': 'zotseek-exclude', // Tag name to exclude items from indexing
       'zotseek.indexStatusColumn.firstShown': false, // First-run flag for index-status column
       'zotseek.mcpServer.enabled': false, // Opt-in local MCP/REST endpoints for AI agents
-      'zotseek.embeddingModel': 'nomic-embed-text-v1.5',
+      'zotseek.embeddingModel': 'multilingual-e5-base',
+      'zotseek.modelDefaultMigrationE5': false,
       'zotseek.indexScope': 'user', // 'user' (My Library) or 'all' (all libraries)
       'zotseek.serverModels': '[]', // JSON array of server-backed model entries (issue #42)
     };
@@ -261,6 +273,31 @@ class ZotSeekPlugin {
       } catch (e) {
         this.logger.warn(`Failed to set preference ${key}: ${e}`);
       }
+    }
+
+    // Migrate the old upstream default once. A later explicit user choice is
+    // preserved because the marker prevents subsequent automatic changes.
+    try {
+      const migrationKey = 'zotseek.modelDefaultMigrationE5';
+      const migrated = Z.Prefs.get(migrationKey, true) === true;
+      if (!migrated) {
+        const selected = Z.Prefs.get('zotseek.embeddingModel', true);
+        if (!selected || selected === 'nomic-embed-text-v1.5') {
+          Z.Prefs.set('zotseek.embeddingModel', 'multilingual-e5-base', true);
+          const minSimilarity = Z.Prefs.get('zotseek.minSimilarityPercent', true);
+          if (minSimilarity === undefined || minSimilarity === 30) {
+            Z.Prefs.set('zotseek.minSimilarityPercent', 70, true);
+          }
+          const maxTokens = Z.Prefs.get('zotseek.maxTokens', true);
+          if (maxTokens === undefined || maxTokens === 800 || maxTokens === 2000) {
+            Z.Prefs.set('zotseek.maxTokens', 450, true);
+          }
+          this.logger.info('Migrated default embedding model to multilingual-e5-base');
+        }
+        Z.Prefs.set(migrationKey, true, true);
+      }
+    } catch (error) {
+      this.logger.warn(`Could not migrate the default embedding model: ${error}`);
     }
   }
 
@@ -288,9 +325,6 @@ class ZotSeekPlugin {
     } catch (error) {
       this.logger.error(`Failed to initialize core modules: ${error}`);
     }
-
-    // Register cleanup observer for delete/trash events (always active, not gated on autoIndex)
-    this.registerCleanupObserver();
 
     // Register context menu using Zotero 8 MenuManager API (preferred)
     // Falls back to XUL injection for older versions
@@ -326,7 +360,8 @@ class ZotSeekPlugin {
     await toolbarButton.registerReaderContextMenu();
     this.logger.info('Reader context menu registered');
 
-    // Initialize auto-index manager (monitors for new items)
+    // Schedule one startup reconciliation pass. This registers no Zotero
+    // item/note observers and performs no work while the user is editing.
     this.initAutoIndexManager();
 
     // If a previous bulk indexing run was interrupted (cancel, crash, sleep,
@@ -461,13 +496,27 @@ class ZotSeekPlugin {
     await this.indexItems(pending, scope);
   }
 
-  /**
-   * Initialize auto-index manager for monitoring new items
-   */
+  /** Initialize the one-shot startup reconciliation manager. */
   private initAutoIndexManager(): void {
-    // Set callback to index items (silent mode for auto-indexing)
     autoIndexManager.setIndexCallback(async (items: any[]) => {
-      await this.indexItemsSilent(items);
+      return this.indexItemsSilent(items);
+    });
+    autoIndexManager.setNoteIndexCallback(async (items: any[]) => {
+      return this.indexNoteChangesSilent(items);
+    });
+    autoIndexManager.setItemProvider(async () => {
+      const Z = getZotero();
+      if (!Z) return [];
+      return this.getIndexScope() === 'all'
+        ? this.zoteroAPI.getAllLibraryItems()
+        : this.zoteroAPI.getLibraryItems(Z.Libraries.userLibraryID);
+    });
+    autoIndexManager.setCompletionCallback(() => {
+      // Baseline-only and unchanged validations do not write embeddings, but
+      // they can still make an old-looking status current. Drop the entire
+      // UI cache so checked_at is visible immediately after either startup or
+      // a manual "Check for Updates Now" run.
+      itemTreeIndexColumn.invalidate();
     });
 
     // Set vector store reference for checking indexed status
@@ -475,73 +524,9 @@ class ZotSeekPlugin {
       autoIndexManager.setVectorStore(this.vectorStore);
     }
 
-    // Start monitoring (respects autoIndex preference)
+    // Schedule one check after startup (respects the existing preference).
     autoIndexManager.start();
-    this.logger.info('Auto-index manager initialized');
-  }
-
-  /**
-   * Register a Notifier observer that cleans up embeddings when items are deleted or trashed.
-   * This runs unconditionally (independent of the autoIndex preference) because
-   * orphaned embeddings cause ghost search results — a data integrity concern.
-   */
-  private registerCleanupObserver(): void {
-    const Z = getZotero();
-    if (!Z) return;
-
-    this.cleanupNotifierID = Z.Notifier.registerObserver(
-      {
-        notify: async (
-          event: string,
-          _type: string,
-          ids: Array<string | number>,
-          _extraData: any
-        ) => {
-          if (event !== 'delete' && event !== 'trash') return;
-
-          try {
-            // Ensure vector store is available (lazy init if needed)
-            await this.ensureStoreReady();
-            if (!this.vectorStore) return;
-
-            let cleaned = 0;
-            const cleanedIds: number[] = [];
-            for (const id of ids) {
-              const numericId = typeof id === 'string' ? parseInt(id, 10) : id;
-              if (isNaN(numericId)) continue;
-              // Try to resolve stable identity from the (possibly trashed) item.
-              // If the item is fully gone, fall back to the legacy id-based shim.
-              const item = Zotero.Items.get(numericId);
-              if (item) {
-                const identity = identityFromItem(item);
-                if (identity) {
-                  await this.vectorStore.deleteItem(identity.libraryKey, identity.itemKey);
-                  cleanedIds.push(numericId);
-                  cleaned++;
-                  continue;
-                }
-              }
-              // Fallback for items that no longer have a resolvable identity
-              await this.vectorStore.delete(numericId);
-              cleanedIds.push(numericId);
-              cleaned++;
-            }
-
-            if (cleaned > 0) {
-              itemTreeIndexColumn.invalidate(cleanedIds);
-              this.logger.info(`Cleaned up embeddings for ${cleaned} ${event === 'trash' ? 'trashed' : 'deleted'} items`);
-            }
-          } catch (error: any) {
-            // Non-critical: log but don't throw — deletion of non-indexed items is a no-op
-            this.logger.error(`Failed to clean up embeddings on ${event}: ${error?.message || error}`);
-          }
-        }
-      },
-      ['item'],
-      'zotseek-cleanup'
-    );
-
-    this.logger.info('Cleanup observer registered (handles delete/trash events)');
+    this.logger.info('Startup index reconciliation initialized');
   }
 
   private async initializeCore(): Promise<void> {
@@ -620,9 +605,53 @@ class ZotSeekPlugin {
     const Z = getZotero();
     if (!Z) return;
 
-    // Use XUL injection - works reliably with plain text labels
-    // MenuManager API requires l10nID localization which we haven't set up yet
+    // Item context menu actions still use XUL injection.
     this.registerWithXUL(Z);
+
+    // Collection actions belong in the collection tree context menu.
+    this.registerCollectionContextMenu(Z);
+  }
+
+  /**
+   * Register the collection-specific action in the collection tree menu.
+   */
+  private registerCollectionContextMenu(Z: any): void {
+    try {
+      const win = Z.getMainWindow();
+      if (!win) {
+        this.logger.warn('No main window available for collection menu registration');
+        return;
+      }
+
+      win.MozXULElement.insertFTLIfNeeded('zotseek-menu.ftl');
+
+      if (!Z.MenuManager) {
+        this.logger.warn('MenuManager not available - skipping collection menu registration');
+        return;
+      }
+
+      if (this.collectionMenuRegistrationID) return;
+
+      this.collectionMenuRegistrationID = Z.MenuManager.registerMenu({
+        menuID: 'zotseek-index-collection-context',
+        pluginID: this.info?.id || 'zotseek@zotero.org',
+        target: 'main/library/collection',
+        menus: [
+          {
+            menuType: 'menuitem',
+            l10nID: 'zotseek-menuCollection-index',
+            icon: 'chrome://zotseek/content/icons/icon-toolbar.svg',
+            onCommand: () => {
+              void this.onIndexCollection();
+            },
+          },
+        ],
+      });
+
+      this.logger.info('Collection context menu registered successfully');
+    } catch (error) {
+      this.logger.error('Failed to register collection context menu:', error);
+    }
   }
 
   /**
@@ -673,12 +702,6 @@ class ZotSeekPlugin {
     indexSelectedItem.setAttribute('label', getString('menu-indexSelected'));
     indexSelectedItem.addEventListener('command', () => this.onIndexSelected());
 
-    // Create "Index Collection" menu item
-    const indexCollectionItem = doc.createXULElement('menuitem');
-    indexCollectionItem.id = 'zotseek-index-collection';
-    indexCollectionItem.setAttribute('label', getString('menu-indexCollection'));
-    indexCollectionItem.addEventListener('command', () => this.onIndexCollection());
-
     // Create "Index Library" menu item
     const indexLibraryItem = doc.createXULElement('menuitem');
     indexLibraryItem.id = 'zotseek-index-library';
@@ -695,7 +718,6 @@ class ZotSeekPlugin {
     itemMenu.appendChild(findSimilarItem);
     itemMenu.appendChild(openSearchItem);
     itemMenu.appendChild(indexSelectedItem);
-    itemMenu.appendChild(indexCollectionItem);
     itemMenu.appendChild(indexLibraryItem);
     itemMenu.appendChild(removeFromIndexItem);
 
@@ -773,6 +795,13 @@ class ZotSeekPlugin {
    */
   public indexLibrary(): void {
     this.onIndexLibrary();
+  }
+
+  /** Run the same one-shot reconciliation used after startup. */
+  public async checkForIndexUpdates(): Promise<import('./core/auto-index-manager').StartupCheckResult> {
+    await this.ensureStoreReady();
+    if (this.vectorStore) autoIndexManager.setVectorStore(this.vectorStore);
+    return autoIndexManager.runNow();
   }
 
   /**
@@ -913,6 +942,7 @@ class ZotSeekPlugin {
           // Support both old mode names (fulltext, hybrid) and new (full)
           const modeLabels: { [key: string]: string } = {
             'abstract': 'Abstract Only',
+            'notes': 'Metadata + Notes',
             'full': 'Full Paper',
             // Legacy mode names for backward compatibility
             'fulltext': 'Full Paper',
@@ -1489,14 +1519,14 @@ class ZotSeekPlugin {
    * Index items silently (for auto-indexing)
    * Shows a progress indicator while running
    */
-  private async indexItemsSilent(items: any[]): Promise<void> {
+  private async indexItemsSilent(items: any[]): Promise<number[]> {
     if (this.indexing) {
       this.logger.debug('Indexing already in progress, skipping auto-index');
-      return;
+      return [];
     }
 
     if (items.length === 0) {
-      return;
+      return [];
     }
 
     this.indexing = true;
@@ -1526,11 +1556,6 @@ class ZotSeekPlugin {
       // Get indexing mode
       const indexingMode = getIndexingMode(Z);
 
-      // Reset pipeline to ensure fresh initialization
-      itemRow.setText(getString('indexing-progressLoadingModel'));
-      embeddingPipeline.reset();
-      await embeddingPipeline.init();
-
       // Filter out items with exclusion tag
       const filteredItems = items.filter(item => !hasExcludeTag(item));
       if (filteredItems.length === 0) {
@@ -1538,24 +1563,58 @@ class ZotSeekPlugin {
         try { itemRow.setIcon('chrome://zotero/skin/tick.png'); } catch { /* ignore */ }
         itemRow.setText(getString('indexing-allExcluded'));
         progressWin.startCloseTimer(3000);
-        return;
+        return [];
       }
 
       // Extract chunks from items
       itemRow.setText(getString('indexing-extracting'));
-      const extractedItems = await textExtractor.extractChunksFromItems(filteredItems, indexingMode);
+      const extractedCandidates = await textExtractor.extractChunksFromItems(filteredItems, indexingMode);
 
-      if (extractedItems.length === 0) {
+      if (extractedCandidates.length === 0) {
         this.logger.info('No content extracted from items');
         try { itemRow.setIcon('chrome://zotero/skin/cross.png'); } catch { /* ignore */ }
         itemRow.setText(getString('indexing-noContent'));
         progressWin.startCloseTimer(3000);
-        return;
+        return [];
+      }
+
+      // Compare normalized content before loading the model. In Notes mode this
+      // makes formatting-only editor events effectively free after extraction.
+      const extractedItems: ExtractedChunks[] = [];
+      for (const extracted of extractedCandidates) {
+        const libraryKey = libraryKeyFromLocalID(extracted.libraryId);
+        if (!libraryKey) continue;
+        const indexedForActiveModel = await this.vectorStore!.isIndexedByIdentity(
+          libraryKey,
+          extracted.itemKey
+        );
+        const needsReindex = !indexedForActiveModel || await this.vectorStore!.needsReindexByIdentity(
+          libraryKey,
+          extracted.itemKey,
+          extracted.contentHash
+        );
+        if (needsReindex) {
+          extractedItems.push(extracted);
+        }
+      }
+
+      if (extractedItems.length === 0) {
+        this.logger.info('Auto-index skipped: normalized content is unchanged');
+        try { itemRow.setIcon('chrome://zotero/skin/tick.png'); } catch { /* ignore */ }
+        itemRow.setText(getString('indexing-nothingToIndex'));
+        progressWin.startCloseTimer(2000);
+        return extractedCandidates.map(item => item.itemId);
       }
 
       // Count total chunks
       const totalChunks = extractedItems.reduce((sum, item) => sum + item.chunks.length, 0);
       this.logger.info(`Extracted ${totalChunks} chunks from ${extractedItems.length} items`);
+
+      // Only initialize the embedding worker after the hash comparison confirms
+      // that at least one item genuinely changed.
+      itemRow.setText(getString('indexing-progressLoadingModel'));
+      embeddingPipeline.reset();
+      await embeddingPipeline.init();
 
       // Prepare chunks for embedding
       const textsForEmbedding: Array<{ id: string; text: string; title: string }> = [];
@@ -1580,6 +1639,7 @@ class ZotSeekPlugin {
       // Store embeddings with chunk metadata
       itemRow.setText(getString('indexing-saving'));
       const paperEmbeddings: PaperEmbedding[] = [];
+      const identitiesToReplace = new Map<string, { libraryKey: string; itemKey: string }>();
       let autoTruncatedCount = 0;
 
       for (const extracted of extractedItems) {
@@ -1626,10 +1686,18 @@ class ZotSeekPlugin {
             pagesIndexed: extracted.pagesIndexed,
             pagesTotal: extracted.pagesTotal,
           });
+          identitiesToReplace.set(`${libraryKey}:${extracted.itemKey}`, {
+            libraryKey,
+            itemKey: extracted.itemKey,
+          });
         }
       }
 
-      // Store in vector store
+      // Replace only items for which at least one new embedding succeeded. This
+      // removes stale note chunks when a note shrinks or is deleted.
+      for (const { libraryKey, itemKey } of identitiesToReplace.values()) {
+        await this.vectorStore!.deleteChunksForItem(libraryKey, itemKey, getActiveModelId());
+      }
       await this.vectorStore!.putBatch(paperEmbeddings);
 
       // Refresh column status for the items we just indexed
@@ -1661,6 +1729,14 @@ class ZotSeekPlugin {
         progressWin.startCloseTimer(3000);
       }
 
+      const replaced = new Set(identitiesToReplace.keys());
+      return extractedItems
+        .filter(item => {
+          const libraryKey = libraryKeyFromLocalID(item.libraryId);
+          return !!libraryKey && replaced.has(`${libraryKey}:${item.itemKey}`);
+        })
+        .map(item => item.itemId);
+
     } catch (error: any) {
       this.logger.error(`Auto-indexing failed: ${error?.message || error}`);
       // Show error in progress window - use try-catch for setIcon
@@ -1668,6 +1744,159 @@ class ZotSeekPlugin {
       try { itemRow.setIcon('chrome://zotero/skin/cross.png'); } catch { /* ignore */ }
       itemRow.setText(`✗ Error: ${errMsg}`);
       progressWin.startCloseTimer(4000);
+      return [];
+    } finally {
+      this.indexing = false;
+    }
+  }
+
+  /**
+   * Replace note vectors while carrying the active model's existing summary
+   * and PDF vectors forward unchanged. No PDF extraction API is called here.
+   */
+  private async indexNoteChangesSilent(items: any[]): Promise<number[]> {
+    if (this.indexing || items.length === 0) return [];
+    this.indexing = true;
+    const Z = getZotero();
+    const progressWin = new (Z.ProgressWindow as any)({ closeOnClick: true });
+    progressWin.changeHeadline(getString('indexing-progressTitle'));
+    const itemRow = new progressWin.ItemProgress(
+      'chrome://zotero/skin/spinner-16px.png',
+      getString('indexing-noteUpdate', { count: items.length })
+    );
+    progressWin.show();
+
+    try {
+      await this.ensureStoreReady();
+      const filteredItems = items.filter(item => !hasExcludeTag(item));
+      const extractedItems = await textExtractor.extractChunksFromItems(filteredItems, 'notes');
+      const statusMap = await this.vectorStore!.getIndexStatusMap(
+        extractedItems.map(item => item.itemId)
+      );
+      const maxChunks = Math.max(1, Number(Z.Prefs.get('zotseek.maxChunksPerPaper', true) ?? 100));
+
+      const plans: Array<{
+        extracted: ExtractedChunks;
+        libraryKey: string;
+        preserved: PaperEmbedding[];
+        noteChunks: ExtractedChunks['chunks'];
+      }> = [];
+      const textsForEmbedding: ChunkForEmbedding[] = [];
+
+      for (const extracted of extractedItems) {
+        const libraryKey = libraryKeyFromLocalID(extracted.libraryId);
+        if (!libraryKey) continue;
+        const existing = await this.vectorStore!.getItemChunksByIdentity(
+          libraryKey,
+          extracted.itemKey
+        );
+        const preserved = existing
+          .filter(chunk => chunk.textSource !== 'note')
+          .sort((a, b) => a.chunkIndex - b.chunkIndex);
+        if (preserved.length === 0) {
+          this.logger.warn(`Cannot preserve non-note chunks for ${extracted.itemKey}; deferring to next startup`);
+          continue;
+        }
+
+        const hasPDF = preserved.some(chunk =>
+          !['summary', 'abstract', 'title_only'].includes(chunk.textSource));
+        const summaryCount = preserved.filter(chunk =>
+          ['summary', 'abstract', 'title_only'].includes(chunk.textSource)).length;
+        const available = Math.max(0, maxChunks - summaryCount);
+        const noteLimit = hasPDF ? Math.ceil(available / 2) : available;
+        const noteChunks = extracted.chunks
+          .filter(chunk => chunk.type === 'note')
+          .slice(0, noteLimit);
+
+        plans.push({ extracted, libraryKey, preserved, noteChunks });
+        noteChunks.forEach((chunk, index) => {
+          textsForEmbedding.push({
+            id: `startup-note:${extracted.itemId}:${index}`,
+            text: chunk.text,
+            title: extracted.title,
+          });
+        });
+      }
+
+      let embeddingMap = new Map<string, { embedding: number[]; modelId: string }>();
+      if (textsForEmbedding.length > 0) {
+        itemRow.setText(getString('indexing-progressLoadingModel'));
+        embeddingPipeline.reset();
+        await embeddingPipeline.init();
+        const embedded = await embedChunks(textsForEmbedding, processed => {
+          itemRow.setText(getString('indexing-embedding', {
+            current: processed,
+            total: textsForEmbedding.length,
+          }));
+        });
+        embeddingMap = embedded.embeddings;
+      }
+
+      const successful: number[] = [];
+      for (const plan of plans) {
+        const { extracted, libraryKey, preserved, noteChunks } = plan;
+        const newNotes: PaperEmbedding[] = [];
+        let complete = true;
+        for (let index = 0; index < noteChunks.length; index++) {
+          const embedded = embeddingMap.get(`startup-note:${extracted.itemId}:${index}`);
+          if (!embedded) {
+            complete = false;
+            break;
+          }
+          newNotes.push({
+            itemId: extracted.itemId,
+            chunkIndex: 0,
+            libraryKey,
+            itemKey: extracted.itemKey,
+            libraryId: extracted.libraryId,
+            title: extracted.title,
+            abstract: extracted.abstract || undefined,
+            chunkText: noteChunks[index].text,
+            textSource: 'note',
+            embedding: embedded.embedding,
+            modelId: embedded.modelId,
+            indexedAt: new Date().toISOString(),
+            contentHash: '',
+          });
+        }
+        if (!complete) continue;
+
+        const now = new Date().toISOString();
+        const combined = [...preserved, ...newNotes];
+        const contentHash = hashChunkContent(combined.map(chunk => chunk.chunkText || ''));
+        const status = statusMap.get(extracted.itemId);
+        const normalized = combined.map((chunk, chunkIndex): PaperEmbedding => ({
+          ...chunk,
+          itemId: extracted.itemId,
+          chunkIndex,
+          libraryKey,
+          itemKey: extracted.itemKey,
+          libraryId: extracted.libraryId,
+          title: extracted.title,
+          abstract: extracted.abstract || undefined,
+          modelId: getActiveModelId(),
+          indexedAt: now,
+          contentHash,
+          wasTruncated: status?.wasTruncated || extracted.wasTruncated,
+          pagesIndexed: status?.pagesIndexed ?? 0,
+          pagesTotal: status?.pagesTotal ?? 0,
+        }));
+
+        await this.vectorStore!.replaceItemModelChunks(normalized);
+        successful.push(extracted.itemId);
+      }
+
+      itemTreeIndexColumn.invalidate(successful);
+      try { itemRow.setIcon('chrome://zotero/skin/tick.png'); } catch { /* ignore */ }
+      itemRow.setText(getString('indexing-noteUpdateComplete', { count: successful.length }));
+      progressWin.startCloseTimer(3000);
+      return successful;
+    } catch (error: any) {
+      this.logger.error(`Startup note update failed: ${error?.message || error}`);
+      try { itemRow.setIcon('chrome://zotero/skin/cross.png'); } catch { /* ignore */ }
+      itemRow.setText(`✗ Error: ${error?.message || 'Unknown error'}`);
+      progressWin.startCloseTimer(4000);
+      return [];
     } finally {
       this.indexing = false;
     }
@@ -1810,16 +2039,7 @@ class ZotSeekPlugin {
   async onShutdown(): Promise<void> {
     this.logger.info('Shutting down plugin');
 
-    // Unregister cleanup observer
-    if (this.cleanupNotifierID) {
-      const Z = getZotero();
-      if (Z) {
-        Z.Notifier.unregisterObserver(this.cleanupNotifierID);
-      }
-      this.cleanupNotifierID = null;
-    }
-
-    // Stop auto-index manager
+    // Cancel a scheduled/running startup reconciliation pass.
     autoIndexManager.stop();
 
     // Unregister local MCP/REST endpoints and pref observer
@@ -1831,6 +2051,11 @@ class ZotSeekPlugin {
     if (win) {
       this.removeXULElements(win);
       toolbarButton.remove(win);
+    }
+
+    if (this.collectionMenuRegistrationID && Z?.MenuManager) {
+      Z.MenuManager.unregisterMenu(this.collectionMenuRegistrationID);
+      this.collectionMenuRegistrationID = null;
     }
 
     // Unregister Tools menu and reader toolbar
@@ -2053,6 +2278,7 @@ class ZotSeekPlugin {
     getReclaimableBytes: () => (this.vectorStore as any)?.getReclaimableBytes?.() ?? Promise.resolve(0),
     isReady: () => this.initialized && embeddingPipeline.isReady(),
     reindexForActiveModel: () => this.reindexForActiveModel(),
+    checkForIndexUpdates: () => this.checkForIndexUpdates(),
   };
 }
 

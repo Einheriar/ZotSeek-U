@@ -1,11 +1,11 @@
 // Default preferences for ZotSeek
 // Note: Zotero prefs only support string, int, bool - not float
-// minSimilarityPercent is stored as integer (30 = 30% = 0.3)
+// minSimilarityPercent is stored as integer (70 = 70% = 0.7).
+// Multilingual E5 cosine scores are concentrated at the high end.
 
-pref("extensions.zotero.zotseek.minSimilarityPercent", 30);
+pref("extensions.zotero.zotseek.minSimilarityPercent", 70);
 pref("extensions.zotero.zotseek.topK", 20);
 pref("extensions.zotero.zotseek.autoIndex", false);
-pref("extensions.zotero.zotseek.autoIndexDelay", 10);
 
 // Index scope: "user" (My Library only) or "all" (all libraries including groups)
 pref("extensions.zotero.zotseek.indexScope", "user");
@@ -13,12 +13,10 @@ pref("extensions.zotero.zotseek.indexScope", "user");
 // Indexing mode: "abstract" (title+abstract) or "full" (abstract + PDF sections)
 pref("extensions.zotero.zotseek.indexingMode", "abstract");
 
-// Chunking options for nomic-embed-text-v1.5 (8192 token context)
-// PERFORMANCE: Smaller chunks = faster embedding (~O(n²) attention cost)
-// - 7000 tokens: ~45 sec/chunk (too slow!)
-// - 800 tokens: ~0.3-0.5 sec/chunk (very fast!)
+// Chunking options for multilingual-e5-base (512 token context)
+// Keep room for the required passage prefix and tokenizer special tokens.
 // Paragraph-level chunking creates many small chunks for precise page location
-pref("extensions.zotero.zotseek.maxTokens", 800);
+pref("extensions.zotero.zotseek.maxTokens", 450);
 pref("extensions.zotero.zotseek.maxChunksPerPaper", 100);
 
 // Has the index-status column been auto-shown once after installation?
@@ -53,4 +51,5 @@ pref("extensions.zotero.zotseek.mcpServer.enabled", false);
 
 // Active embedding model (short id from the model registry).
 // Change requires re-indexing the library with the new model.
-pref("extensions.zotero.zotseek.embeddingModel", "nomic-embed-text-v1.5");
+pref("extensions.zotero.zotseek.embeddingModel", "multilingual-e5-base");
+pref("extensions.zotero.zotseek.modelDefaultMigrationE5", false);

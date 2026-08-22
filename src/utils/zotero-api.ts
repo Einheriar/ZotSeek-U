@@ -14,6 +14,7 @@ export interface ZoteroItem {
   key: string;
   libraryID: number;
   itemType: string;
+  parentID?: number;
   getField(field: string): string;
   setField(field: string, value: string): void;
   getCreators(): ZoteroCreator[];
@@ -21,6 +22,8 @@ export interface ZoteroItem {
   getBestAttachment(): Promise<ZoteroAttachment | null>;
   getAttachments(): number[];  // Returns attachment IDs
   getNotes(): number[];        // Returns note IDs
+  getNote(): string;           // Returns note content as HTML
+  getTags(): Array<{ tag: string; type?: number }>;
   isRegularItem(): boolean;
   isAttachment(): boolean;
   isNote(): boolean;

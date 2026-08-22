@@ -16,6 +16,7 @@
 import { Logger } from '../utils/logger';
 import { IVectorStore, ItemIndexStatus } from '../core/storage-factory';
 import { identityFromItem, StableIdentity } from '../core/identity-resolver';
+import { isModifiedAfterVerification } from '../utils/timestamp';
 
 declare const Zotero: any;
 
@@ -296,7 +297,7 @@ export class ItemTreeIndexColumn {
 
   /**
    * Resolve the displayed glyph for an item, refining the cached state
-   * with item-side info (exclusion tag, dateModified vs indexed_at).
+ * with item-side info (exclusion tag, dateModified vs last verification).
    */
   private renderState(baseState: IndexState, item: any, status: ItemIndexStatus | null): string {
     // Exclusion overrides everything — the user explicitly opted this item out
@@ -304,10 +305,12 @@ export class ItemTreeIndexColumn {
 
     if (baseState === 'not-indexed') return GLYPHS['not-indexed'];
 
-    // Outdated detection — cheap string comparison on ISO timestamps
+    // A startup reconciliation may validate unchanged content without
+    // regenerating embeddings. Compare parsed UTC times against the newest
+    // successful verification instead of comparing unlike date strings.
     if (status && status.indexedAt) {
       const dateModified: string | undefined = item.dateModified;
-      if (dateModified && dateModified > status.indexedAt) {
+      if (isModifiedAfterVerification(dateModified, status.indexedAt, status.checkedAt)) {
         return GLYPHS['outdated'];
       }
     }

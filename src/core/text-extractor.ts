@@ -1,9 +1,10 @@
 /**
  * Text Extractor - Extract text from Zotero items for embedding
  * 
- * Supports two indexing modes:
+ * Supports three indexing modes:
  * - abstract: Title + Abstract only (fast, good for most uses)
- * - full: Title + Abstract + PDF sections (thorough, for deep research)
+ * - notes: Title + Abstract + Tags + Child Notes (no PDF processing)
+ * - full: Title + Abstract + Tags + Child Notes + PDF sections
  */
 
 import { Logger } from '../utils/logger';
@@ -14,9 +15,12 @@ import {
   IndexingMode,
   chunkDocumentEx,
   chunkDocumentWithPagesEx,
+  chunkNoteTexts,
+  combineFullModeChunks,
   getChunkOptionsFromPrefs,
   getIndexingMode
 } from '../utils/chunker';
+import { noteHTMLToText } from '../utils/note-text';
 import { TextSourceType } from './vector-store-sqlite';
 
 declare const Zotero: any;
@@ -122,6 +126,9 @@ export class TextExtractor {
       let pagesTotal = 0;
 
       if (indexingMode === 'full') {
+        const metadataBody = this.buildMetadataBody(item, abstract);
+        let pdfResult;
+
         // Use page-by-page extraction for accurate page numbers
         const pages = await this.zoteroAPI.getFullTextByPage(item.id);
 
@@ -129,11 +136,13 @@ export class TextExtractor {
           // Use new page-aware chunker for accurate page numbers
           this.logger.debug(`Using page-by-page chunking for item ${item.id} (${pages.length} pages)`);
           try {
-            const result = chunkDocumentWithPagesEx(title, abstract, pages, indexingMode, chunkOptions);
-            chunks = result.chunks;
-            wasTruncated = result.wasTruncated;
-            pagesIndexed = result.pagesIndexed;
-            pagesTotal = result.pagesTotal;
+            pdfResult = chunkDocumentWithPagesEx(
+              title,
+              metadataBody,
+              pages,
+              indexingMode,
+              chunkOptions
+            );
           } catch (chunkError: any) {
             console.error(`[TextExtractor] chunkDocumentWithPagesEx failed for item ${item.id}:`,
               chunkError?.message || chunkError?.toString() || chunkError);
@@ -148,12 +157,61 @@ export class TextExtractor {
           if (totalPages) {
             chunkOptions.totalPages = totalPages;
           }
-          const result = chunkDocumentEx(title, abstract, fulltext, indexingMode, chunkOptions);
-          chunks = result.chunks;
-          wasTruncated = result.wasTruncated;
-          pagesIndexed = result.pagesIndexed;
-          pagesTotal = result.pagesTotal || (totalPages || 0);
+          pdfResult = chunkDocumentEx(
+            title,
+            metadataBody,
+            fulltext,
+            indexingMode,
+            chunkOptions
+          );
+          pdfResult.pagesTotal = pdfResult.pagesTotal || (totalPages || 0);
         }
+
+        const noteTexts = await this.extractChildNoteTexts(item);
+        const notesResult = chunkNoteTexts(title, noteTexts, chunkOptions);
+        const combinedResult = combineFullModeChunks({
+          summaryChunks: pdfResult.chunks.filter(chunk => chunk.type === 'summary'),
+          noteChunks: notesResult.chunks,
+          pdfChunks: pdfResult.chunks.filter(chunk => chunk.type !== 'summary'),
+          notesWereTruncated: notesResult.wasTruncated,
+          pdfWasTruncated: pdfResult.wasTruncated,
+          pagesTotal: pdfResult.pagesTotal,
+        }, chunkOptions);
+
+        chunks = combinedResult.chunks;
+        wasTruncated = combinedResult.wasTruncated;
+        pagesIndexed = combinedResult.pagesIndexed;
+        pagesTotal = combinedResult.pagesTotal;
+      } else if (indexingMode === 'notes') {
+        // Metadata + Notes mode never touches PDF APIs. Tags are useful
+        // semantic metadata, while authors/years remain in hybrid keyword search.
+        const metadataBody = this.buildMetadataBody(item, abstract);
+
+        const summaryResult = chunkDocumentEx(
+          title,
+          metadataBody || null,
+          null,
+          indexingMode,
+          chunkOptions
+        );
+        // Metadata and note matches have no PDF location.
+        summaryResult.chunks.forEach(chunk => {
+          chunk.pageNumber = undefined;
+          chunk.paragraphIndex = undefined;
+        });
+
+        const noteTexts = await this.extractChildNoteTexts(item);
+        const notesResult = chunkNoteTexts(
+          title,
+          noteTexts,
+          chunkOptions,
+          summaryResult.chunks.length
+        );
+
+        chunks = [...summaryResult.chunks, ...notesResult.chunks];
+        wasTruncated = summaryResult.wasTruncated || notesResult.wasTruncated;
+        pagesIndexed = 0;
+        pagesTotal = 0;
       } else {
         // Abstract mode - no fulltext needed
         const result = chunkDocumentEx(title, abstract, null, indexingMode, chunkOptions);
@@ -206,6 +264,43 @@ export class TextExtractor {
       }
       return null;
     }
+  }
+
+  /** Build the searchable metadata body shared by Notes and Full modes. */
+  private buildMetadataBody(item: ZoteroItem, abstract: string | null): string | null {
+    const tags = (item.getTags?.() || [])
+      .map(tag => tag?.tag?.trim())
+      .filter((tag): tag is string => !!tag)
+      .sort((a, b) => a.localeCompare(b));
+    const metadataBody = [
+      abstract,
+      tags.length > 0 ? `Tags: ${tags.join(', ')}` : null,
+    ].filter((part): part is string => !!part && part.trim().length > 0).join('\n\n');
+
+    return metadataBody || null;
+  }
+
+  /**
+   * Read and normalize child notes in a stable order. Note IDs are local to a
+   * Zotero profile, so item keys provide deterministic ordering across sessions.
+   */
+  private async extractChildNoteTexts(item: ZoteroItem): Promise<string[]> {
+    const noteIDs = item.getNotes?.() || [];
+    if (noteIDs.length === 0) return [];
+
+    const loaded = await Zotero.Items.getAsync(noteIDs);
+    const notes: ZoteroItem[] = (Array.isArray(loaded) ? loaded : [loaded])
+      .filter((note: ZoteroItem | null | undefined): note is ZoteroItem =>
+        !!note && !!note.isNote?.()
+      )
+      .sort((a: ZoteroItem, b: ZoteroItem) => a.key.localeCompare(b.key));
+
+    const texts: string[] = [];
+    for (const note of notes) {
+      const text = noteHTMLToText(note.getNote?.() || '');
+      if (text.length >= 3) texts.push(text);
+    }
+    return texts;
   }
 
   /**

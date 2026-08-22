@@ -43,7 +43,7 @@ export const MODELS: ModelConfig[] = [
     queryPrefix: 'search_query: ', docPrefix: 'search_document: ',
     onnxFile: 'onnx/model_quantized.onnx',
     files: [...COMMON_FILES, 'onnx/model_quantized.onnx'],
-    bundled: true, approxSizeMB: 130, multilingual: false,
+    bundled: false, approxSizeMB: 130, multilingual: false,
   },
   {
     id: 'paraphrase-multilingual-MiniLM-L12-v2',
@@ -65,7 +65,7 @@ export const MODELS: ModelConfig[] = [
     queryPrefix: 'query: ', docPrefix: 'passage: ',
     onnxFile: 'onnx/model_quantized.onnx',
     files: [...COMMON_FILES, 'onnx/model_quantized.onnx'],
-    bundled: false, approxSizeMB: 110, multilingual: true,
+    bundled: true, approxSizeMB: 282, multilingual: true,
   },
   {
     id: 'bge-m3',
@@ -80,7 +80,7 @@ export const MODELS: ModelConfig[] = [
   },
 ];
 
-export const DEFAULT_MODEL_ID = 'nomic-embed-text-v1.5';
+export const DEFAULT_MODEL_ID = 'multilingual-e5-base';
 
 export function getAllModels(): ModelConfig[] {
   return [...MODELS, ...getServerModels()];

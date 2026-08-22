@@ -71,7 +71,7 @@ let CURRENT: {
 } | null = null;
 
 const MODEL_OPTIONS = {
-  quantized: true,         // Use quantized model (~130MB)
+  dtype: 'q8' as const,    // Transformers.js v3: load model_quantized.onnx
   local_files_only: true,  // Only use local bundled files
 };
 

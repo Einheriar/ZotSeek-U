@@ -36,7 +36,8 @@ export type TextSourceType =
   | 'summary'       // Same as abstract, from chunker
   | 'methods'       // Introduction, Background, Methods, etc.
   | 'findings'      // Results, Discussion, Conclusions, etc.
-  | 'content';      // Generic content (fallback when sections not detected)
+  | 'content'       // Generic content (fallback when sections not detected)
+  | 'note';         // Child Zotero note, indexed under its parent item
 
 export interface PaperEmbedding {
   // Internal surrogate PK (assigned by SQLite on insert). Optional on input,
@@ -77,6 +78,18 @@ export interface PaperEmbedding {
   pagesTotal?: number;       // Total pages in the source PDF (0 if unknown)
 }
 
+/** Lightweight lexical hit that does not load or decode embedding vectors. */
+export interface IndexedTextMatch {
+  itemPk: number;
+  libraryKey: string;
+  itemKey: string;
+  itemId?: number;
+  chunkIndex: number;
+  chunkText: string;
+  textSource: TextSourceType;
+  score: number;
+}
+
 /**
  * Per-item indexing status — used by the item-tree column to decide
  * whether to show "Indexed", "Partial", "Outdated", etc.
@@ -88,10 +101,24 @@ export interface ItemIndexStatus {
   // Will be resolved at read time.
   itemId?: number;
   indexedAt: string;
+  /** Last successful content-fingerprint reconciliation, if newer than embedding generation. */
+  checkedAt?: string;
   wasTruncated: boolean;
   pagesIndexed: number;
   pagesTotal: number;
   chunkCount: number;
+}
+
+/** Per-model startup reconciliation state for one Zotero parent item. */
+export interface StartupFingerprint {
+  libraryKey: string;
+  itemKey: string;
+  modelId: string;
+  configFingerprint: string;
+  metadataFingerprint: string;
+  noteStateFingerprint: string;
+  noteContentFingerprint: string;
+  checkedAt: string;
 }
 
 export interface VectorStoreStats {
@@ -111,7 +138,7 @@ export interface VectorStoreStats {
 // Database configuration
 const DB_NAME = 'zotseek';           // Schema name when attached
 const DB_FILE = 'zotseek.sqlite';    // Database filename
-const SCHEMA_VERSION = 9;            // v9: per-model embeddings (chunks.model_id + item_models)
+const SCHEMA_VERSION = 10;           // v10: startup-only incremental reconciliation fingerprints
 
 // Legacy table prefix (for migration from old schema)
 const LEGACY_TABLE_PREFIX = 'zs_';
@@ -233,6 +260,11 @@ export class VectorStoreSQLite {
 
       // Migrate to v9 (per-model embeddings: chunks.model_id + item_models) if needed
       await this.migrateToV9();
+
+      // Older migrations can rebuild the normalized tables after the first
+      // createTables() pass. Run the idempotent creator once more so v10's
+      // startup fingerprint table is always present.
+      await this.createTables();
 
       this.initialized = true;
       this.logger.info('SQLite store initialized successfully');
@@ -1410,10 +1442,26 @@ export class VectorStoreSQLite {
       `);
     }
 
+    // Kept separate from items so each embedding model can be reconciled
+    // independently without changing Zotero's own database.
+    await Zotero.DB.queryAsync(`
+      CREATE TABLE IF NOT EXISTS ${DB_NAME}.startup_fingerprints (
+        library_key TEXT NOT NULL,
+        item_key TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        config_fingerprint TEXT NOT NULL,
+        metadata_fingerprint TEXT NOT NULL,
+        note_state_fingerprint TEXT NOT NULL,
+        note_content_fingerprint TEXT NOT NULL,
+        checked_at TEXT NOT NULL,
+        PRIMARY KEY (library_key, item_key, model_id)
+      )
+    `);
+
     await this.createIndexes();
     await this.updateSchemaVersion();
 
-    this.logger.debug('Tables created successfully (v9)');
+    this.logger.debug('Tables created successfully (v10)');
   }
 
   /**
@@ -1691,6 +1739,99 @@ export class VectorStoreSQLite {
     return String(stored) !== contentHash;
   }
 
+  /** Return identities covered by a model without loading embedding vectors. */
+  async getIndexedIdentities(modelId: string = getActiveModelId()): Promise<Array<{ libraryKey: string; itemKey: string }>> {
+    await this.ensureInit();
+    const [libraryKeys, itemKeys] = await Promise.all([
+      Zotero.DB.columnQueryAsync(`
+        SELECT i.library_key FROM ${DB_NAME}.items i
+        INNER JOIN ${DB_NAME}.item_models im ON im.item_pk = i.item_pk
+        WHERE i.library_key != 'orphan' AND im.model_id = ?
+        ORDER BY i.item_pk
+      `, [modelId]).then((rows: any) => rows || []),
+      Zotero.DB.columnQueryAsync(`
+        SELECT i.item_key FROM ${DB_NAME}.items i
+        INNER JOIN ${DB_NAME}.item_models im ON im.item_pk = i.item_pk
+        WHERE i.library_key != 'orphan' AND im.model_id = ?
+        ORDER BY i.item_pk
+      `, [modelId]).then((rows: any) => rows || []),
+    ]);
+    return (libraryKeys as string[]).map((libraryKey, index) => ({
+      libraryKey,
+      itemKey: String((itemKeys as string[])[index]),
+    }));
+  }
+
+  /** Read persisted startup reconciliation state for one item/model. */
+  async getStartupFingerprint(
+    libraryKey: string,
+    itemKey: string,
+    modelId: string = getActiveModelId()
+  ): Promise<StartupFingerprint | null> {
+    await this.ensureInit();
+    const rows = await Zotero.DB.queryAsync(`
+      SELECT config_fingerprint, metadata_fingerprint, note_state_fingerprint,
+             note_content_fingerprint, checked_at
+      FROM ${DB_NAME}.startup_fingerprints
+      WHERE library_key = ? AND item_key = ? AND model_id = ?
+      LIMIT 1
+    `, [libraryKey, itemKey, modelId]);
+    const row = rows?.[0];
+    if (!row) return null;
+    return {
+      libraryKey,
+      itemKey,
+      modelId,
+      configFingerprint: String(row.config_fingerprint || ''),
+      metadataFingerprint: String(row.metadata_fingerprint || ''),
+      noteStateFingerprint: String(row.note_state_fingerprint || ''),
+      noteContentFingerprint: String(row.note_content_fingerprint || ''),
+      checkedAt: String(row.checked_at || ''),
+    };
+  }
+
+  /** Persist reconciliation state only after the corresponding index is valid. */
+  async setStartupFingerprint(fingerprint: StartupFingerprint): Promise<void> {
+    await this.ensureInit();
+    await Zotero.DB.queryAsync(`
+      INSERT OR REPLACE INTO ${DB_NAME}.startup_fingerprints
+        (library_key, item_key, model_id, config_fingerprint,
+         metadata_fingerprint, note_state_fingerprint,
+         note_content_fingerprint, checked_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      fingerprint.libraryKey,
+      fingerprint.itemKey,
+      fingerprint.modelId,
+      fingerprint.configFingerprint,
+      fingerprint.metadataFingerprint,
+      fingerprint.noteStateFingerprint,
+      fingerprint.noteContentFingerprint,
+      fingerprint.checkedAt,
+    ]);
+  }
+
+  /** Fetch stored text only; no vector decoding is performed. */
+  async getChunkTextsBySources(
+    libraryKey: string,
+    itemKey: string,
+    sources: TextSourceType[],
+    modelId: string = getActiveModelId()
+  ): Promise<string[]> {
+    await this.ensureInit();
+    if (sources.length === 0) return [];
+    const placeholders = sources.map(() => '?').join(', ');
+    const rows = await Zotero.DB.columnQueryAsync(`
+      SELECT COALESCE(c.chunk_text, '')
+      FROM ${DB_NAME}.chunks c
+      INNER JOIN ${DB_NAME}.items i ON i.item_pk = c.item_pk
+      WHERE i.library_key = ? AND i.item_key = ? AND c.model_id = ?
+        AND c.text_source IN (${placeholders})
+      ORDER BY c.chunk_index
+    `, [libraryKey, itemKey, modelId, ...sources]);
+    return (rows || []).map((value: any) => String(value || ''));
+  }
+
   /**
    * Store a paper embedding (single chunk).
    *
@@ -1832,6 +1973,78 @@ export class VectorStoreSQLite {
   }
 
   /**
+   * Atomically replace one item's chunks for one model. Used by startup note
+   * reconciliation to carry unchanged PDF vectors forward while replacing
+   * only note vectors.
+   */
+  async replaceItemModelChunks(embeddings: PaperEmbedding[]): Promise<void> {
+    await this.ensureInit();
+    if (embeddings.length === 0) return;
+    const first = embeddings[0];
+    if (!first.libraryKey || !first.itemKey || !first.modelId) {
+      throw new Error('replaceItemModelChunks: missing identity or model');
+    }
+    if (embeddings.some(embedding =>
+      embedding.libraryKey !== first.libraryKey ||
+      embedding.itemKey !== first.itemKey ||
+      embedding.modelId !== first.modelId)) {
+      throw new Error('replaceItemModelChunks: all chunks must belong to one item/model');
+    }
+
+    await Zotero.DB.executeTransaction(async () => {
+      const itemPk = await this.getOrCreateItemPk({
+        libraryKey: first.libraryKey,
+        itemKey: first.itemKey,
+        title: first.title,
+        abstract: first.abstract,
+        modelId: first.modelId,
+        indexedAt: first.indexedAt,
+        contentHash: first.contentHash,
+        wasTruncated: first.wasTruncated,
+        pagesIndexed: first.pagesIndexed,
+        pagesTotal: first.pagesTotal,
+      });
+      await this.upsertItemModel(itemPk, {
+        modelId: first.modelId,
+        indexedAt: first.indexedAt,
+        contentHash: first.contentHash,
+        wasTruncated: first.wasTruncated,
+        pagesIndexed: first.pagesIndexed,
+        pagesTotal: first.pagesTotal,
+      });
+      await Zotero.DB.queryAsync(
+        `DELETE FROM ${DB_NAME}.chunks WHERE item_pk = ? AND model_id = ?`,
+        [itemPk, first.modelId]
+      );
+      for (const embedding of embeddings) {
+        await Zotero.DB.queryAsync(`
+          INSERT INTO ${DB_NAME}.chunks
+          (item_pk, chunk_index, model_id, chunk_text, text_source, embedding,
+           page_number, paragraph_index, start_char, end_char, bbox)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [
+          itemPk,
+          embedding.chunkIndex,
+          embedding.modelId,
+          embedding.chunkText || null,
+          embedding.textSource,
+          this.embeddingToBase64(embedding.embedding),
+          embedding.pageNumber ?? null,
+          embedding.paragraphIndex ?? null,
+          embedding.startChar ?? null,
+          embedding.endChar ?? null,
+          embedding.bbox ?? null,
+        ]);
+      }
+      await Zotero.DB.queryAsync(
+        `DELETE FROM ${DB_NAME}.startup_fingerprints WHERE library_key = ? AND item_key = ? AND model_id = ?`,
+        [first.libraryKey, first.itemKey, first.modelId]
+      );
+    });
+    this.invalidateCache();
+  }
+
+  /**
    * Delete all chunks AND the item row for a given stable identity.
    * No-op if the item is not indexed.
    *
@@ -1868,6 +2081,10 @@ export class VectorStoreSQLite {
         `DELETE FROM ${DB_NAME}.orphan_items WHERE item_pk = ?`,
         [Number(pk)]
       );
+      await Zotero.DB.queryAsync(
+        `DELETE FROM ${DB_NAME}.startup_fingerprints WHERE library_key = ? AND item_key = ?`,
+        [libraryKey, itemKey]
+      );
     });
 
     this.logger.debug(`Deleted item (${libraryKey}, ${itemKey})`);
@@ -1893,6 +2110,10 @@ export class VectorStoreSQLite {
           `DELETE FROM ${DB_NAME}.chunks WHERE item_pk = ? AND model_id = ?`, [Number(pk), modelId]);
         await Zotero.DB.queryAsync(
           `DELETE FROM ${DB_NAME}.item_models WHERE item_pk = ? AND model_id = ?`, [Number(pk), modelId]);
+        await Zotero.DB.queryAsync(
+          `DELETE FROM ${DB_NAME}.startup_fingerprints WHERE library_key = ? AND item_key = ? AND model_id = ?`,
+          [libraryKey, itemKey, modelId]
+        );
       } else {
         // No model given: fully unindex the item, so drop its item_models rows too
         // (otherwise getCoverage would still count it as covered with no chunks left).
@@ -1903,6 +2124,10 @@ export class VectorStoreSQLite {
         await Zotero.DB.queryAsync(
           `DELETE FROM ${DB_NAME}.item_models WHERE item_pk = ?`,
           [Number(pk)]
+        );
+        await Zotero.DB.queryAsync(
+          `DELETE FROM ${DB_NAME}.startup_fingerprints WHERE library_key = ? AND item_key = ?`,
+          [libraryKey, itemKey]
         );
       }
     });
@@ -2232,6 +2457,99 @@ export class VectorStoreSQLite {
     if (this.cache) {
       this.logger.debug('invalidateCache(): Cache invalidated');
       this.cache = null;
+    }
+  }
+
+  /**
+   * Search the text already stored in ZotSeek's chunk index.
+   *
+   * This is intentionally independent of the embedding model: exact keyword
+   * matches must keep working for Chinese notes and while switching models.
+   * Only the matching text columns are read, so large embedding blobs are not
+   * decoded or added to the in-memory vector cache.
+   */
+  async searchText(
+    query: string,
+    options: { limit?: number; libraryId?: number } = {}
+  ): Promise<IndexedTextMatch[]> {
+    await this.ensureInit();
+
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    if (!normalizedQuery) return [];
+
+    const terms = Array.from(new Set([
+      normalizedQuery,
+      ...normalizedQuery.split(/\s+/).filter(term => term.length > 1),
+    ]));
+    const escapeLike = (value: string) => value.replace(/[\\%_]/g, '\\$&');
+    const textPredicates = terms.map(() => `LOWER(c.chunk_text) LIKE ? ESCAPE '\\'`);
+    const params: any[] = terms.map(term => `%${escapeLike(term)}%`);
+
+    let libraryPredicate = '';
+    if (options.libraryId !== undefined) {
+      const libraryKey = libraryKeyFromLocalID(options.libraryId);
+      if (!libraryKey) return [];
+      libraryPredicate = ' AND i.library_key = ?';
+      params.push(libraryKey);
+    }
+
+    const fromWhere = `
+      FROM ${DB_NAME}.chunks c
+      INNER JOIN ${DB_NAME}.items i ON c.item_pk = i.item_pk
+      WHERE i.library_key != 'orphan'
+        AND c.chunk_text IS NOT NULL
+        AND (${textPredicates.join(' OR ')})
+        ${libraryPredicate}
+      ORDER BY c.item_pk, c.chunk_index
+    `;
+
+    try {
+      const [pks, libraryKeys, itemKeys, chunkIndexes, chunkTexts, textSources] = await Promise.all([
+        Zotero.DB.columnQueryAsync(`SELECT c.item_pk ${fromWhere}`, params),
+        Zotero.DB.columnQueryAsync(`SELECT i.library_key ${fromWhere}`, params),
+        Zotero.DB.columnQueryAsync(`SELECT i.item_key ${fromWhere}`, params),
+        Zotero.DB.columnQueryAsync(`SELECT c.chunk_index ${fromWhere}`, params),
+        Zotero.DB.columnQueryAsync(`SELECT c.chunk_text ${fromWhere}`, params),
+        Zotero.DB.columnQueryAsync(`SELECT c.text_source ${fromWhere}`, params),
+      ]);
+
+      const identities = (pks || []).map((_: any, index: number) => ({
+        libraryKey: libraryKeys[index],
+        itemKey: itemKeys[index],
+      }));
+      const idMap = bulkResolve(identities);
+      const bestByItem = new Map<number, IndexedTextMatch>();
+
+      for (let index = 0; index < (pks || []).length; index++) {
+        const text = String(chunkTexts[index] || '');
+        const textLower = text.toLocaleLowerCase();
+        const matchedTerms = terms.filter(term => textLower.includes(term)).length;
+        const score = textLower.includes(normalizedQuery)
+          ? 1
+          : 0.65 + 0.3 * (matchedTerms / terms.length);
+        const itemPk = Number(pks[index]);
+        const libraryKey = String(libraryKeys[index]);
+        const itemKey = String(itemKeys[index]);
+        const match: IndexedTextMatch = {
+          itemPk,
+          libraryKey,
+          itemKey,
+          itemId: idMap.get(`${libraryKey}|${itemKey}`),
+          chunkIndex: Number(chunkIndexes[index]),
+          chunkText: text,
+          textSource: (textSources[index] as TextSourceType) || 'content',
+          score,
+        };
+        const previous = bestByItem.get(itemPk);
+        if (!previous || match.score > previous.score) bestByItem.set(itemPk, match);
+      }
+
+      return Array.from(bestByItem.values())
+        .sort((a, b) => b.score - a.score)
+        .slice(0, options.limit ?? 50);
+    } catch (error) {
+      this.logger.error(`searchText failed: ${error}`);
+      return [];
     }
   }
 
@@ -2633,6 +2951,34 @@ export class VectorStoreSQLite {
         const pkArr: number[] = (pks || []).map((v: any) => Number(v));
         if (pkArr.length === 0) continue;
 
+        // A startup reconciliation can prove that indexed content is current
+        // without regenerating embeddings. Keep that verification timestamp
+        // alongside indexed_at so the item-tree column does not report a
+        // permanent false "outdated" state.
+        const sfWhere = `WHERE model_id = ? AND (${placeholders}) ORDER BY library_key, item_key`;
+        const sfParams = [activeModelId, ...params];
+        const [sfLibKeys, sfItemKeys, sfCheckedAts] = await Promise.all([
+          Zotero.DB.columnQueryAsync(
+            `SELECT library_key FROM ${DB_NAME}.startup_fingerprints ${sfWhere}`,
+            sfParams
+          ),
+          Zotero.DB.columnQueryAsync(
+            `SELECT item_key FROM ${DB_NAME}.startup_fingerprints ${sfWhere}`,
+            sfParams
+          ),
+          Zotero.DB.columnQueryAsync(
+            `SELECT checked_at FROM ${DB_NAME}.startup_fingerprints ${sfWhere}`,
+            sfParams
+          ),
+        ]);
+        const checkedAtByIdentity = new Map<string, string>();
+        for (let i = 0; i < (sfLibKeys || []).length; i++) {
+          checkedAtByIdentity.set(
+            `${String(sfLibKeys[i])}|${String(sfItemKeys?.[i] ?? '')}`,
+            String(sfCheckedAts?.[i] ?? '')
+          );
+        }
+
         // Read per-(item, model) status from item_models for the active model.
         const imPlaceholders = pkArr.map(() => '?').join(',');
         const imParams = [...pkArr, activeModelId];
@@ -2706,6 +3052,7 @@ export class VectorStoreSQLite {
             libraryKey: lk,
             itemKey: ik,
             indexedAt: modelStatus.indexedAt,
+            checkedAt: checkedAtByIdentity.get(key),
             wasTruncated: modelStatus.wasTruncated,
             pagesIndexed: modelStatus.pagesIndexed,
             pagesTotal: modelStatus.pagesTotal,
@@ -2742,6 +3089,7 @@ export class VectorStoreSQLite {
       await Zotero.DB.queryAsync(`DELETE FROM ${DB_NAME}.item_models`);
       await Zotero.DB.queryAsync(`DELETE FROM ${DB_NAME}.items`);
       await Zotero.DB.queryAsync(`DELETE FROM ${DB_NAME}.orphan_items`);
+      await Zotero.DB.queryAsync(`DELETE FROM ${DB_NAME}.startup_fingerprints`);
       // Reset autoincrement counter so item_pks start from 1 again.
       // sqlite_sequence is the SQLite system table; failure here is non-fatal
       // (e.g. if AUTOINCREMENT was never used), so isolate the error.
@@ -2842,6 +3190,7 @@ export class VectorStoreSQLite {
         `SELECT COUNT(*) FROM ${DB_NAME}.chunks WHERE model_id = ?`, [modelId]));
       await Zotero.DB.queryAsync(`DELETE FROM ${DB_NAME}.chunks WHERE model_id = ?`, [modelId]);
       await Zotero.DB.queryAsync(`DELETE FROM ${DB_NAME}.item_models WHERE model_id = ?`, [modelId]);
+      await Zotero.DB.queryAsync(`DELETE FROM ${DB_NAME}.startup_fingerprints WHERE model_id = ?`, [modelId]);
     });
     this.invalidateCache();
     return deleted;

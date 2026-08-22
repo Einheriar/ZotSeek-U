@@ -15,6 +15,7 @@
 import { Logger } from '../utils/logger';
 import { SearchEngine, SearchResult } from './search-engine';
 import { TextSourceType } from './vector-store-sqlite';
+import { noteHTMLToText } from '../utils/note-text';
 
 declare const Zotero: any;
 
@@ -68,7 +69,7 @@ export interface HybridSearchOptions {
   rrfK?: number;              // Default: 60
 
   // Minimum semantic similarity to include
-  minSimilarity?: number;     // Default: 0.3
+  minSimilarity?: number;     // Default: 0.7 (multilingual E5)
 
   // Weight balance (0 = keyword only, 1 = semantic only)
   semanticWeight?: number;    // Default: 0.5 (equal weight)
@@ -89,7 +90,7 @@ const DEFAULT_OPTIONS: Required<Omit<HybridSearchOptions, 'collectionId' | 'libr
   keywordTopK: 50,
   finalTopK: 20,
   rrfK: 60,
-  minSimilarity: 0.3,
+  minSimilarity: 0.7,
   semanticWeight: 0.5,
   returnAllChunks: false,
 };
@@ -98,6 +99,13 @@ export interface QueryAnalysis {
   semanticWeight: number;
   reasoning: string;
   detectedPatterns: string[];
+}
+
+interface KeywordSearchHit {
+  itemId: number;
+  score: number;
+  textSource?: TextSourceType;
+  chunkText?: string;
 }
 
 /**
@@ -203,6 +211,8 @@ export class HybridSearchEngine {
       semanticRank: null,
       keywordRank: index + 1,
       source: 'keyword' as const,
+      textSource: r.textSource,
+      chunkText: r.chunkText,
     }));
 
     await this.populateItemMetadata(hybridResults.slice(0, opts.finalTopK));
@@ -279,8 +289,19 @@ export class HybridSearchEngine {
   private async keywordSearchQuery(
     query: string,
     opts: Required<Omit<HybridSearchOptions, 'collectionId' | 'libraryId' | 'mode'>> & HybridSearchOptions
-  ): Promise<Array<{ itemId: number; score: number }>> {
+  ): Promise<KeywordSearchHit[]> {
     try {
+      // Search ZotSeek's own stored chunks as well as Zotero metadata. This is
+      // the reliable path for exact text inside child notes, because Zotero's
+      // quicksearch does not consistently promote a matching note to its parent.
+      const indexedTextPromise = this.semanticSearch.searchIndexedText(query, {
+        topK: opts.keywordTopK,
+        libraryId: opts.libraryId,
+      }).catch((error: any) => {
+        this.logger.debug(`Indexed text search failed: ${error?.message || error}`);
+        return [];
+      });
+
       // Use Zotero's quick search
       const search = new Zotero.Search();
       search.libraryID = opts.libraryId || Zotero.Libraries.userLibraryID;
@@ -294,9 +315,9 @@ export class HybridSearchEngine {
       // This is the same search used in Zotero's search bar
       search.addCondition('quicksearch-everything', 'contains', query);
 
-      // Exclude attachments and notes - we only want regular items
+      // Attachments are not standalone search results. Notes are deliberately
+      // included and mapped to their parent bibliographic item below.
       search.addCondition('itemType', 'isNot', 'attachment');
-      search.addCondition('itemType', 'isNot', 'note');
 
       // Exclude books if preference is set
       const excludeBooks = Zotero.Prefs.get('zotseek.excludeBooks', true) ?? true;
@@ -304,7 +325,10 @@ export class HybridSearchEngine {
         search.addCondition('itemType', 'isNot', 'book');
       }
 
-      const itemIds = await search.search();
+      const itemIds = await search.search().catch((error: any) => {
+        this.logger.debug(`Zotero keyword search failed: ${error?.message || error}`);
+        return [];
+      });
 
       // Extract query components for scoring
       const queryLower = query.toLowerCase();
@@ -313,12 +337,27 @@ export class HybridSearchEngine {
       const queryYear = queryYearMatch ? queryYearMatch[0] : null;
 
       // Score each result based on match quality
-      const scoredResults: Array<{ itemId: number; score: number }> = [];
+      const scoredResults = new Map<number, KeywordSearchHit>();
 
       for (const itemId of itemIds.slice(0, opts.keywordTopK * 2)) { // Get more to allow reranking
         try {
-          const item = await Zotero.Items.getAsync(itemId);
-          if (!item) continue;
+          const matchedItem = await Zotero.Items.getAsync(itemId);
+          if (!matchedItem) continue;
+
+          const isNoteMatch = !!matchedItem.isNote?.();
+          let item = matchedItem;
+          let noteText = '';
+
+          if (isNoteMatch) {
+            const parentID = Number(matchedItem.parentID);
+            if (!Number.isFinite(parentID) || parentID <= 0) continue;
+
+            item = await Zotero.Items.getAsync(parentID);
+            if (!item?.isRegularItem?.()) continue;
+            noteText = noteHTMLToText(matchedItem.getNote?.() || '');
+          }
+
+          if (excludeBooks && item.itemType === 'book') continue;
 
           let score = 0.5; // Base score
 
@@ -338,6 +377,20 @@ export class HybridSearchEngine {
           // Exact title match bonus
           if (queryTerms.length > 0 && queryTerms.every(term => title.includes(term))) {
             score += 0.15; // All query terms in title
+          }
+
+          // Child notes are returned by Zotero quicksearch as note items. Map
+          // them back to the indexed parent and score against clean note text.
+          // This guarantees that an exact phrase in a note is not lost merely
+          // because its embedding similarity falls below the semantic cutoff.
+          if (isNoteMatch && noteText) {
+            const noteLower = noteText.toLowerCase();
+            const matchedTerms = queryTerms.filter(term => noteLower.includes(term)).length;
+            if (queryLower && noteLower.includes(queryLower)) {
+              score = Math.max(score, 1.0);
+            } else if (queryTerms.length > 0 && matchedTerms > 0) {
+              score = Math.max(score, 0.65 + 0.3 * (matchedTerms / queryTerms.length));
+            }
           }
 
           // Year matching
@@ -364,18 +417,57 @@ export class HybridSearchEngine {
           // Cap score at 1.0 (100%)
           score = Math.min(score, 1.0);
 
-          scoredResults.push({ itemId, score });
+          const hit: KeywordSearchHit = {
+            itemId: item.id,
+            score,
+            textSource: isNoteMatch ? 'note' : undefined,
+            chunkText: isNoteMatch ? noteText : undefined,
+          };
+          const previous = scoredResults.get(hit.itemId);
+          if (!previous || hit.score > previous.score) {
+            scoredResults.set(hit.itemId, hit);
+          }
         } catch (e) {
-          // If we can't get item metadata, use base score
-          scoredResults.push({ itemId, score: 0.5 });
+          this.logger.debug(`Could not score keyword result ${itemId}: ${e}`);
+        }
+      }
+
+      // Merge exact matches from the ZotSeek index. These hits already point
+      // at the parent bibliographic item and carry the matched note passage.
+      const indexedMatches = await indexedTextPromise;
+      for (const match of indexedMatches) {
+        if (match.itemId === undefined) continue;
+        try {
+          const item = await Zotero.Items.getAsync(match.itemId);
+          if (!item?.isRegularItem?.()) continue;
+          if (excludeBooks && item.itemType === 'book') continue;
+
+          if (opts.collectionId) {
+            const collection = Zotero.Collections.get(opts.collectionId);
+            if (collection?.hasItem && !collection.hasItem(match.itemId)) continue;
+          }
+
+          const hit: KeywordSearchHit = {
+            itemId: match.itemId,
+            score: match.score,
+            textSource: match.textSource,
+            chunkText: match.chunkText,
+          };
+          const previous = scoredResults.get(hit.itemId);
+          if (!previous || hit.score > previous.score) {
+            scoredResults.set(hit.itemId, hit);
+          }
+        } catch (error) {
+          this.logger.debug(`Could not merge indexed text result ${match.itemId}: ${error}`);
         }
       }
 
       // Sort by score descending
-      scoredResults.sort((a, b) => b.score - a.score);
+      const sortedResults = Array.from(scoredResults.values())
+        .sort((a, b) => b.score - a.score);
 
       // Return top K with normalized scores
-      return scoredResults.slice(0, opts.keywordTopK);
+      return sortedResults.slice(0, opts.keywordTopK);
     } catch (error) {
       this.logger.error('Keyword search failed:', error);
       return [];
@@ -399,7 +491,7 @@ export class HybridSearchEngine {
    */
   private reciprocalRankFusion(
     semanticResults: Array<{ itemId: number; score: number; textSource?: TextSourceType; chunkIndex?: number; chunkText?: string; pageNumber?: number; paragraphIndex?: number }>,
-    keywordResults: Array<{ itemId: number; score: number }>,
+    keywordResults: KeywordSearchHit[],
     opts: Required<Omit<HybridSearchOptions, 'collectionId' | 'libraryId' | 'mode'>>
   ): HybridSearchResult[] {
     const k = opts.rrfK;
@@ -430,11 +522,11 @@ export class HybridSearchEngine {
       }
     });
 
-    const keywordMap = new Map<string, { itemId: number; rank: number; score: number }>();
+    const keywordMap = new Map<string, KeywordSearchHit & { rank: number }>();
     keywordResults.forEach((r, index) => {
       const key = String(r.itemId);
       if (!keywordMap.has(key)) {
-        keywordMap.set(key, { itemId: r.itemId, rank: index + 1, score: r.score });
+        keywordMap.set(key, { ...r, rank: index + 1 });
       }
     });
 
@@ -485,9 +577,9 @@ export class HybridSearchEngine {
         semanticRank: semantic?.rank ?? null,
         keywordRank: keyword?.rank ?? null,
         source,
-        textSource: semantic?.textSource,
+        textSource: semantic?.textSource ?? keyword?.textSource,
         chunkIndex: semantic?.chunkIndex,
-        chunkText: semantic?.chunkText,
+        chunkText: semantic?.chunkText ?? keyword?.chunkText,
         pageNumber: semantic?.pageNumber,
         paragraphIndex: semantic?.paragraphIndex,
       });

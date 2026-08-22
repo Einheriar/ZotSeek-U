@@ -36,7 +36,11 @@ const TOOL_DEFINITIONS = [
     description:
       "Semantic search over the user's Zotero library using ZotSeek's local " +
       'embeddings. Returns papers ranked by relevance, with matched text ' +
-      'excerpts and page numbers where available. Each result carries ' +
+      'excerpts and page numbers where available. Each resolvable result also ' +
+      'includes structured metadata with the full creator list, date, journal ' +
+      'or book title, volume, issue, pages, DOI, and other citation fields. ' +
+      'Use these fields when the user requests a bibliography or a citation ' +
+      'style such as APA. Each result carries ' +
       'zotero:// deep links: links.select opens the item in Zotero, ' +
       'links.openPdf opens the PDF at the matched page — include them when ' +
       'citing results to the user. If your client does not render zotero:// ' +
@@ -90,6 +94,8 @@ const TOOL_DEFINITIONS = [
     description:
       'Find papers similar to a known library item, using its stored ' +
       'embeddings. Identify the item by its 8-character Zotero item key. ' +
+      'Each resolvable result includes structured bibliographic metadata for ' +
+      'client-side citation formatting. ' +
       'Results carry zotero:// deep links (links.select / links.openPdf; ' +
       'use the links.selectHttp / links.openPdfHttp variants when your ' +
       'client only linkifies http URLs).',

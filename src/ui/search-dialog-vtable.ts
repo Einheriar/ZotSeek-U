@@ -12,6 +12,7 @@ import { ZoteroAPI } from '../utils/zotero-api';
 import { Logger } from '../utils/logger';
 import { getZotero } from '../utils/zotero-helper';
 import { getString } from '../utils/locale';
+import { isValidSearchQuery } from '../utils/query-validation';
 import {
   addItemsToCollection as sharedAddItemsToCollection,
   populateCollectionMenu as sharedPopulateCollectionMenu,
@@ -36,7 +37,6 @@ export class ZotSeekDialogVTable {
   private searchTimeout: number | null = null;
   private lastQuery: string = '';
   private autoSearchDelay: number = 500; // milliseconds to wait after typing stops
-  private minQueryLength: number = 3; // minimum characters before auto-search triggers
 
   // Hybrid search
   private hybridSearch: HybridSearchEngine;
@@ -50,8 +50,8 @@ export class ZotSeekDialogVTable {
   // Results granularity: 'section' shows aggregated by section, 'location' shows exact page/paragraph
   private granularity: 'section' | 'location' = 'section';
 
-  // Indexing mode: 'abstract' or 'full' - affects whether granularity toggle is shown
-  private indexingMode: 'abstract' | 'full' = 'abstract';
+  // Indexing mode affects whether the page/paragraph granularity toggle is shown.
+  private indexingMode: 'abstract' | 'notes' | 'full' = 'abstract';
 
   // Item ID to exclude from results (e.g., the paper being read when using "Find Related Papers")
   private excludeItemId: number | undefined = undefined;
@@ -99,7 +99,7 @@ export class ZotSeekDialogVTable {
         // Load indexing mode to determine if granularity toggle should be shown
         const indexMode = Z.Prefs.get('extensions.zotero.zotseek.indexingMode', true);
         this.logger.info(`Loaded indexingMode preference: "${indexMode}" (type: ${typeof indexMode})`);
-        if (indexMode === 'abstract' || indexMode === 'full') {
+        if (indexMode === 'abstract' || indexMode === 'notes' || indexMode === 'full') {
           this.indexingMode = indexMode;
         } else {
           // Default to showing the toggle (full mode) if preference is unclear
@@ -252,10 +252,12 @@ export class ZotSeekDialogVTable {
       const locationRadio = doc.getElementById('granularity-location') as HTMLInputElement;
 
       if (granularityRow) {
-        // Always show granularity toggle - it will just show "—" for location if no page data
-        // This lets users see the option exists and understand why results might differ
-        (granularityRow as HTMLElement).style.display = '';
-        this.logger.info(`Granularity row shown (indexingMode="${this.indexingMode}")`);
+        const showGranularity = this.indexingMode === 'full';
+        (granularityRow as HTMLElement).style.display = showGranularity ? '' : 'none';
+        if (!showGranularity) {
+          this.granularity = 'section';
+        }
+        this.logger.info(`Granularity row ${showGranularity ? 'shown' : 'hidden'} (indexingMode="${this.indexingMode}")`);
       } else {
         this.logger.warn('granularity-row element not found!');
       }
@@ -339,10 +341,15 @@ export class ZotSeekDialogVTable {
     if (!this.window || this.isSearching) return;
     const doc = this.window.document;
 
-    const activeQueries = this.getActiveQueries();
+    const enteredQueries = this.getEnteredQueries();
+    const activeQueries = enteredQueries.filter(isValidSearchQuery);
 
-    if (activeQueries.length === 0) {
+    if (enteredQueries.length === 0) {
       this.setStatus('');
+      return;
+    }
+    if (activeQueries.length === 0) {
+      this.setStatus(getString('search-queryTooShort'));
       return;
     }
 
@@ -659,10 +666,11 @@ export class ZotSeekDialogVTable {
       this.searchTimeout = null;
     }
 
-    const activeQueries = this.getActiveQueries();
+    const enteredQueries = this.getEnteredQueries();
+    const activeQueries = enteredQueries.filter(isValidSearchQuery);
 
     // Don't search if no queries have content
-    if (activeQueries.length === 0) {
+    if (enteredQueries.length === 0) {
       this.setStatus('');
       this.rawResults = [];
       this.displayedResults = [];
@@ -673,10 +681,14 @@ export class ZotSeekDialogVTable {
       return;
     }
 
-    // Check minimum query length (at least one query should meet the minimum)
-    const hasValidQuery = activeQueries.some(q => q.length >= this.minQueryLength);
-    if (!hasValidQuery) {
-      this.setStatus(`Type at least ${this.minQueryLength} characters...`);
+    if (activeQueries.length === 0) {
+      this.setStatus(getString('search-queryTooShort'));
+      this.rawResults = [];
+      this.displayedResults = [];
+      this.setSaveCollectionButtonEnabled(false);
+      this.enrichedData.clear();
+      this.resultsTable?.setResults([]);
+      this.lastQuery = '';
       return;
     }
 
@@ -711,6 +723,11 @@ export class ZotSeekDialogVTable {
    * Get all active queries (non-empty, from visible fields)
    */
   private getActiveQueries(): string[] {
+    return this.getEnteredQueries().filter(isValidSearchQuery);
+  }
+
+  /** Get all non-empty visible query fields before length validation. */
+  private getEnteredQueries(): string[] {
     const queries: string[] = [];
     const doc = this.window?.document;
     if (!doc) return queries;
@@ -718,7 +735,7 @@ export class ZotSeekDialogVTable {
     for (let i = 1; i <= this.queryCount; i++) {
       const input = doc.getElementById(`zotseek-query-${i}`) as HTMLInputElement;
       const value = input?.value?.trim() || '';
-      if (value.length >= this.minQueryLength) {
+      if (value) {
         queries.push(value);
       }
     }

@@ -8,6 +8,7 @@ const isWatch = args.includes('--watch');
 
 const buildDir = path.resolve(__dirname, '../build');
 const srcDir = path.resolve(__dirname, '../src');
+const bundledModelPath = path.join('Xenova', 'multilingual-e5-base');
 
 // Ensure build directory exists
 if (!fs.existsSync(buildDir)) {
@@ -23,17 +24,30 @@ function copyStaticFiles() {
     const destPath = path.resolve(buildDir, dir);
 
     if (fs.existsSync(srcPath)) {
-      fs.cpSync(srcPath, destPath, { recursive: true });
+      const modelsRoot = path.resolve(srcPath, 'models');
+      fs.cpSync(srcPath, destPath, {
+        recursive: true,
+        filter: dir === 'content'
+          ? source => {
+              const resolved = path.resolve(source);
+              return resolved !== modelsRoot && !resolved.startsWith(modelsRoot + path.sep);
+            }
+          : undefined,
+      });
       console.log(`Copied ${dir}/`);
 
       // Special handling for models directory
       if (dir === 'content') {
-        const modelsPath = path.resolve(srcPath, 'models');
-        if (fs.existsSync(modelsPath)) {
-          const destModelsPath = path.resolve(destPath, 'models');
-          fs.cpSync(modelsPath, destModelsPath, { recursive: true });
-          console.log('  - Copied bundled model files');
+        const modelSource = path.resolve(modelsRoot, bundledModelPath);
+        const destModelsPath = path.resolve(destPath, 'models');
+        const modelDestination = path.resolve(destModelsPath, bundledModelPath);
+        fs.rmSync(destModelsPath, { recursive: true, force: true });
+        if (!fs.existsSync(modelSource)) {
+          throw new Error(`Bundled model files missing: ${modelSource}`);
         }
+        fs.mkdirSync(path.dirname(modelDestination), { recursive: true });
+        fs.cpSync(modelSource, modelDestination, { recursive: true });
+        console.log(`  - Copied bundled model: ${bundledModelPath}`);
       }
     }
   }

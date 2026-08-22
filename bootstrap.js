@@ -12,6 +12,22 @@ async function startup({ id, version, resourceURI, rootURI }, reason) {
   await Zotero.initializationPromise;
   Zotero.debug("[ZotSeek Bootstrap] Zotero initialized");
 
+  // Zotero requires an update_url in plugin manifests. Keep the known-good
+  // HTTPS manifest for installation, but explicitly disable background
+  // updates for this local fork so an upstream release cannot replace it.
+  try {
+    const { AddonManager } = ChromeUtils.importESModule(
+      "resource://gre/modules/AddonManager.sys.mjs"
+    );
+    const addon = await AddonManager.getAddonByID(id);
+    if (addon) {
+      addon.applyBackgroundUpdates = AddonManager.AUTOUPDATE_DISABLE;
+      Zotero.debug("[ZotSeek Bootstrap] Background add-on updates disabled");
+    }
+  } catch (e) {
+    Zotero.debug("[ZotSeek Bootstrap] Could not disable background updates: " + e);
+  }
+
   // Register chrome content and locale
   Zotero.debug("[ZotSeek Bootstrap] Registering chrome content...");
   var aomStartup = Components.classes[

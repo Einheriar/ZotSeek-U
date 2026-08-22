@@ -12,7 +12,7 @@
 import { vectorStoreSQLite } from './vector-store-sqlite';
 
 // Re-export types from SQLite store
-export type { PaperEmbedding, VectorStoreStats, ItemIndexStatus } from './vector-store-sqlite';
+export type { PaperEmbedding, VectorStoreStats, ItemIndexStatus, IndexedTextMatch, StartupFingerprint } from './vector-store-sqlite';
 
 /**
  * Storage interface that the SQLite backend implements
@@ -22,6 +22,7 @@ export interface IVectorStore {
 
   // Identity-keyed methods (preferred)
   putBatch(embeddings: import('./vector-store-sqlite').PaperEmbedding[]): Promise<void>;
+  replaceItemModelChunks(embeddings: import('./vector-store-sqlite').PaperEmbedding[]): Promise<void>;
   put(embedding: import('./vector-store-sqlite').PaperEmbedding): Promise<void>;
   getByIdentity(libraryKey: string, itemKey: string): Promise<import('./vector-store-sqlite').PaperEmbedding | undefined>;
   getItemChunksByIdentity(libraryKey: string, itemKey: string): Promise<import('./vector-store-sqlite').PaperEmbedding[]>;
@@ -30,6 +31,10 @@ export interface IVectorStore {
   isIndexedByIdentity(libraryKey: string, itemKey: string): Promise<boolean>;
   needsReindexByIdentity(libraryKey: string, itemKey: string, contentHash: string): Promise<boolean>;
   getChunkCountByIdentity(libraryKey: string, itemKey: string): Promise<number>;
+  getIndexedIdentities(modelId?: string): Promise<Array<{ libraryKey: string; itemKey: string }>>;
+  getStartupFingerprint(libraryKey: string, itemKey: string, modelId?: string): Promise<import('./vector-store-sqlite').StartupFingerprint | null>;
+  setStartupFingerprint(fingerprint: import('./vector-store-sqlite').StartupFingerprint): Promise<void>;
+  getChunkTextsBySources(libraryKey: string, itemKey: string, sources: import('./vector-store-sqlite').TextSourceType[], modelId?: string): Promise<string[]>;
   getIndexStatusByIdentity(identities: Array<{libraryKey: string; itemKey: string}>): Promise<Map<string, import('./vector-store-sqlite').ItemIndexStatus>>;
   getByLibraryKey(libraryKey: string): Promise<import('./vector-store-sqlite').PaperEmbedding[]>;
 
@@ -42,6 +47,7 @@ export interface IVectorStore {
   needsReindex(itemId: number, contentHash: string): Promise<boolean>;
   getIndexStatusMap(itemIds: number[]): Promise<Map<number, import('./vector-store-sqlite').ItemIndexStatus>>;
   getByLibrary(libraryId: number): Promise<import('./vector-store-sqlite').PaperEmbedding[]>;
+  searchText(query: string, options?: { limit?: number; libraryId?: number }): Promise<import('./vector-store-sqlite').IndexedTextMatch[]>;
 
   // Model-scoped helpers
   getItemsMissingModel(modelId: string): Promise<Array<{ libraryKey: string; itemKey: string }>>;

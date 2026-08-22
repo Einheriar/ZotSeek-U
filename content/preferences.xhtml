@@ -279,6 +279,7 @@
   <menulist id="zotseek-pref-indexingMode" native="true" style="display: none;">
     <menupopup>
       <menuitem label="Abstract only (faster)" value="abstract" data-l10n-id="zotseek-pref-abstractOnlyMenu" />
+      <menuitem label="Metadata + notes" value="notes" data-l10n-id="zotseek-pref-notesMenu" />
       <menuitem label="Full paper (more thorough)" value="full" data-l10n-id="zotseek-pref-fullPaperMenu" />
     </menupopup>
   </menulist>
@@ -300,6 +301,22 @@
       </html:div>
     </html:div>
 
+    <!-- Metadata + Notes Option -->
+    <html:div id="zotseek-mode-notes-card"
+              class="zotseek-mode-card-unselected"
+              style="flex: 1; border-radius: 8px; padding: 12px; cursor: pointer; border-width: 2px; border-style: solid;"
+              onclick="document.getElementById('zotseek-pref-indexingMode').value = 'notes'; document.getElementById('zotseek-pref-indexingMode').dispatchEvent(new Event('command')); Zotero.ZotSeek?.hooks?.onPrefsEvent?.('updateModeCards');">
+      <html:div style="display: flex; align-items: center; margin-bottom: 6px;">
+        <html:span id="zotseek-mode-notes-radio" style="width: 16px; height: 16px; border: 2px solid var(--zotseek-text-tertiary); border-radius: 50%; margin-right: 8px; display: flex; align-items: center; justify-content: center;">
+        </html:span>
+        <html:strong data-l10n-id="zotseek-pref-notes" style="font-size: 13px; color: var(--zotseek-text-primary);">Metadata + notes</html:strong>
+      </html:div>
+      <html:div style="font-size: 11px; color: var(--zotseek-text-secondary); line-height: 1.4;">
+        <html:div data-l10n-id="zotseek-pref-notesSpeed" style="color: var(--zotseek-green); font-weight: 500; margin-bottom: 2px;">Focused • no PDF processing</html:div>
+        <html:span data-l10n-id="zotseek-pref-notesDesc">Indexes title, abstract, tags, and child notes.</html:span>
+      </html:div>
+    </html:div>
+
     <!-- Full Paper Option -->
     <html:div id="zotseek-mode-full-card"
               class="zotseek-mode-card-selected"
@@ -312,39 +329,32 @@
         <html:strong data-l10n-id="zotseek-pref-fullPaper" style="font-size: 13px; color: var(--zotseek-text-primary);">Full paper</html:strong>
       </html:div>
       <html:div style="font-size: 11px; color: var(--zotseek-text-secondary); line-height: 1.4;">
-        <html:div data-l10n-id="zotseek-pref-fullSpeed" style="color: var(--zotseek-blue); font-weight: 500; margin-bottom: 2px;">Thorough • ~1-2 chunks per page</html:div>
-        <html:span data-l10n-id="zotseek-pref-fullDesc">Indexes full PDF content with page numbers. Finds specific passages.</html:span>
+        <html:div data-l10n-id="zotseek-pref-fullSpeed" style="color: var(--zotseek-blue); font-weight: 500; margin-bottom: 2px;">Thorough • notes + ~1-2 chunks per PDF page</html:div>
+        <html:span data-l10n-id="zotseek-pref-fullDesc">Indexes title, abstract, tags, child notes, and full PDF content with page numbers.</html:span>
       </html:div>
     </html:div>
   </html:div>
 
 </groupbox>
 
-<!-- Auto-Indexing -->
+<!-- Startup index reconciliation -->
 <groupbox>
-  <label><html:h2 data-l10n-id="zotseek-pref-autoIndexing">Auto-Indexing</html:h2></label>
+  <label><html:h2 data-l10n-id="zotseek-pref-autoIndexing">Startup Index Sync</html:h2></label>
 
   <checkbox id="zotseek-pref-autoIndex"
-            label="Automatically index new items"
+            label="Check for index changes once when Zotero starts"
             data-l10n-id="zotseek-pref-autoIndexLabel"
             native="true"
             checked="false" />
   <html:p style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 4px 0 0 24px;">
-    <html:span data-l10n-id="zotseek-pref-autoIndexDesc">New papers with PDFs are indexed in the background when added to your library.</html:span>
+    <html:span data-l10n-id="zotseek-pref-autoIndexDesc">Checks once after startup, then remains idle. ZotSeek does not monitor notes while you edit.</html:span>
   </html:p>
 
-  <html:div id="zotseek-autoindex-delay-row" style="margin: 8px 0 0 24px; display: flex; align-items: center; gap: 8px;">
-    <html:label data-l10n-id="zotseek-pref-delayLabel" for="zotseek-pref-autoIndexDelay" style="color: var(--zotseek-text-primary); font-size: 12px;">Delay before indexing:</html:label>
-    <html:input type="number"
-                id="zotseek-pref-autoIndexDelay"
-                class="zotseek-input"
-                min="1" max="300" step="5"
-                value="10"
-                style="width: 60px; padding: 4px 8px; border-radius: 4px; border-width: 1px; border-style: solid;" />
-    <html:span data-l10n-id="zotseek-pref-seconds" style="color: var(--zotseek-text-secondary); font-size: 12px;">seconds</html:span>
-  </html:div>
-  <html:p style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 4px 0 0 24px;">
-    <html:span data-l10n-id="zotseek-pref-delayDesc">Wait this long after the last item is added before starting auto-indexing.</html:span>
+  <html:p style="margin: 8px 0 0 24px;">
+    <button id="zotseek-pref-check-now"
+            label="Check for Updates Now"
+            data-l10n-id="zotseek-pref-checkNow"
+            native="true" />
   </html:p>
 
   <html:div style="margin: 12px 0 0 24px; display: flex; align-items: center; gap: 8px;">
@@ -357,7 +367,7 @@
     </menulist>
   </html:div>
   <html:p style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 4px 0 0 24px;">
-    <html:span data-l10n-id="zotseek-pref-indexScopeDesc">Choose which libraries are included when updating or auto-indexing the index.</html:span>
+    <html:span data-l10n-id="zotseek-pref-indexScopeDesc">Choose which libraries are included in startup and manual update checks.</html:span>
   </html:p>
 </groupbox>
 

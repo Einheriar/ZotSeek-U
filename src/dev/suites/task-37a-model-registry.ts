@@ -14,7 +14,7 @@ selfTest.register('task-37a-model-registry', async () => {
     }),
     await scenario('only nomic is bundled', async () => {
       const bundled = MODELS.filter(m => m.bundled).map(m => m.id);
-      assertEq(bundled.join(','), 'nomic-embed-text-v1.5');
+      assertEq(bundled.join(','), 'multilingual-e5-base');
     }),
     await scenario('dimensions are correct per model', async () => {
       assertEq(getModel('nomic-embed-text-v1.5')!.dimensions, 768);

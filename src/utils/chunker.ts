@@ -4,15 +4,18 @@
  * Philosophy: With 8K context, chunk by SEMANTIC PURPOSE, not token limits.
  * This improves retrieval quality by creating focused embeddings.
  * 
- * Two clear indexing modes:
+ * Three indexing modes:
  * - abstract: Title + Abstract only (fast, good for most uses)
- * - full: Title + Abstract + PDF sections (thorough, for deep research)
+ * - notes: Title + Abstract + Tags + Child Notes (no PDF processing)
+ * - full: Title + Abstract + Tags + Child Notes + PDF sections
  */
+
+export type ChunkType = 'summary' | 'methods' | 'findings' | 'content' | 'note';
 
 export interface Chunk {
   index: number;
   text: string;
-  type: 'summary' | 'methods' | 'findings' | 'content';
+  type: ChunkType;
   tokenCount?: number;
 
   // Passage-level location (Phase 2: evidence linking)
@@ -50,8 +53,8 @@ export interface ChunkResult {
   pagesTotal: number;      // Total pages in the source document (0 if unknown)
 }
 
-// Two clear modes
-export type IndexingMode = 'abstract' | 'full';
+// User-selectable indexing modes
+export type IndexingMode = 'abstract' | 'notes' | 'full';
 
 // Default options for nomic-embed-v1.5 (8192 token limit)
 // PERFORMANCE: Smaller chunks embed MUCH faster due to O(n²) attention
@@ -59,7 +62,7 @@ export type IndexingMode = 'abstract' | 'full';
 // - 500 tokens: ~0.3-0.5 seconds per chunk (very fast!)
 // With paragraph-level chunking, we need many more chunks
 const DEFAULT_OPTIONS: Omit<Required<ChunkOptions>, 'totalPages'> = {
-  maxTokens: 2000,    // ~6000 chars - larger chunks for better context capture on Firefox 140+
+  maxTokens: 450,     // Stay below multilingual E5 Base's 512-token limit
   maxChunks: 100,     // Allow up to 100 paragraphs per paper (covers most papers)
   maxChars: 8000,     // Must match embedding worker MAX_CHARS (hard character ceiling)
 };
@@ -102,26 +105,30 @@ function splitChunkByCharLimit(chunk: Chunk, maxChars: number): Chunk[] {
     return [{ ...chunk, text: chunk.text.substring(0, maxChars) }];
   }
 
-  const sentences = body.match(/[^.!?]+[.!?]+/g) || [body];
+  const sentences = body.match(/[^.!?。！？]+[.!?。！？]+|[^.!?。！？]+$/g) || [body];
   const result: Chunk[] = [];
   let currentText = '';
 
   for (const sentence of sentences) {
-    // If a single sentence exceeds the limit, hard-truncate it
-    const cappedSentence = sentence.length > availableChars
-      ? sentence.substring(0, availableChars)
-      : sentence;
+    // Preserve an oversized sentence by slicing it into multiple pieces rather
+    // than truncating its tail. This matters for long CJK note paragraphs.
+    const pieces: string[] = [];
+    for (let offset = 0; offset < sentence.length; offset += availableChars) {
+      pieces.push(sentence.substring(offset, offset + availableChars));
+    }
 
-    if (currentText.length + cappedSentence.length > availableChars && currentText.trim()) {
-      result.push({
-        ...chunk,
-        index: 0, // Re-indexed by caller
-        text: titlePrefix ? `${titlePrefix}\n\n${currentText.trim()}` : currentText.trim(),
-        tokenCount: estimateTokens(currentText),
-      });
-      currentText = cappedSentence;
-    } else {
-      currentText += cappedSentence;
+    for (const piece of pieces) {
+      if (currentText.length + piece.length > availableChars && currentText.trim()) {
+        result.push({
+          ...chunk,
+          index: 0, // Re-indexed by caller
+          text: titlePrefix ? `${titlePrefix}\n\n${currentText.trim()}` : currentText.trim(),
+          tokenCount: estimateTokens(currentText),
+        });
+        currentText = piece;
+      } else {
+        currentText += piece;
+      }
     }
   }
 
@@ -321,10 +328,11 @@ function splitTextIntoChunks(
   text: string,
   titlePrefix: string,
   maxTokens: number,
-  type: 'methods' | 'findings' | 'content',
+  type: Exclude<ChunkType, 'summary'>,
   sourceStartOffset: number = 0,
   paragraphStartIndex: number = 0,
-  pageContext?: PageEstimationContext
+  pageContext?: PageEstimationContext,
+  minParagraphChars: number = 50
 ): Chunk[] {
   const chunks: Chunk[] = [];
   const titleTokens = estimateTokens(titlePrefix) + 10; // Buffer for newlines
@@ -354,7 +362,7 @@ function splitTextIntoChunks(
   const paragraphs: Array<{ text: string; start: number; end: number }> = [];
   let searchPos = 0;
   for (const p of paragraphSplits) {
-    if (p.trim().length > 50) {
+    if (p.trim().length >= minParagraphChars) {
       const idx = text.indexOf(p, searchPos);
       const start = idx >= 0 ? idx : searchPos;
       paragraphs.push({ text: p, start, end: start + p.length });
@@ -402,7 +410,7 @@ function splitTextIntoChunks(
       chunkParagraphIdx = runningParagraphIdx;
 
       // Split paragraph by sentences
-      const sentences = para.text.match(/[^.!?]+[.!?]+/g) || [para.text];
+      const sentences = para.text.match(/[^.!?。！？]+[.!?。！？]+|[^.!?。！？]+$/g) || [para.text];
       for (const sentence of sentences) {
         const sentTokens = estimateTokens(sentence);
         if (currentTokens + sentTokens > availableTokens && currentChunk.trim()) {
@@ -528,7 +536,7 @@ export function chunkDocumentEx(
   // Purpose: "What is this paper about?"
   // Note: Summary chunks don't have fulltext location (they come from metadata)
   // ═══════════════════════════════════════════════════════════════════════
-  const summaryText = abstract && abstract.length > 50
+  const summaryText = abstract && abstract.trim().length > 0
     ? `${titlePrefix}\n\n${abstract}`
     : titlePrefix;
 
@@ -544,8 +552,9 @@ export function chunkDocumentEx(
     endChar: undefined,
   });
   
-  // For abstract mode, we're done
-  if (mode === 'abstract') {
+  // Abstract and Notes modes do not process PDF full text. Notes are appended
+  // by TextExtractor so note source boundaries remain explicit.
+  if (mode !== 'full') {
     const enforced = enforceCharLimitEx(chunks, opts.maxChars, opts.maxChunks);
     return {
       chunks: enforced.chunks,
@@ -679,6 +688,171 @@ export function chunkDocumentEx(
 }
 
 /**
+ * Split normalized child-note texts into chunks that belong to their parent
+ * bibliographic item. Note chunks intentionally carry no PDF location data.
+ */
+export function chunkNoteTexts(
+  title: string,
+  noteTexts: string[],
+  options: ChunkOptions = {},
+  startIndex: number = 0
+): { chunks: Chunk[]; wasTruncated: boolean } {
+  const opts = { ...DEFAULT_OPTIONS, ...options };
+  const availableSlots = Math.max(0, opts.maxChunks - startIndex);
+  const titlePrefix = title.length > 200 ? `${title.substring(0, 200)}...` : title;
+  const rawChunks: Chunk[] = [];
+  let wasTruncated = false;
+
+  for (let noteIndex = 0; noteIndex < noteTexts.length; noteIndex++) {
+    const noteText = noteTexts[noteIndex]?.trim();
+    if (!noteText) continue;
+
+    if (rawChunks.length >= availableSlots) {
+      wasTruncated = true;
+      break;
+    }
+
+    const noteChunks = splitTextIntoChunks(
+      noteText,
+      titlePrefix,
+      opts.maxTokens,
+      'note',
+      0,
+      0,
+      undefined,
+      1
+    );
+
+    for (let chunkIndex = 0; chunkIndex < noteChunks.length; chunkIndex++) {
+      if (rawChunks.length >= availableSlots) {
+        wasTruncated = true;
+        break;
+      }
+      const chunk = noteChunks[chunkIndex];
+      rawChunks.push({
+        ...chunk,
+        index: rawChunks.length,
+        pageNumber: undefined,
+        paragraphIndex: undefined,
+        startChar: undefined,
+        endChar: undefined,
+      });
+    }
+
+    if (wasTruncated) break;
+  }
+
+  const enforced = enforceCharLimitEx(rawChunks, opts.maxChars, availableSlots);
+  enforced.chunks.forEach((chunk, index) => {
+    chunk.index = startIndex + index;
+    chunk.pageNumber = undefined;
+    chunk.paragraphIndex = undefined;
+    chunk.startChar = undefined;
+    chunk.endChar = undefined;
+  });
+
+  return {
+    chunks: enforced.chunks,
+    wasTruncated: wasTruncated || enforced.truncatedByCharLimit,
+  };
+}
+
+export interface FullModeChunkSources {
+  summaryChunks: Chunk[];
+  noteChunks: Chunk[];
+  pdfChunks: Chunk[];
+  notesWereTruncated?: boolean;
+  pdfWasTruncated?: boolean;
+  pagesTotal?: number;
+}
+
+/**
+ * Combine metadata, note, and PDF chunks under one per-item chunk limit.
+ * Metadata is kept first. Remaining capacity is shared between notes and PDF
+ * so that a long source cannot completely crowd out the other source.
+ */
+export function combineFullModeChunks(
+  sources: FullModeChunkSources,
+  options: ChunkOptions = {}
+): ChunkResult {
+  const opts = { ...DEFAULT_OPTIONS, ...options };
+  const maxChunks = Math.max(1, opts.maxChunks);
+  const summaryChunks = sources.summaryChunks.slice(0, maxChunks);
+  const remainingSlots = Math.max(0, maxChunks - summaryChunks.length);
+
+  let noteCount = 0;
+  let pdfCount = 0;
+
+  if (sources.noteChunks.length > 0 && sources.pdfChunks.length > 0) {
+    const noteQuota = Math.ceil(remainingSlots / 2);
+    const pdfQuota = remainingSlots - noteQuota;
+    noteCount = Math.min(noteQuota, sources.noteChunks.length);
+    pdfCount = Math.min(pdfQuota, sources.pdfChunks.length);
+
+    let unusedSlots = remainingSlots - noteCount - pdfCount;
+    if (unusedSlots > 0) {
+      const extraNotes = Math.min(
+        unusedSlots,
+        sources.noteChunks.length - noteCount
+      );
+      noteCount += extraNotes;
+      unusedSlots -= extraNotes;
+    }
+    if (unusedSlots > 0) {
+      pdfCount += Math.min(
+        unusedSlots,
+        sources.pdfChunks.length - pdfCount
+      );
+    }
+  } else if (sources.noteChunks.length > 0) {
+    noteCount = Math.min(remainingSlots, sources.noteChunks.length);
+  } else if (sources.pdfChunks.length > 0) {
+    pdfCount = Math.min(remainingSlots, sources.pdfChunks.length);
+  }
+
+  const selected: Chunk[] = [
+    ...summaryChunks.map(chunk => ({
+      ...chunk,
+      pageNumber: undefined,
+      paragraphIndex: undefined,
+      startChar: undefined,
+      endChar: undefined,
+    })),
+    ...sources.noteChunks.slice(0, noteCount).map(chunk => ({
+      ...chunk,
+      pageNumber: undefined,
+      paragraphIndex: undefined,
+      startChar: undefined,
+      endChar: undefined,
+    })),
+    ...sources.pdfChunks.slice(0, pdfCount).map(chunk => ({ ...chunk })),
+  ];
+
+  selected.forEach((chunk, index) => {
+    chunk.index = index;
+  });
+
+  const indexedPages = new Set<number>();
+  for (const chunk of selected) {
+    if (chunk.type !== 'summary' && chunk.type !== 'note' && chunk.pageNumber != null) {
+      indexedPages.add(chunk.pageNumber);
+    }
+  }
+
+  return {
+    chunks: selected,
+    wasTruncated:
+      summaryChunks.length < sources.summaryChunks.length ||
+      noteCount < sources.noteChunks.length ||
+      pdfCount < sources.pdfChunks.length ||
+      !!sources.notesWereTruncated ||
+      !!sources.pdfWasTruncated,
+    pagesIndexed: indexedPages.size,
+    pagesTotal: sources.pagesTotal || 0,
+  };
+}
+
+/**
  * Get chunk options from Zotero preferences
  */
 export function getChunkOptionsFromPrefs(Zotero: any): ChunkOptions {
@@ -697,7 +871,8 @@ export function getChunkOptionsFromPrefs(Zotero: any): ChunkOptions {
  */
 export function getIndexingMode(Zotero: any): IndexingMode {
   const mode = Zotero?.Prefs?.get('zotseek.indexingMode', true);
-  return mode === 'full' ? 'full' : 'abstract';
+  if (mode === 'full' || mode === 'notes') return mode;
+  return 'abstract';
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -868,7 +1043,7 @@ export function chunkDocumentWithPagesEx(
   // ═══════════════════════════════════════════════════════════════════════
   // CHUNK 1: Summary (always included)
   // ═══════════════════════════════════════════════════════════════════════
-  const summaryText = abstract && abstract.length > 50
+  const summaryText = abstract && abstract.trim().length > 0
     ? `${titlePrefix}\n\n${abstract}`
     : titlePrefix;
 

@@ -109,6 +109,9 @@ selfTest.register('mcp-server', async () => {
       const r = payload.results[0];
       assertTrue(/^[A-Z0-9]{8}$/.test(r.itemKey), 'itemKey looks like a Zotero key');
       assertTrue(typeof r.score === 'number', 'score is a number');
+      assertTrue(!!r.metadata, 'resolved search result includes bibliographic metadata');
+      assertEq(r.metadata.title, r.title, 'metadata title matches result title');
+      assertTrue(Array.isArray(r.metadata.creators), 'metadata creators is an array');
       assertTrue(
         !r.links || r.links.select.startsWith('zotero://select/'),
         'links.select is a zotero:// deep link'

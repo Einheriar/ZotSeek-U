@@ -36,6 +36,39 @@ export interface ResultLinks {
   openPdfHttp?: string;
 }
 
+export interface BibliographicCreator {
+  creatorType: string;
+  firstName?: string;
+  lastName?: string;
+  /** Single-field creator name, used for institutions and organizations. */
+  name?: string;
+}
+
+/**
+ * Structured Zotero metadata needed by MCP clients to format citations.
+ * Only populated fields are returned; no citation style is imposed here.
+ */
+export interface BibliographicMetadata {
+  itemType?: string;
+  title: string;
+  creators: BibliographicCreator[];
+  date?: string;
+  year?: number;
+  publicationTitle?: string;
+  bookTitle?: string;
+  proceedingsTitle?: string;
+  volume?: string;
+  issue?: string;
+  pages?: string;
+  edition?: string;
+  publisher?: string;
+  place?: string;
+  DOI?: string;
+  ISBN?: string;
+  ISSN?: string;
+  url?: string;
+}
+
 export interface ToolResultItem {
   itemKey: string;
   libraryKey: string | null; // 'user' | 'group:<id>' | null when unresolvable
@@ -46,6 +79,8 @@ export interface ToolResultItem {
   source?: 'both' | 'semantic' | 'keyword';
   matchedChunk: MatchedChunk | null;
   links?: ResultLinks;
+  /** Full bibliographic fields from the live Zotero item, when resolvable. */
+  metadata?: BibliographicMetadata;
 }
 
 export interface SearchToolArgs {
@@ -122,6 +157,91 @@ function libraryKeyForItemId(itemId: number | undefined): string | null {
   }
 }
 
+function cleanField(value: any): string | undefined {
+  if (value === undefined || value === null || value === false) return undefined;
+  const text = String(value).trim();
+  return text || undefined;
+}
+
+function readItemField(item: any, field: string): string | undefined {
+  try {
+    return cleanField(item.getField(field));
+  } catch {
+    return undefined;
+  }
+}
+
+function yearFromDate(date: string | undefined): number | undefined {
+  const match = date?.match(/\b(\d{4})\b/);
+  return match ? Number(match[1]) : undefined;
+}
+
+function getLocalItem(itemId: number | undefined): any | undefined {
+  if (!itemId) return undefined;
+  try {
+    return Zotero.Items.get(itemId) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Read citation-relevant fields from Zotero rather than the embedding DB. */
+function buildBibliographicMetadata(item: any): BibliographicMetadata | undefined {
+  if (!item) return undefined;
+
+  const title = readItemField(item, 'title') || 'Untitled';
+  const date = readItemField(item, 'date');
+  const creators: BibliographicCreator[] = [];
+  try {
+    for (const creator of item.getCreators?.() || []) {
+      let creatorType = cleanField(creator.creatorType);
+      if (!creatorType && creator.creatorTypeID !== undefined) {
+        try {
+          creatorType = cleanField(Zotero.CreatorTypes.getName(creator.creatorTypeID));
+        } catch {
+          // Keep an empty creator type only as a last resort.
+        }
+      }
+      creators.push({
+        creatorType: creatorType || 'author',
+        firstName: cleanField(creator.firstName),
+        lastName: cleanField(creator.lastName),
+        name: cleanField(creator.name),
+      });
+    }
+  } catch {
+    // Metadata is still useful when an unusual item has no readable creators.
+  }
+
+  let itemType: string | undefined;
+  try {
+    itemType = cleanField(Zotero.ItemTypes.getName(item.itemTypeID));
+  } catch {
+    itemType = cleanField(item.itemType);
+  }
+
+  return {
+    itemType,
+    title,
+    creators,
+    date,
+    year: yearFromDate(date),
+    publicationTitle: readItemField(item, 'publicationTitle'),
+    bookTitle: readItemField(item, 'bookTitle'),
+    proceedingsTitle: readItemField(item, 'proceedingsTitle'),
+    volume: readItemField(item, 'volume'),
+    issue: readItemField(item, 'issue'),
+    pages: readItemField(item, 'pages'),
+    edition: readItemField(item, 'edition'),
+    publisher: readItemField(item, 'publisher'),
+    place: readItemField(item, 'place'),
+    DOI: readItemField(item, 'DOI'),
+    ISBN: readItemField(item, 'ISBN'),
+    ISSN: readItemField(item, 'ISSN'),
+    url: readItemField(item, 'url'),
+  };
+}
+
 /**
  * zotero:// deep links for a result. `select` always works; `openPdf` is
  * added when the item has a PDF attachment, pointing at the matched page
@@ -165,29 +285,33 @@ async function buildLinks(
 
 async function mapHybridResult(r: HybridSearchResult): Promise<ToolResultItem> {
   const libraryKey = libraryKeyForItemId(r.itemId);
+  const metadata = buildBibliographicMetadata(getLocalItem(r.itemId));
   return {
     itemKey: r.itemKey,
     libraryKey,
     title: r.title,
     authors: r.creators || undefined,
-    year: r.year || undefined,
+    year: metadata?.year ?? (r.year || undefined),
     score: round3(r.rrfScore),
     source: r.source,
     matchedChunk: chunkOf(r),
     links: await buildLinks(libraryKey, r.itemKey, r.pageNumber),
+    metadata,
   };
 }
 
 async function mapSearchResult(r: SearchResult): Promise<ToolResultItem> {
+  const metadata = buildBibliographicMetadata(getLocalItem(r.itemId));
   return {
     itemKey: r.itemKey,
     libraryKey: r.libraryKey || null,
     title: r.title,
     authors: r.authors && r.authors.length ? r.authors : undefined,
-    year: r.year,
+    year: metadata?.year ?? r.year,
     score: round3(r.similarity),
     matchedChunk: chunkOf(r),
     links: await buildLinks(r.libraryKey || null, r.itemKey, r.pageNumber),
+    metadata,
   };
 }
 

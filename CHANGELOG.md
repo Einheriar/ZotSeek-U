@@ -2,6 +2,57 @@
 
 All notable changes to ZotSeek - Semantic Search for Zotero will be documented in this file.
 
+## [1.19.557] - 2026-08-21
+
+### Fixed
+- The ZotSeek item-tree column now treats a successful startup fingerprint
+  reconciliation as a valid index verification. Items whose vectorized content
+  was confirmed unchanged no longer remain permanently marked as outdated.
+- Replaced lexicographic comparison between Zotero SQL timestamps and ISO-8601
+  timestamps with explicit UTC date parsing.
+- Startup and manual reconciliation now invalidate the entire item-tree status
+  cache on completion, so `↻` changes to `✓` immediately when appropriate.
+- Unchanged fingerprints advance `checked_at` only when the parent item changed
+  since the previous verification, avoiding thousands of idle database writes.
+
+---
+
+## [1.19.556] - 2026-08-19
+
+### Changed
+- Replaced real-time Zotero item and note observers with one reconciliation pass
+  after startup. Editing notes no longer schedules timers, reads note bodies, or
+  launches embedding work.
+- Added a manual **Check for Updates Now** action that runs the same one-shot
+  reconciliation without requiring a Zotero restart.
+- Added per-model metadata, note-state, and note-content fingerprints in the
+  separate ZotSeek database (schema v10). Unchanged items skip note-body parsing.
+- On the first v10 startup, compares current normalized text with the chunks that
+  were actually embedded before establishing a baseline; unknown state is never
+  accepted blindly.
+- Note-only changes replace only note vectors. Existing abstract and PDF passage
+  vectors are carried forward without re-extracting the PDF or rerunning their
+  embeddings.
+- Missing Zotero items are removed from the index during startup reconciliation
+  instead of through a live deletion observer.
+
+---
+
+## [1.19.555] - 2026-08-19
+
+### Changed
+- Full Document indexing now includes title, abstract, tags, child notes, and PDF passages.
+- Notes and PDF passages share the per-paper chunk limit so both sources remain searchable.
+- Full mode now re-indexes parent items after note or tag changes using the existing debounce.
+- Explicitly disables background updates through Zotero's AddonManager while retaining
+  the required, install-compatible HTTPS update manifest field.
+- Narrows the declared compatibility range to the tested Zotero 9 release line.
+- MCP search and similar-item results now include structured bibliographic metadata
+  from the live Zotero item, including full creators, publication title, date,
+  volume, issue, pages, DOI, and related citation fields.
+
+---
+
 ## [1.19.0] - 2026-08-12
 
 Stable release of the local inference server support introduced in 1.19.0-beta.1

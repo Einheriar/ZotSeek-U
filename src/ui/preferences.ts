@@ -470,11 +470,10 @@ class PreferencesManager {
       maxTokens: Z.Prefs.get('zotseek.maxTokens', true) ?? 7500,
       maxChunksPerPaper: Z.Prefs.get('zotseek.maxChunksPerPaper', true) ?? 5,
       topK: Z.Prefs.get('zotseek.topK', true) ?? 20,
-      minSimilarity: Z.Prefs.get('zotseek.minSimilarityPercent', true) ?? 30,
+      minSimilarity: Z.Prefs.get('zotseek.minSimilarityPercent', true) ?? 70,
       excludeBooks: Z.Prefs.get('zotseek.excludeBooks', true) ?? true,
       excludeTag: Z.Prefs.get('zotseek.excludeTag', true) || 'zotseek-exclude',
       autoIndex: Z.Prefs.get('zotseek.autoIndex', true) ?? false,
-      autoIndexDelay: Z.Prefs.get('zotseek.autoIndexDelay', true) ?? 10,
       mcpServer: Z.Prefs.get('zotseek.mcpServer.enabled', true) ?? false,
       indexScope: Z.Prefs.get('zotseek.indexScope', true) || 'user',
     };
@@ -494,11 +493,6 @@ class PreferencesManager {
     this.setCheckboxValue('zotseek-pref-excludeBooks', prefs.excludeBooks);
     this.setCheckboxValue('zotseek-pref-autoIndex', prefs.autoIndex);
     this.setCheckboxValue('zotseek-pref-mcpServer', prefs.mcpServer);
-
-    this.setInputValue('zotseek-pref-autoIndexDelay', prefs.autoIndexDelay);
-
-    // Show/hide delay row based on auto-index state
-    this.updateAutoIndexDelayVisibility(prefs.autoIndex);
 
     // Show/hide MCP server info/warning based on pref and Zotero.Server state
     this.updateMcpServerVisibility(prefs.mcpServer);
@@ -525,13 +519,23 @@ class PreferencesManager {
 
     const currentMode = Z.Prefs.get('zotseek.indexingMode', true) || 'abstract';
 
-    // Abstract card elements
-    const abstractCard = doc.getElementById('zotseek-mode-abstract-card') as HTMLElement;
-    const abstractRadio = doc.getElementById('zotseek-mode-abstract-radio') as HTMLElement;
-
-    // Full card elements
-    const fullCard = doc.getElementById('zotseek-mode-full-card') as HTMLElement;
-    const fullRadio = doc.getElementById('zotseek-mode-full-radio') as HTMLElement;
+    const cards = [
+      {
+        mode: 'abstract',
+        card: doc.getElementById('zotseek-mode-abstract-card') as HTMLElement,
+        radio: doc.getElementById('zotseek-mode-abstract-radio') as HTMLElement,
+      },
+      {
+        mode: 'notes',
+        card: doc.getElementById('zotseek-mode-notes-card') as HTMLElement,
+        radio: doc.getElementById('zotseek-mode-notes-radio') as HTMLElement,
+      },
+      {
+        mode: 'full',
+        card: doc.getElementById('zotseek-mode-full-card') as HTMLElement,
+        radio: doc.getElementById('zotseek-mode-full-radio') as HTMLElement,
+      },
+    ];
 
     // Helper to update radio dot (uses CSS variable for theme support)
     const updateRadio = (radio: HTMLElement | null, selected: boolean) => {
@@ -557,22 +561,10 @@ class PreferencesManager {
       card.classList.add(selected ? 'zotseek-mode-card-selected' : 'zotseek-mode-card-unselected');
     };
 
-    if (currentMode === 'abstract') {
-      // Abstract selected
-      setCardSelected(abstractCard, true);
-      updateRadio(abstractRadio, true);
-
-      // Full unselected
-      setCardSelected(fullCard, false);
-      updateRadio(fullRadio, false);
-    } else {
-      // Full selected
-      setCardSelected(fullCard, true);
-      updateRadio(fullRadio, true);
-
-      // Abstract unselected
-      setCardSelected(abstractCard, false);
-      updateRadio(abstractRadio, false);
+    for (const { mode, card, radio } of cards) {
+      const selected = currentMode === mode;
+      setCardSelected(card, selected);
+      updateRadio(radio, selected);
     }
   }
 
@@ -679,9 +671,8 @@ class PreferencesManager {
         const checked = autoIndexCheckbox.checked;
         Z.Prefs.set('zotseek.autoIndex', checked, true);
         this.logger.info(`Auto-index changed to: ${checked}`);
-        // Reload auto-index manager to apply new setting
+        // Apply the one-shot startup synchronization preference.
         autoIndexManager.reload();
-        this.updateAutoIndexDelayVisibility(checked);
       });
     }
 
@@ -704,19 +695,6 @@ class PreferencesManager {
           Z.Prefs.set('zotseek.indexScope', value, true);
           this.logger.info(`Index scope changed to: ${value}`);
         }
-      });
-    }
-
-    // Auto-index delay input
-    const autoIndexDelayInput = doc.getElementById('zotseek-pref-autoIndexDelay') as HTMLInputElement;
-    if (autoIndexDelayInput) {
-      autoIndexDelayInput.addEventListener('change', () => {
-        let value = parseInt(autoIndexDelayInput.value, 10);
-        if (isNaN(value) || value < 1) value = 1;
-        if (value > 300) value = 300;
-        autoIndexDelayInput.value = String(value);
-        Z.Prefs.set('zotseek.autoIndexDelay', value, true);
-        this.logger.info(`Auto-index delay changed to: ${value}s`);
       });
     }
 
@@ -749,6 +727,11 @@ class PreferencesManager {
     const updateBtn = doc.getElementById('zotseek-update-index');
     if (updateBtn) {
       updateBtn.addEventListener('command', () => this.updateIndex());
+    }
+
+    const checkNowBtn = doc.getElementById('zotseek-pref-check-now');
+    if (checkNowBtn) {
+      checkNowBtn.addEventListener('command', () => { void this.checkForUpdatesNow(); });
     }
 
     const compactBtn = doc.getElementById('zotseek-compact-db');
@@ -895,6 +878,7 @@ class PreferencesManager {
         const currentMode = Z.Prefs.get('zotseek.indexingMode', true) || 'abstract';
         const currentModeLabel = {
           'abstract': getString('pref-abstractOnly'),
+          'notes': getString('pref-notes'),
           'full': getString('pref-fullPaper')
         }[currentMode] || currentMode;
 
@@ -956,6 +940,30 @@ class PreferencesManager {
     if (Z?.ZotSeek) {
       Z.ZotSeek.indexLibrary();
       // Stats will be refreshed after indexing completes
+    }
+  }
+
+  private async checkForUpdatesNow(): Promise<void> {
+    const Z = getZotero();
+    if (!Z?.ZotSeek?.checkForIndexUpdates) return;
+    const pw = new Z.ProgressWindow({ closeOnClick: true });
+    pw.changeHeadline(getString('pref-checkNowRunning'));
+    pw.addDescription(getString('pref-checkNowRunningDesc'));
+    pw.show();
+    try {
+      const result = await Z.ZotSeek.checkForIndexUpdates();
+      pw.changeHeadline(getString('pref-checkNowComplete'));
+      pw.addDescription(getString('pref-checkNowResult', {
+        checked: result.checked,
+        changed: result.indexedNew + result.rebuilt + result.notesUpdated,
+        removed: result.removed,
+      }));
+      pw.startCloseTimer(5000);
+      await this.loadStatsAndCheckMismatch();
+    } catch (error: any) {
+      pw.changeHeadline(getString('pref-checkNowFailed'));
+      pw.addDescription(error?.message || String(error));
+      pw.startCloseTimer(5000);
     }
   }
 
@@ -1070,19 +1078,6 @@ class PreferencesManager {
     const checkbox = this.window.document.getElementById(checkboxId) as any;
     if (checkbox) {
       checkbox.checked = checked;
-    }
-  }
-
-  /**
-   * Show/hide the auto-index delay row based on checkbox state
-   */
-  private updateAutoIndexDelayVisibility(enabled: boolean): void {
-    if (!this.window) return;
-    const delayRow = this.window.document.getElementById('zotseek-autoindex-delay-row');
-    if (delayRow) {
-      (delayRow as HTMLElement).style.opacity = enabled ? '1' : '0.4';
-      const input = this.window.document.getElementById('zotseek-pref-autoIndexDelay') as HTMLInputElement;
-      if (input) input.disabled = !enabled;
     }
   }
 
