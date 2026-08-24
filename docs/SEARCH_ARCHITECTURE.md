@@ -844,7 +844,9 @@ Each `ModelConfig` specifies:
 - `pooling` — `mean` averages all token embeddings; `cls` uses the `[CLS]` token. Must match the model's training setup.
 - `queryPrefix` / `docPrefix` — instruction strings prepended to queries and documents respectively. Nomic and E5 use these to shift the embedding towards retrieval mode; MiniLM and BGE-M3 do not need them.
 - `onnxFile` — path within the Hugging Face repo to the quantized ONNX file.
-- `bundled` — `true` only for the default model shipped inside the XPI (`chrome://zotseek/content/models/`). Non-bundled models are served from `resource://zotseek-models/` once downloaded.
+- `bundled` — `true` only for the default model shipped inside the XPI (`chrome://zotseek/content/models/`). Non-bundled models are downloaded into `zotseek-models/` inside the Zotero **profile** directory and served from `resource://zotseek-models/`.
+
+  Downloads used to go to the Zotero **data** directory, and models still there are read from `resource://zotseek-models-legacy/` so they keep working. The data directory is the one users relocate to a NAS, an external drive or a synced folder, and reading hundreds of MB of ONNX weights over a network share stalls the load outright, so weights (which are re-downloadable and are not user data) no longer follow the library.
 
 ### Partitioned Search by Model
 
@@ -939,10 +941,13 @@ Issue #42 adds a second `runtime` to `ModelConfig` alongside the in-process Chro
 
 ## Database Schema
 
-ZotSeek stores embeddings in a separate SQLite database (`zotseek.sqlite`) attached to Zotero's main connection. The schema is normalized into two tables:
+ZotSeek stores embeddings in a separate SQLite database (`zotseek.sqlite`) attached to Zotero's main connection. The schema is normalized into three tables:
 
-- **`items`** — one row per indexed paper, keyed by an internal autoincrement `item_pk`, with metadata (title, abstract), the model identifier, indexing timestamp, content hash, and truncation/coverage fields (`was_truncated`, `pages_indexed`, `pages_total`).
-- **`chunks`** — one row per embedding chunk, referencing `item_pk`, with the chunk text, source label, base64-encoded Float32 embedding, and location metadata (page, paragraph, char offsets, bbox).
+- **`items`** — one row per indexed paper, keyed by an internal autoincrement `item_pk`, with its stable identity (`library_key`, `item_key`) and metadata (title, abstract).
+- **`chunks`** — one row per embedding chunk per model, referencing `item_pk`, with the chunk text, source label, base64-encoded Float32 embedding, and location metadata (page, paragraph, char offsets, bbox).
+- **`item_models`** — one row per (item, model), holding that pairing's indexing status: timestamp, content hash, and truncation/coverage fields (`was_truncated`, `pages_indexed`, `pages_total`).
+
+The indexing status lives on `item_models` rather than `items` because it is inherently per-model; see [Per-Model Embeddings (Schema v9)](#per-model-embeddings-schema-v9) below.
 
 ### Stable Identity (Schema v8)
 

@@ -659,7 +659,92 @@ Run:
 npm run build      # Production build
 npm run build:dev  # Development build (with sourcemaps)
 npm run watch      # Watch mode for development
+npm run typecheck  # Type-check gate (see below)
 ```
+
+### Unit Tests (`npm test`)
+
+Most of this plugin can only be exercised inside Zotero, which is what the
+self-test harness under `src/dev/` is for. A few modules are pure logic, and
+`chunker.ts` in particular decides what text ever reaches the embedding model,
+so a silent regression there lowers search quality without failing anything.
+Those get a sub-second feedback loop instead of a 40-second Zotero restart:
+
+```bash
+npm test              # all suites
+npm test -- chunker   # only test files whose name matches
+```
+
+Tests live in `test/`, are written in TypeScript, and import from `../src`
+directly. `scripts/test.js` bundles each one to CommonJS with esbuild (already a
+dependency) into the gitignored `.test-build/`, then runs Node's built-in test
+runner. No test framework and no new dependencies.
+
+**Import order matters.** Modules that touch the `Zotero` global while their
+body is being evaluated must be imported *after* `test/helpers/zotero-stub`,
+which installs a stub as an import side effect. A call to `installZoteroStub()`
+placed above an import runs too late, because imports are hoisted:
+
+```ts
+import './helpers/zotero-stub';                        // must come first
+import { isAllowedOrigin } from '../src/server/http-tools';
+```
+
+Currently covered: `chunker.ts`, `model-registry.ts`, `collection-items.ts`, and
+the `isAllowedOrigin` guard from `http-tools.ts`. Deliberately *not* covered:
+`search-engine.ts` and `hybrid-search.ts`, which need real embeddings and real
+Zotero items. Mocking those would produce tests that always pass and say nothing
+about retrieval quality; that is the eval framework's job.
+
+### Continuous Integration
+
+`.github/workflows/ci.yml` runs the gates below on pull requests and on pushes
+to `main`. It is deliberately narrow: it never publishes, tags, or creates a
+release, and does not run on other branches. Releases stay manual.
+
+It cannot test what breaks this plugin most often. Attached databases, the ONNX
+worker, and the SpiderMonkey quirks of the esbuild bundle all need a running
+Zotero, which is what the self-test harness under `src/dev/` is for. CI covers
+the parts that run anywhere, plus one thing that is easy to get wrong and only
+fails on someone else's machine:
+
+```bash
+npm run check:versions
+```
+
+`package.json`, `manifest.json` and `update.json` must agree on the version, and
+`update.json` must repeat the manifest's `strict_min_version` and
+`strict_max_version` and link to the asset the release actually uploads. Each
+mismatch fails after the release rather than during it: a stale `update.json`
+version means the update is never offered, a stale `strict_max_version` leaves
+users on a newer Zotero disabled without ever receiving the fixed build, and a
+wrong `update_link` is a 404 mid-update. Worth running by hand before a release
+as well.
+
+### Type Checking
+
+esbuild strips TypeScript types without checking them, so `npm run build`
+succeeds even when the tree has type errors. `npm run typecheck` closes that
+gap. It runs `tsc --noEmit` and compares the result against
+`scripts/typecheck-baseline.json`, a recorded list of known-bad code, failing
+only on errors that are new:
+
+```bash
+npm run typecheck              # fails (exit 1) on any error not in the baseline
+npm run typecheck -- --update  # re-record the baseline
+```
+
+It checks `src/` and `test/` together via `tsconfig.test.json`, which exists
+only because the main `tsconfig.json` sets `rootDir` to `src/` for the build and
+anything outside it is a hard `TS6059`. It also exits 2 when `tsc` itself fails
+without producing file-level errors (a broken config, a crash), rather than
+mistaking "no error lines" for a clean run.
+
+Errors are matched by signature (file + error code + message) with line and
+column numbers stripped, so edits that shift lines around do not cause spurious
+failures. When a baseline error stops occurring the run still passes, but prints
+a reminder to re-record so the improvement is locked in. The list should only
+ever shrink.
 
 ---
 
@@ -779,7 +864,36 @@ For this semantic search plugin with ChromeWorker + Transformers.js, the custom 
 
 ## Testing in Zotero
 
-### Method 1: Extension Proxy File (Recommended for Development)
+### Method 0: `npm run dev:install` (does Method 1 for you)
+
+```bash
+npm run build
+# quit Zotero first: it can remove proxy files it did not create
+npm run dev:install
+open -a Zotero --args -purgecaches -jsconsole
+```
+
+`dev:install` locates the profile via `profiles.ini`, deletes any installed XPI
+with the same plugin ID, clears the extension caches, and writes the proxy file
+pointing at `build/`. Override the profile with the `ZOTERO_PROFILE` environment
+variable if you keep more than one.
+
+```bash
+npm run dev:status   # which one would Zotero load, and why
+```
+
+`dev:status` exits non-zero and says what to do when an XPI is shadowing the
+proxy file, when the plugin is not installed at all, or when the proxy points at
+a different directory. The first of those is the most common reason a rebuild
+appears to have no effect, and it is invisible from inside Zotero. The plugin
+also logs its own origin at startup, so the debug log answers the same question:
+
+```
+[ZotSeek] [INFO] Loaded from unpackaged directory (dev proxy file): file:///.../build/
+[ZotSeek] [INFO] Loaded from packaged XPI (rebuilds ... will NOT take effect): jar:file:///...
+```
+
+### Method 1: Extension Proxy File (manual equivalent)
 
 1. **Find your Zotero profile directory:**
    - macOS: `~/Library/Application Support/Zotero/Profiles/XXXXXXXX.default/`
@@ -1242,7 +1356,7 @@ Transformers.js cannot run directly in Zotero's main thread because:
 
 1. **No `self` global** - Transformers.js expects browser/worker globals
 2. **No `indexedDB`** - Used for model caching
-3. **No `navigator.gpu`** - WebGPU not available
+3. **No `navigator.gpu`** - WebGPU not available (until Zotero 11 / Firefox 153; see the WebGPU section below)
 4. **Cache API crashes Zotero** - DOMCacheThread causes SIGSEGV
 5. **WASM threading issues** - SharedArrayBuffer not fully supported
 
@@ -1573,6 +1687,39 @@ These settings are **critical** for Transformers.js v3 to work in Zotero:
 - **Chunks per paper**: 1-3 (most papers fit in single chunk with 8K context!)
 - **Memory usage**: ~400MB during embedding, lower after
 - **Embedding dimensions**: 768 (Matryoshka - can truncate to 256/128)
+
+### WebGPU (Zotero 11+)
+
+Zotero 11 (Firefox 153 ESR) is the first version whose runtime exposes WebGPU,
+including inside ChromeWorkers (Firefox supports it in all contexts except
+service workers). Platform coverage follows Firefox: Windows since 141, macOS
+on Apple Silicon since 145/147, Linux and Intel Macs not yet.
+
+ZotSeek's worker detects WebGPU and can load the model with `device: 'webgpu'`,
+but the path is **opt-in** via the hidden pref `zotseek.webgpu.enabled`
+(default `false`), for two measured reasons (Zotero 11.0-dev, M-series Mac,
+24 abstract-sized chunks):
+
+| Backend | Wall time | Per chunk |
+|---------|-----------|-----------|
+| WASM (14 threads) | 11.2s | 0.47s |
+| WebGPU, q8 weights | 125.4s | 5.2s |
+| WebGPU, fp16 weights | 65.6s | 2.7s |
+
+1. **Quantized (q8) weights must never run on WebGPU.** onnxruntime-web has no
+   WebGPU kernels for the integer matmuls, so every such node falls back to
+   CPU with a GPU<->CPU transfer around it - 11x slower than plain WASM. The
+   GPU path therefore always requests fp16 weights (`onnx/model_fp16.onnx`),
+   which are not bundled; if the file is absent the worker logs a warning and
+   falls back to WASM.
+2. **Firefox's WebGPU is not competitive yet** even with fp16: a constant
+   ~2.6s per inference (uniform across calls, so not shader warm-up) against
+   ~0.4s on WASM. Mozilla says performance work is ongoing; revisit each ESR
+   bump and flip the default only when GPU actually wins.
+
+The pref is read on the main thread and shipped to the worker in the `init`
+message (workers cannot read Zotero prefs). Changing it takes effect on the
+next worker (re)initialization, i.e. after a restart or model switch.
 
 ### Zotero 8 Compatibility
 

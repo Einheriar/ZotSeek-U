@@ -35,7 +35,8 @@ coverage/
 # Internal brainstorm specs and implementation plans (never committed)
 docs/superpowers/
 eval/
-
 # Local multilingual E5 model weights; kept locally for XPI packaging
 /content/models/Xenova/multilingual-e5-base/onnx/model_quantized.onnx
-/content/models/Xenova/nomic-embed-text-v1.5/onnx/model_quantized.onnx
+
+# Unit-test build output
+.test-build/

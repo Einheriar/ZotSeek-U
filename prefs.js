@@ -10,7 +10,7 @@ pref("extensions.zotero.zotseek.autoIndex", false);
 // Index scope: "user" (My Library only) or "all" (all libraries including groups)
 pref("extensions.zotero.zotseek.indexScope", "user");
 
-// Indexing mode: "abstract" (title+abstract) or "full" (abstract + PDF sections)
+// Indexing mode: "abstract", "notes" (metadata + child notes), or "full" (notes + PDF sections)
 pref("extensions.zotero.zotseek.indexingMode", "abstract");
 
 // Chunking options for multilingual-e5-base (512 token context)

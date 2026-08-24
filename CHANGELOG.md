@@ -2,6 +2,19 @@
 
 All notable changes to ZotSeek - Semantic Search for Zotero will be documented in this file.
 
+## [1.20.557] - 2026-08-22
+
+### Changed
+- Integrated upstream ZotSeek 1.20.0 while retaining ZotSeek-CHS multilingual
+  E5, child-note indexing, startup-only reconciliation, MCP metadata, and
+  item-tree status fixes.
+- Adopted Zotero 10 database hooks, multi-collection indexing, worker threading
+  fixes, model-path self-healing, unit tests, type checking, and release checks.
+- Raised the tested compatibility range to Zotero 9.0 through 10.0.* and kept
+  update metadata under the ZotSeek-CHS fork.
+
+---
+
 ## [1.19.557] - 2026-08-21
 
 ### Fixed
@@ -50,6 +63,94 @@ All notable changes to ZotSeek - Semantic Search for Zotero will be documented i
 - MCP search and similar-item results now include structured bibliographic metadata
   from the live Zotero item, including full creators, publication title, date,
   volume, issue, pages, DOI, and related citation fields.
+---
+
+## [1.20.0] - 2026-08-21
+
+Zotero 10 does more of its own database maintenance than earlier versions, and
+exposes hooks so plugins can take part. This release uses both, and finishes the
+multi-collection support that Zotero 10 made possible.
+
+### Added
+- Experimental WebGPU support for the embedding worker, ahead of Zotero 11
+  (Firefox 153), the first Zotero whose runtime exposes WebGPU. Opt-in via the
+  hidden `zotseek.webgpu.enabled` preference and off by default: measured on
+  Zotero 11 dev builds, Firefox's current WebGPU is still slower than ZotSeek's
+  multithreaded WASM engine for this workload, and the GPU path needs fp16
+  model weights (`onnx/model_fp16.onnx`) that are not bundled. With the pref on
+  and fp16 weights present the model loads on the GPU; in every other case the
+  worker falls back to the WASM engine with a log line explaining why.
+- Selecting several collections and choosing "Index Collection" now indexes all of
+  them, not just the first. Items appearing in more than one selected collection are
+  indexed once. Requires Zotero 10, which introduced multi-collection selection.
+- The ZotSeek database is now compacted automatically while Zotero is idle, reclaiming
+  the space that re-indexing, model switches and orphan purges leave behind. Runs only
+  when there is at least 10 MB to reclaim and no indexing is in progress. A new
+  "Compact automatically when Zotero is idle" setting under Integrations & Maintenance
+  turns it off; the manual Compact Database button is unchanged. Requires Zotero 10.
+
+### Fixed
+- The embedding worker now uses all CPU cores. A build-time polyfill meant for
+  the main-thread sandbox also ran at the top of the worker bundle, where its
+  `var navigator` declaration shadowed the worker's real `navigator` object -
+  pinning WASM threading to a hardcoded 4 threads (instead of the machine's
+  actual core count) and hiding `navigator.gpu` from WebGPU detection. The
+  polyfill now augments `globalThis` without shadowing native globals.
+- The ZotSeek database is re-attached as soon as Zotero recycles its database
+  connection, rather than after the first query that fails because of it. Recycling
+  happens on several paths, including Zotero 10's periodic database vacuum, and each
+  one drops attached databases and made indexing fail part-way through on large
+  libraries. On Zotero 8 and 9 the previous recovery-on-demand behaviour is unchanged.
+- Indexing a collection now includes its subcollections. The crash-resume path always
+  did, so resuming an interrupted run used to index a different set of items than the
+  run that was interrupted.
+- Indexing a collection now honours the "Exclude books from indexing" preference, which
+  it previously ignored even though Index Library and automatic indexing both applied it.
+- Selecting a downloaded embedding model whose files are missing now fails immediately
+  with a message naming the model, its download size and where to install it, instead of
+  reporting a Transformers.js internal error about a `resource://` URL. Nothing checked
+  before starting the worker, because the download is only ever triggered from the
+  settings pane.
+- The worker initialization timeout now names the model, its size and whether it is
+  bundled or downloaded, so a report of that error can be diagnosed without asking for
+  a debug log first.
+- Downloadable embedding models are now stored next to Zotero's profile rather than in
+  the Zotero data folder. The data folder is the one people relocate to a NAS or a synced
+  folder, and reading model weights from a network share stalls indexing outright, which
+  showed up as "Worker initialization timeout" (#24). Models downloaded by earlier
+  versions keep working where they are; if your data folder is on network storage,
+  removing and re-downloading a model moves it somewhere local.
+- Downloaded models are reached through a `resource://` folder mapping registered once
+  at startup. If that registration fails, every downloaded model becomes unloadable
+  while the built-in one keeps working, and previously nothing said so. The mapping is
+  now verified rather than assumed, re-registered automatically when it is missing, and
+  reported at error level at startup and with a distinct message at load time that does
+  not send users off to re-download files they already have.
+
+### Technical
+- `npm test` runs unit tests for the modules that do not depend on Zotero
+  (`chunker.ts`, `model-registry.ts`, `collection-items.ts`, and the
+  `isAllowedOrigin` guard). esbuild bundles each test to CommonJS and Node's
+  built-in runner executes them, so no test framework or new dependency is
+  involved. Modules that need the Zotero runtime stay with the in-Zotero
+  self-test harness.
+- `npm run typecheck` fails on type errors that are not in
+  `scripts/typecheck-baseline.json`, comparing by error signature rather than by
+  count so that line-shifting edits do not produce false failures. esbuild
+  strips types without checking them, so the build alone never catches these.
+- `npm run dev:install` and `npm run dev:status` set up and diagnose the
+  development proxy-file install. An installed XPI silently overrides the proxy
+  file, and `dev:status` now names that as the cause instead of leaving a
+  rebuild looking like it had no effect. The plugin also logs at startup whether
+  it loaded from a directory or from a packaged XPI.
+- `npm run check:versions` verifies that `package.json`, `manifest.json` and
+  `update.json` agree on the version and the Zotero compatibility range, and
+  that `update_link` names the asset a release actually uploads. Each of these
+  mismatches only fails after a release, on a user's machine.
+- A GitHub Actions workflow runs those checks plus the build on pull requests
+  and on pushes to `main`. It never publishes, tags, or creates releases.
+- Enabling the `zotseek.devMode` preference now also turns on Zotero's debug
+  capture, which the self-test harness output depends on.
 
 ---
 

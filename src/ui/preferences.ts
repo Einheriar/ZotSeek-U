@@ -476,6 +476,7 @@ class PreferencesManager {
       autoIndex: Z.Prefs.get('zotseek.autoIndex', true) ?? false,
       mcpServer: Z.Prefs.get('zotseek.mcpServer.enabled', true) ?? false,
       indexScope: Z.Prefs.get('zotseek.indexScope', true) || 'user',
+      autoCompact: Z.Prefs.get('zotseek.autoCompact', true) ?? true,
     };
 
     this.logger.debug(`Loaded preferences: ${JSON.stringify(prefs)}`);
@@ -493,6 +494,15 @@ class PreferencesManager {
     this.setCheckboxValue('zotseek-pref-excludeBooks', prefs.excludeBooks);
     this.setCheckboxValue('zotseek-pref-autoIndex', prefs.autoIndex);
     this.setCheckboxValue('zotseek-pref-mcpServer', prefs.mcpServer);
+    this.setCheckboxValue('zotseek-pref-autoCompact', prefs.autoCompact);
+
+    // Automatic compaction rides on Zotero.DB.onIdle, which only exists on
+    // Zotero 10+. Disable the control rather than hide it, so the requirement
+    // in the description text has something to explain.
+    const autoCompactCheckbox = this.window?.document.getElementById('zotseek-pref-autoCompact') as any;
+    if (autoCompactCheckbox && typeof Z?.DB?.onIdle !== 'function') {
+      autoCompactCheckbox.disabled = true;
+    }
 
     // Show/hide MCP server info/warning based on pref and Zotero.Server state
     this.updateMcpServerVisibility(prefs.mcpServer);
@@ -662,6 +672,15 @@ class PreferencesManager {
         const checked = excludeBooksCheckbox.checked;
         Z.Prefs.set('zotseek.excludeBooks', checked, true);
         this.logger.info(`Exclude books changed to: ${checked}`);
+      });
+    }
+
+    const autoCompactCheckbox = doc.getElementById('zotseek-pref-autoCompact') as any;
+    if (autoCompactCheckbox) {
+      autoCompactCheckbox.addEventListener('command', () => {
+        const checked = autoCompactCheckbox.checked;
+        Z.Prefs.set('zotseek.autoCompact', checked, true);
+        this.logger.info(`Automatic compaction changed to: ${checked}`);
       });
     }
 
@@ -875,12 +894,16 @@ class PreferencesManager {
         if (indexedModeValue) indexedModeValue.style.display = 'block';
 
         // Check for mismatch
-        const currentMode = Z.Prefs.get('zotseek.indexingMode', true) || 'abstract';
+        const rawCurrentMode = Z.Prefs.get('zotseek.indexingMode', true);
+        const currentMode: 'abstract' | 'notes' | 'full' =
+          rawCurrentMode === 'notes' || rawCurrentMode === 'full'
+            ? rawCurrentMode
+            : 'abstract';
         const currentModeLabel = {
           'abstract': getString('pref-abstractOnly'),
           'notes': getString('pref-notes'),
           'full': getString('pref-fullPaper')
-        }[currentMode] || currentMode;
+        }[currentMode];
 
         if (warningBox) {
           if (stats.indexedWithMode !== currentModeLabel && stats.indexedPapers > 0) {

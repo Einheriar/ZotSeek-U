@@ -5,7 +5,10 @@
  */
 
 import { Logger } from '../utils/logger';
-import { getActiveModel, getModel, ModelConfig, modelBasePath, setActiveModelId, applyPrefix } from './model-registry';
+import { getActiveModel, getModel, ModelConfig, modelBasePath, setActiveModelId, applyPrefix,
+  requiresLocalFiles, missingModelMessage, brokenSubstitutionMessage, legacyLocationMessage,
+  ModelLocation } from './model-registry';
+import { findModelLocation, ensureModelsResourceSubstitution } from './model-download';
 import { ServerEmbeddingClient } from './server-embedding-client';
 
 declare const ChromeWorker: any;
@@ -45,6 +48,16 @@ export class EmbeddingPipeline {
   private consecutiveRecoveries = 0;
   private static MAX_RECOVERIES_PER_EMBED = 2;
 
+  // Time allowed for the worker to report ready. Covers reading the model
+  // off disk and initialising the WASM runtime, both of which scale with
+  // model size and disk speed.
+  private static WORKER_INIT_TIMEOUT_MS = 30000;
+
+  // Which of the two download directories the active model was found in, so the
+  // worker is pointed at the matching resource:// host. Null for bundled and
+  // server models, which are not in either.
+  private modelLocation: ModelLocation | null = null;
+
   constructor() {
     this.logger = new Logger('EmbeddingPipeline');
   }
@@ -62,6 +75,32 @@ export class EmbeddingPipeline {
         this.logger.info(`Initializing server-backed embedding pipeline (${this.model.baseUrl})`);
         await this.initServerClient();  // Will throw on failure (unreachable / dimension mismatch)
       } else {
+        // Downloaded models resolve over resource://zotseek-models/. If the
+        // files are absent, Transformers.js fails with its own wording naming
+        // that URL, which does not tell the user a download is needed or where
+        // to start one. Nothing else in the load path checks, because
+        // ensureModelDownloaded() is only ever called from the preferences UI.
+        if (requiresLocalFiles(this.model)) {
+          // Files first: absent weights are both the likelier problem and the
+          // one with clear advice. Only if they ARE present does an unusable
+          // mapping become the explanation worth reporting -- telling someone
+          // to re-download a model that is already on disk is a dead end.
+          this.modelLocation = await findModelLocation(this.model);
+          if (this.modelLocation === null) {
+            this.logger.error(`Model files missing for "${this.model.id}"; refusing to start the worker`);
+            throw new Error(missingModelMessage(this.model));
+          }
+          if (this.modelLocation === 'legacy') {
+            // Loads fine from a local data folder, hangs from a network one
+            // (issue #24). Not fatal, so say it once rather than refuse.
+            this.logger.warn(legacyLocationMessage(this.model));
+          }
+          const reason = ensureModelsResourceSubstitution();
+          if (reason !== null) {
+            this.logger.error(`resource:// mapping unusable for "${this.model.id}": ${reason}`);
+            throw new Error(brokenSubstitutionMessage(this.model, reason));
+          }
+        }
         this.logger.info('Initializing embedding pipeline with Transformers.js');
         await this.initWorker();  // Will throw on failure
         this.logger.info('Using Transformers.js via ChromeWorker');
@@ -91,8 +130,14 @@ export class EmbeddingPipeline {
         this.worker = new ChromeWorker(workerPath);
 
         const timeout = setTimeout(() => {
-          reject(new Error('Worker initialization timeout'));
-        }, 30000);
+          // Name the model and its size: a timeout on a 570 MB model on a slow
+          // disk means something different from one on a bundled model, and the
+          // bare message made issue #24 impossible to triage from the report.
+          reject(new Error(
+            `Worker initialization timeout after ${EmbeddingPipeline.WORKER_INIT_TIMEOUT_MS / 1000}s ` +
+            `loading "${this.model.label}" (${this.model.approxSizeMB} MB, ${this.model.bundled ? 'bundled' : 'downloaded'})`,
+          ));
+        }, EmbeddingPipeline.WORKER_INIT_TIMEOUT_MS);
 
         this.worker.onmessage = (event: any) => {
           const { type, status, jobId, error, embedding, modelId, processingTimeMs, message, level, data } = event.data;
@@ -175,7 +220,10 @@ export class EmbeddingPipeline {
             normalize: this.model.normalize,
             queryPrefix: this.model.queryPrefix,
             docPrefix: this.model.docPrefix,
-            basePath: modelBasePath(this.model),
+            basePath: modelBasePath(this.model, this.modelLocation ?? 'profile'),
+            // Worker threads cannot read Zotero prefs; resolve the WebGPU
+            // opt-in here and ship it with the init message.
+            webgpu: this.isWebGPUEnabled(),
           },
         });
 
@@ -346,6 +394,21 @@ export class EmbeddingPipeline {
    */
   isReady(): boolean {
     return this.ready;
+  }
+
+  /**
+   * Whether the user opted into the experimental WebGPU path.
+   * Default false: on Firefox 153 (Zotero 11) WebGPU is measurably slower
+   * than the multithreaded WASM path for embedding workloads, and the GPU
+   * path additionally requires fp16 weights that are not bundled.
+   */
+  private isWebGPUEnabled(): boolean {
+    try {
+      const Z = (globalThis as any).Zotero;
+      return Z?.Prefs?.get('zotseek.webgpu.enabled', true) === true;
+    } catch {
+      return false;
+    }
   }
 
   /**

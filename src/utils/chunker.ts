@@ -536,7 +536,13 @@ export function chunkDocumentEx(
   // Purpose: "What is this paper about?"
   // Note: Summary chunks don't have fulltext location (they come from metadata)
   // ═══════════════════════════════════════════════════════════════════════
-  const summaryText = abstract && abstract.trim().length > 0
+  // Abstract-only indexing keeps the upstream noise guard for placeholder
+  // abstracts. Notes/full mode may pass a short but useful metadata body such
+  // as a tag, so those modes only require non-empty text.
+  const summaryBodyIsUseful = mode === 'abstract'
+    ? !!abstract && abstract.trim().length >= 50
+    : !!abstract && abstract.trim().length > 0;
+  const summaryText = summaryBodyIsUseful
     ? `${titlePrefix}\n\n${abstract}`
     : titlePrefix;
 

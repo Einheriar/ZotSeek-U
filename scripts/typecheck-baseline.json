@@ -1,0 +1,22 @@
+{
+  "comment": "Known type errors, tolerated so new ones can be detected. Regenerate with `npm run typecheck -- --update`. Shrink this list; never grow it deliberately.",
+  "generated": "2026-08-22",
+  "total": 15,
+  "signatures": [
+    "src/ui/results-table.ts TS2339 Property 'currentIndex' does not exist on type 'TreeSelection'.",
+    "src/ui/results-table.ts TS2339 Property 'ensureRowIsVisible' does not exist on type 'VirtualizedTable'.",
+    "src/ui/results-table.ts TS2339 Property 'ensureRowIsVisible' does not exist on type 'VirtualizedTable'.",
+    "src/ui/results-table.ts TS2339 Property 'focus' does not exist on type 'VirtualizedTable'.",
+    "src/ui/search-dialog-toolkit.ts TS2339 Property 'addEventListener' does not exist on type 'DialogHelper'.",
+    "src/ui/search-dialog-toolkit.ts TS2339 Property 'addEventListener' does not exist on type 'DialogHelper'.",
+    "src/ui/search-dialog-toolkit.ts TS2339 Property 'addEventListener' does not exist on type 'DialogHelper'.",
+    "src/ui/search-dialog-toolkit.ts TS2339 Property 'addRowGroup' does not exist on type 'DialogHelper'.",
+    "src/ui/search-dialog-toolkit.ts TS2339 Property 'addRowGroup' does not exist on type 'DialogHelper'.",
+    "src/ui/search-dialog-toolkit.ts TS2345 Argument of type 'string' is not assignable to parameter of type 'number'.",
+    "src/ui/search-dialog-toolkit.ts TS2345 Argument of type 'string' is not assignable to parameter of type 'number'.",
+    "src/worker/embedding-worker.ts TS18048 'env.backends.onnx.wasm' is possibly 'undefined'.",
+    "src/worker/embedding-worker.ts TS18048 'env.backends.onnx.wasm' is possibly 'undefined'.",
+    "src/worker/embedding-worker.ts TS18048 'env.backends.onnx.wasm' is possibly 'undefined'.",
+    "src/worker/embedding-worker.ts TS18048 'env.backends.onnx.wasm' is possibly 'undefined'."
+  ]
+}

@@ -10,8 +10,8 @@ const manifestPath = path.resolve(rootDir, 'manifest.json');
 const updateJsonPath = path.resolve(rootDir, 'update.json');
 
 // GitHub repo info for update URLs
-const GITHUB_OWNER = 'introfini';
-const GITHUB_REPO = 'ZotSeek';
+const GITHUB_OWNER = 'Einheriar';
+const GITHUB_REPO = 'ZotSeek-CHS';
 
 /**
  * Generate update.json from manifest.json version

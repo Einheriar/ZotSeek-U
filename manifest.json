@@ -1,10 +1,10 @@
 {
   "manifest_version": 2,
   "name": "ZotSeek | AI-Powered Semantic Search & MCP Server",
-  "version": "1.19.557",
+  "version": "1.20.557",
   "description": "AI-powered semantic search for your Zotero library, with a built-in MCP server for AI agents. Find similar papers by meaning, not just keywords.",
   "author": "José Fernandes",
-  "homepage_url": "https://github.com/introfini/zotseek",
+  "homepage_url": "https://github.com/Einheriar/ZotSeek-CHS",
   "icons": {
     "48": "content/icons/favicon@0.5x.png",
     "96": "content/icons/favicon.png"
@@ -12,9 +12,9 @@
   "applications": {
     "zotero": {
       "id": "zotseek@zotero.org",
-      "update_url": "https://raw.githubusercontent.com/introfini/zotseek/main/update.json",
+      "update_url": "https://raw.githubusercontent.com/Einheriar/ZotSeek-CHS/notes-support/update.json",
       "strict_min_version": "9.0",
-      "strict_max_version": "9.*"
+      "strict_max_version": "10.0.*"
     }
   }
 }

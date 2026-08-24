@@ -469,6 +469,8 @@ The SQLite backend uses the **ATTACH DATABASE** pattern (inspired by Better BibT
 
 ZotSeek stores its embeddings in `zotseek.sqlite` inside your Zotero data directory. The file is local and is not synced by Zotero's built-in sync.
 
+> **If your Zotero data folder is on a network drive or NAS:** downloadable embedding models are kept next to Zotero's profile instead, not in the data folder, because reading a few hundred megabytes of model weights over a network share can stall indexing. Models downloaded by earlier versions still work from the old location, but if you are on network storage it is worth removing and re-downloading them from **Settings → ZotSeek → Models** so they end up local.
+
 If you use Zotero on multiple machines and want to avoid re-indexing your library on each one, you can copy the file manually:
 
 1. Quit Zotero on both machines.
@@ -532,7 +534,7 @@ Once the manuscript is written, the complementary tool [citefact](https://github
 
 Independent projects built on ZotSeek's local API:
 
-- **[Wordbot](https://github.com/Addy-ad/wordbot)** by [@Addy-ad](https://github.com/Addy-ad) — a Microsoft Word add-in for researchers. It converts LLM output into native Word formatting (tables, equations, code blocks, headings) and grounds it in your library: it runs semantic searches through ZotSeek, then writes text with inline citations that Zotero's own Word plugin recognises, so you can build a unified bibliography from them. Runs entirely offline against a local LLM server. Windows and macOS.
+- **[Wordbot](https://github.com/Addy-ad/wordbot)** by [@Addy-ad](https://github.com/Addy-ad) — a Microsoft Word add-in for researchers. It converts LLM output into native Word formatting (tables, equations, code blocks, headings) and grounds it in your library: it runs semantic searches through ZotSeek, then writes text with inline citations that Zotero's own Word plugin recognises, so you can build a unified bibliography from them. Runs entirely offline against a local LLM server. Windows and macOS. See the author's [introduction and demo](https://github.com/introfini/ZotSeek/discussions/46) for what it looks like in use and which edition to pick.
 
 These are third-party projects, maintained by their authors and released under their own licences (Wordbot is non-commercial). Please report problems with them on their own issue trackers.
 
@@ -588,7 +590,9 @@ The interactive release script bumps the version, syncs `manifest.json` and `upd
 
 ### Index Your Library
 
-1. Right-click on a collection → **"Index Current Collection"**
+1. Right-click on a collection → **"Index Current Collection"**. Subcollections are
+   included. On Zotero 10 you can select several collections first and index them in
+   one pass; items filed in more than one of them are indexed once.
 2. Or use **"Update Library Index"** to index all items
 3. A progress window will appear showing:
    - Current item being processed
@@ -596,6 +600,14 @@ The interactive release script bumps the version, syncs `manifest.json` and `upd
    - Estimated time remaining (ETA)
    - Option to cancel at any time
 4. Indexing speed: ~3 seconds per chunk
+
+**Automatic Compaction (Zotero 10+):**
+Re-indexing, switching models and purging orphans all leave free space inside
+ZotSeek's database file. Zotero 10 runs its own database maintenance after a few
+minutes of idle, and ZotSeek reclaims its space in the same window — but only when
+there is a meaningful amount to recover and no indexing is running. Turn it off under
+**Settings → ZotSeek → Integrations & Maintenance**, where the manual **Compact
+Database** button also lives.
 
 **Crash-Resilient Indexing:**
 - Progress is saved every 25 items (checkpoint saving)
