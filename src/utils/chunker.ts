@@ -35,11 +35,14 @@ export interface ChunkWithLocation extends Chunk {
   endChar: number;            // End character offset (required)
 }
 
+export type TokenCounter = (text: string) => number;
+
 export interface ChunkOptions {
   maxTokens?: number;      // Safety limit (default: 7000)
   maxChunks?: number;      // Max chunks per paper (default: 5)
   maxChars?: number;       // Hard character limit per chunk (must match embedding worker MAX_CHARS)
   totalPages?: number;     // Total pages from Zotero.Fulltext.getPages() for calibrated estimation
+  tokenCounter?: TokenCounter; // Exact active-model counter, injected lazily for Notes/Full mode
 }
 
 /**
@@ -61,7 +64,7 @@ export type IndexingMode = 'abstract' | 'notes' | 'full';
 // - 7000 tokens: ~45 seconds per chunk (too slow!)
 // - 500 tokens: ~0.3-0.5 seconds per chunk (very fast!)
 // With paragraph-level chunking, we need many more chunks
-const DEFAULT_OPTIONS: Omit<Required<ChunkOptions>, 'totalPages'> = {
+const DEFAULT_OPTIONS: Required<Pick<ChunkOptions, 'maxTokens' | 'maxChunks' | 'maxChars'>> = {
   maxTokens: 450,     // Stay below multilingual E5 Base's 512-token limit
   maxChunks: 100,     // Allow up to 100 paragraphs per paper (covers most papers)
   maxChars: 8000,     // Must match embedding worker MAX_CHARS (hard character ceiling)
@@ -693,6 +696,185 @@ export function chunkDocumentEx(
   };
 }
 
+interface ExactTextPart {
+  text: string;
+  tokenCount: number;
+}
+
+/**
+ * Split one unpunctuated unit by original Unicode character offsets. The
+ * tokenizer is the authority, while binary search keeps calls logarithmic.
+ */
+function splitExactUnitByCharacters(
+  unit: string,
+  countBody: (body: string) => number,
+  maxTokens: number
+): ExactTextPart[] {
+  const characters = Array.from(unit);
+  const parts: ExactTextPart[] = [];
+  let offset = 0;
+
+  while (offset < characters.length) {
+    let low = 1;
+    let high = characters.length - offset;
+    let best = 0;
+
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2);
+      const candidate = characters.slice(offset, offset + middle).join('');
+      if (countBody(candidate) <= maxTokens) {
+        best = middle;
+        low = middle + 1;
+      } else {
+        high = middle - 1;
+      }
+    }
+
+    // A 200-character title should always leave room for at least one body
+    // character. Keep forward progress if a malformed tokenizer says it does
+    // not; the embedding worker's own limit remains the final safety net.
+    if (best === 0) best = 1;
+
+    // Prefer a nearby natural boundary without reconstructing text through
+    // tokenizer.decode(), which can alter Chinese spacing and punctuation.
+    const raw = characters.slice(offset, offset + best).join('');
+    const boundary = Math.max(
+      raw.lastIndexOf('\n'),
+      raw.lastIndexOf(' '),
+      raw.lastIndexOf('，'),
+      raw.lastIndexOf(','),
+      raw.lastIndexOf('；'),
+      raw.lastIndexOf(';'),
+      raw.lastIndexOf('、')
+    );
+    const cut = boundary >= Math.floor(raw.length * 0.75)
+      ? Array.from(raw.slice(0, boundary + 1)).length
+      : best;
+    const text = characters.slice(offset, offset + Math.max(1, cut)).join('');
+    parts.push({ text, tokenCount: countBody(text) });
+    offset += Math.max(1, cut);
+  }
+
+  return parts;
+}
+
+/** Split an oversized body at sentence boundaries, then characters if needed. */
+function splitExactBodyBySentences(
+  body: string,
+  countBody: (body: string) => number,
+  maxTokens: number
+): ExactTextPart[] {
+  const sentences = body.match(/[^.!?。！？]+[.!?。！？]+|[^.!?。！？]+$/gu) || [body];
+  const parts: ExactTextPart[] = [];
+  let current = '';
+
+  const flush = () => {
+    const text = current.trim();
+    if (text) parts.push({ text, tokenCount: countBody(text) });
+    current = '';
+  };
+
+  for (const sentence of sentences) {
+    const candidate = current ? `${current}${sentence}` : sentence;
+    if (countBody(candidate) <= maxTokens) {
+      current = candidate;
+      continue;
+    }
+
+    flush();
+    if (countBody(sentence) <= maxTokens) {
+      current = sentence;
+    } else {
+      parts.push(...splitExactUnitByCharacters(sentence, countBody, maxTokens));
+    }
+  }
+
+  flush();
+  return parts;
+}
+
+/**
+ * Exact multilingual-E5 note splitting.
+ *
+ * Paragraph costs are cached by TokenizerService. We use their additive cost
+ * for the common greedy path, then verify each emitted chunk with the real
+ * tokenizer. Only an oversized final candidate takes the sentence/binary path.
+ */
+function splitNoteTextWithExactCounter(
+  noteText: string,
+  titlePrefix: string,
+  maxTokens: number,
+  tokenCounter: TokenCounter
+): Chunk[] {
+  const countBody = (body: string) => tokenCounter(`${titlePrefix}\n\n${body}`);
+  const paragraphs = noteText
+    .split(/\n\s*\n+/u)
+    .map(paragraph => paragraph.trim())
+    .filter(Boolean);
+  if (paragraphs.length === 0) return [];
+
+  const chunks: ExactTextPart[] = [];
+  const prefixTokens = countBody('');
+  // Leave a small boundary margin because SentencePiece token counts are not
+  // perfectly additive across paragraph joins. Final verification is exact.
+  const approximateBodyBudget = Math.max(1, maxTokens - prefixTokens - 8);
+  let currentParagraphs: string[] = [];
+  let approximateTokens = 0;
+
+  const appendVerified = (body: string) => {
+    const text = body.trim();
+    if (!text) return;
+    const tokenCount = countBody(text);
+    if (tokenCount <= maxTokens) {
+      chunks.push({ text, tokenCount });
+    } else {
+      chunks.push(...splitExactBodyBySentences(text, countBody, maxTokens));
+    }
+  };
+
+  const flush = () => {
+    if (currentParagraphs.length > 0) {
+      appendVerified(currentParagraphs.join('\n\n'));
+    }
+    currentParagraphs = [];
+    approximateTokens = 0;
+  };
+
+  for (const paragraph of paragraphs) {
+    const paragraphTokens = countBody(paragraph);
+    const paragraphCost = Math.max(1, paragraphTokens - prefixTokens);
+
+    if (paragraphTokens > maxTokens) {
+      flush();
+      chunks.push(...splitExactBodyBySentences(paragraph, countBody, maxTokens));
+      continue;
+    }
+
+    if (
+      currentParagraphs.length > 0 &&
+      approximateTokens + paragraphCost > approximateBodyBudget
+    ) {
+      flush();
+    }
+
+    currentParagraphs.push(paragraph);
+    approximateTokens += paragraphCost;
+  }
+
+  flush();
+
+  return chunks.map((part, index) => ({
+    index,
+    text: `${titlePrefix}\n\n${part.text}`,
+    type: 'note',
+    tokenCount: part.tokenCount,
+    pageNumber: undefined,
+    paragraphIndex: undefined,
+    startChar: undefined,
+    endChar: undefined,
+  }));
+}
+
 /**
  * Split normalized child-note texts into chunks that belong to their parent
  * bibliographic item. Note chunks intentionally carry no PDF location data.
@@ -718,16 +900,23 @@ export function chunkNoteTexts(
       break;
     }
 
-    const noteChunks = splitTextIntoChunks(
-      noteText,
-      titlePrefix,
-      opts.maxTokens,
-      'note',
-      0,
-      0,
-      undefined,
-      1
-    );
+    const noteChunks = opts.tokenCounter
+      ? splitNoteTextWithExactCounter(
+          noteText,
+          titlePrefix,
+          opts.maxTokens,
+          opts.tokenCounter
+        )
+      : splitTextIntoChunks(
+          noteText,
+          titlePrefix,
+          opts.maxTokens,
+          'note',
+          0,
+          0,
+          undefined,
+          1
+        );
 
     for (let chunkIndex = 0; chunkIndex < noteChunks.length; chunkIndex++) {
       if (rawChunks.length >= availableSlots) {
@@ -751,6 +940,9 @@ export function chunkNoteTexts(
   const enforced = enforceCharLimitEx(rawChunks, opts.maxChars, availableSlots);
   enforced.chunks.forEach((chunk, index) => {
     chunk.index = startIndex + index;
+    if (opts.tokenCounter) {
+      chunk.tokenCount = opts.tokenCounter(chunk.text);
+    }
     chunk.pageNumber = undefined;
     chunk.paragraphIndex = undefined;
     chunk.startChar = undefined;

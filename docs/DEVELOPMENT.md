@@ -1,14 +1,21 @@
 # ZotSeek Plugin - Development Guide
 
-> **📝 Disclaimer:** This is a development journal documenting lessons learned while building ZotSeek. It contains hard-won insights about Zotero 8 plugin development, ChromeWorker + Transformers.js integration, and SQLite quirks. Some information may be version-specific. Use as a reference, not a step-by-step tutorial.
+> **📝 Disclaimer:** This is a development journal documenting lessons learned while building ZotSeek. It contains hard-won insights about Zotero plugin development, ChromeWorker + Transformers.js integration, and SQLite quirks. Some information may be version-specific. Use as a reference, not a step-by-step tutorial.
 >
 > **Contributions welcome!** If you find errors or have improvements, please open an issue or PR.
+>
+> **Current ZotSeek-CHS configuration:** The fork requires Zotero 9.0 and
+> supports Zotero 9 and 10. Its bundled default model is
+> `multilingual-e5-base` (768 dimensions, 512-token context) with `query:` and
+> `passage:` prefixes. Historical sections about Zotero 8 and the former
+> `nomic-embed-text-v1.5` default are retained as development history and do
+> not describe the current release configuration.
 
 ---
 
-A guide for building Zotero 8+ plugins with TypeScript, featuring lessons learned from running **Transformers.js v3** with local AI embeddings.
+A guide for building Zotero 9+ plugins with TypeScript, featuring lessons learned from running **Transformers.js v3** with local AI embeddings.
 
-**Key Achievement:** This plugin runs **nomic-embed-text-v1.5** (8K tokens, 768 dims) in Zotero via ChromeWorker - see [ChromeWorker + Transformers.js Solution](#chromeworker--transformersjs-solution).
+**Current Achievement:** This fork runs **multilingual-e5-base** (512-token context, 768 dimensions) locally in Zotero via ChromeWorker, with model-aware prefixes and Chinese note chunking. See [ChromeWorker + Transformers.js Solution](#chromeworker--transformersjs-solution).
 
 ---
 
@@ -42,14 +49,14 @@ node --version  # Should output v18.x.x or higher
 # npm (comes with Node.js)
 npm --version
 
-# Zotero 8 or newer installed
+# Zotero 9 or newer installed
 # Download from: https://www.zotero.org/download/
 ```
 
 ### Recommended Tools
 
 - **VS Code** or **Cursor** - IDE with TypeScript support
-- **Zotero 8+** - The target platform (based on Firefox 140 ESR)
+- **Zotero 9+** - The supported target platform (currently based on Firefox 140 ESR)
 - **Git** - Version control
 
 ---
@@ -74,9 +81,9 @@ Zotero plugins are **bootstrapped extensions** that run inside Zotero's JavaScri
 | **Root URI** | The base path to your plugin's files at runtime |
 | **Zotero Pane** | The main Zotero window where items are displayed |
 
-### Zotero 8+ Runtime
+### Zotero 9+ Runtime
 
-| Feature | Zotero 8+ |
+| Feature | Zotero 9+ |
 |---------|-----------|
 | Firefox Base | 140 ESR |
 | Modules | ESM (.mjs) |
@@ -85,20 +92,20 @@ Zotero plugins are **bootstrapped extensions** that run inside Zotero's JavaScri
 
 ### Version Compatibility
 
-ZotSeek targets Zotero 8 and newer:
+ZotSeek-CHS targets Zotero 9 and 10:
 
 ```json
 {
   "applications": {
     "zotero": {
-      "strict_min_version": "7.999",
+      "strict_min_version": "9.0",
       "strict_max_version": "10.0.*"
     }
   }
 }
 ```
 
-> ⚠️ This guide targets **Zotero 8, 9 and 10**. Earlier Zotero versions use a different structure and are no longer supported.
+> ⚠️ The current fork targets **Zotero 9 and Zotero 10**. Zotero 8 notes later in this journal are retained only as historical API context.
 
 ---
 
@@ -126,7 +133,7 @@ npm install @huggingface/transformers
 |---------|---------|
 | `typescript` | TypeScript compiler for type checking |
 | `esbuild` | Fast bundler that compiles TS → JS |
-| `@huggingface/transformers` | Run ML models via ChromeWorker (v3 with 8K context models) |
+| `@huggingface/transformers` | Run selectable local embedding models via ChromeWorker |
 
 > **Note:** We use `@huggingface/transformers` v3.8.1+ (not the older `@xenova/transformers` v2). Version 3.7+ includes critical fixes for ChromeWorker compatibility via the `wasmPaths` configuration.
 
@@ -183,7 +190,7 @@ Create `manifest.json`:
     "zotero": {
       "id": "zotseek@zotero.org",
       "update_url": "https://example.com/update.json",
-      "strict_min_version": "7.999",
+      "strict_min_version": "9.0",
       "strict_max_version": "10.0.*"
     }
   }
@@ -422,7 +429,7 @@ interface PaperEmbedding {
   itemKey: string;          // Zotero item key
   libraryId: number;
   title: string;
-  embedding: number[];      // 768-dimensional vector (nomic-embed-v1.5)
+  embedding: number[];      // Dimension depends on model; bundled E5 uses 768
   modelId: string;          // Which model generated this
   contentHash: string;      // Detect content changes
 }
@@ -487,20 +494,19 @@ class EmbeddingPipeline {
       type: 'embed',
       data: { text }
     });
-    return result.embedding;  // 384-dimensional vector
+    return result.embedding;  // Dimension is defined by the active model
   }
 }
 ```
 
 Key concepts:
 - **ChromeWorker** - Runs Transformers.js v3 in separate thread with privileged access
-- **Feature extraction** - Converts text to 768-dimensional vectors (nomic-embed-text-v1.5)
-- **8192 token context** - 16x larger than bge-small (512 tokens), enabling full-document embeddings
-- **Instruction prefixes** - Uses `search_document:` for indexing, `search_query:` for queries
-- **Quantized model** - Smaller, faster (~131MB quantized)
+- **Feature extraction** - Converts text to vectors whose dimensions are defined by the active model; bundled E5 uses 768
+- **Model-aware context** - The bundled multilingual E5 model has a 512-token context, so long notes and PDFs are split before embedding
+- **Instruction prefixes** - The model registry applies each model's prefixes; E5 uses `passage:` for documents and `query:` for queries
+- **Quantized model** - The bundled multilingual E5 model is approximately 282MB including tokenizer files
 - **Mean pooling** - Averages token embeddings with normalization
-- **Matryoshka embeddings** - 768 dims can be truncated to 256/128 with minimal quality loss
-- **~200-300ms per embedding** - Fast enough for interactive use
+- **Worker isolation** - Model inference runs outside the main Zotero thread
 - **wasmPaths configuration** - Critical for v3 to work in ChromeWorker (bypasses dynamic import)
 
 ### 4. Search Engine (`src/core/search-engine.ts`)
@@ -1369,6 +1375,12 @@ We run Transformers.js in a **ChromeWorker** - a special Firefox/Zotero worker w
 **The breakthrough (December 2025):** Transformers.js v3.7.0 added `env.backends.onnx.wasm.wasmPaths` configuration that redirects WASM file loading to a custom path. This bypasses the dynamic import issue by allowing us to serve pre-bundled WASM files from a `chrome://` URL.
 
 #### Architecture
+
+> **Historical implementation snapshot:** The worker architecture, code,
+> trade-offs and measurements below document the original hard-coded nomic integration. The current worker is
+> model-agnostic: `EmbeddingPipeline` resolves the active model through
+> `model-registry.ts` and passes its model path, pooling, normalization and
+> prefixes to the worker. The current bundled default is multilingual E5.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -2245,8 +2257,8 @@ Create a `prefs.js` file in your plugin root with default values:
 ```javascript
 // prefs.js
 pref("extensions.zotero.zotseek.topK", 20);
-pref("extensions.zotero.zotseek.autoIndex", true);
-pref("extensions.zotero.zotseek.maxTokens", 7000);  // For nomic-embed-v1.5 (8K token context)
+pref("extensions.zotero.zotseek.autoIndex", false);
+pref("extensions.zotero.zotseek.maxTokens", 450);  // Below E5 Base's 512-token limit
 ```
 
 These defaults are automatically loaded when the plugin is installed/enabled.
@@ -2780,9 +2792,10 @@ Key learnings:
 - **Instruction prefixes** - Use `search_document:` for indexing, `search_query:` for queries
 - **Bundle worker separately** - Transformers.js v3 (~850KB) in worker only
 
-#### Bundling Models for Offline Use (Updated December 2025)
+#### Historical: Bundling Models for Offline Use (December 2025)
 
-To avoid network downloads and enable instant offline model loading, we bundle the embedding model directly with the plugin.
+This section records the former nomic-default implementation. ZotSeek-CHS now
+bundles multilingual E5 and keeps nomic as an optional downloadable model.
 
 ##### Model Evolution: MiniLM → BGE-small → jina-v2-small → nomic-embed-v1.5
 
@@ -3184,6 +3197,11 @@ for (const chunk of allChunks) {
 
 #### Configuration
 
+> **Historical configuration:** Current modes are `abstract`, `notes`, and
+> `full`. The current bundled E5 defaults use a 450-token chunk ceiling and a
+> per-paper limit of 100 chunks; see the repository's `prefs.js` for the source
+> of truth.
+
 ```javascript
 // prefs.js - Updated for nomic-embed-text-v1.5 (8K token context)
 pref("extensions.zotero.zotseek.indexingMode", "fulltext");  // "abstract" | "fulltext" | "hybrid"
@@ -3452,7 +3470,8 @@ Comprehensive plugin development documentation by windingwind:
 
 ### Model Information
 
-- [nomic-embed-text-v1.5](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5) - **Current model** (8K tokens, 768 dims, instruction-aware)
+- [multilingual-e5-base](https://huggingface.co/intfloat/multilingual-e5-base) - **Current bundled default** (512-token context, 768 dimensions, multilingual, `query:`/`passage:` prefixes)
+- [nomic-embed-text-v1.5](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5) - Optional downloadable model and former bundled default (8K tokens, 768 dimensions)
 - [jina-embeddings-v2-small-en](https://huggingface.co/jinaai/jina-embeddings-v2-small-en) - Previous model (8K tokens, 512 dims)
 - [bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5) - Legacy model (512 tokens, 384 dims)
 - [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) - Legacy model (256 tokens, 384 dims)

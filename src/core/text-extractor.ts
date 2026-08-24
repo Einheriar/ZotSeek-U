@@ -22,6 +22,7 @@ import {
 } from '../utils/chunker';
 import { noteHTMLToText } from '../utils/note-text';
 import { TextSourceType } from './vector-store-sqlite';
+import { tokenizerService } from './tokenizer-service';
 
 declare const Zotero: any;
 
@@ -68,6 +69,21 @@ export class TextExtractor {
   constructor() {
     this.zoteroAPI = new ZoteroAPI();
     this.logger = new Logger('TextExtractor');
+  }
+
+  /**
+   * Add multilingual E5's exact, session-cached token counter only on paths
+   * that index Notes. Abstract-only extraction remains lightweight.
+   */
+  private async resolveChunkOptions(
+    options: ChunkOptions | undefined,
+    mode: IndexingMode
+  ): Promise<ChunkOptions> {
+    const base = options ?? getChunkOptionsFromPrefs(Zotero);
+    if (mode === 'abstract' || base.tokenCounter) return base;
+
+    const tokenCounter = await tokenizerService.getDocumentTokenCounter();
+    return tokenCounter ? { ...base, tokenCounter } : base;
   }
 
   /**
@@ -118,7 +134,7 @@ export class TextExtractor {
 
       // Get indexing mode from preference if not specified
       const indexingMode = mode ?? getIndexingMode(Zotero);
-      const chunkOptions = options ?? getChunkOptionsFromPrefs(Zotero);
+      const chunkOptions = await this.resolveChunkOptions(options, indexingMode);
 
       let chunks: Chunk[];
       let wasTruncated = false;
@@ -372,7 +388,7 @@ export class TextExtractor {
 
     // Get mode and options once
     const indexingMode = mode ?? getIndexingMode(Zotero);
-    const chunkOptions = options ?? getChunkOptionsFromPrefs(Zotero);
+    const chunkOptions = await this.resolveChunkOptions(options, indexingMode);
     
     this.logger.info(`Extracting chunks with mode: ${indexingMode}`);
 

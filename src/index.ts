@@ -34,6 +34,7 @@ import { identityFromItem, libraryKeyFromLocalID, localItemIDFromIdentity } from
 import { getActiveModelId } from './core/model-registry';
 import { initServerManager, shutdownServerManager } from './server/server-manager';
 import { registerModelsResourceSubstitution, verifyModelsResourceSubstitution } from './core/model-download';
+import { tokenizerService } from './core/tokenizer-service';
 // Self-test harness (mounted only when extensions.zotseek.devMode = true)
 import { selfTest as zotseekSelfTest } from './dev/self-test';
 // Task suites: imported for registration side effects only.
@@ -2184,6 +2185,9 @@ class ZotSeekPlugin {
 
     // Cancel a scheduled/running startup reconciliation pass.
     autoIndexManager.stop();
+
+    // Release the main-thread tokenizer and its bounded text-count cache.
+    tokenizerService.reset();
 
     // Unregister local MCP/REST endpoints and pref observer
     shutdownServerManager();

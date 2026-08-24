@@ -8,6 +8,7 @@ import {
   estimatePageNumber,
   estimatePageForRange,
   countParagraphsUpTo,
+  chunkNoteTexts,
   getChunkOptionsFromPrefs,
   getIndexingMode,
 } from '../src/utils/chunker';
@@ -226,5 +227,62 @@ describe('preference reading', () => {
     assert.equal(getIndexingMode(fakeZotero({})), 'abstract');
     assert.equal(getIndexingMode(fakeZotero({ 'zotseek.indexingMode': 'nonsense' })), 'abstract');
     assert.equal(getIndexingMode(undefined), 'abstract');
+  });
+});
+
+describe('exact token-aware note chunking', () => {
+  // Simulates a tokenizer that counts every Unicode code point plus document
+  // prefix/special-token overhead. Production injects multilingual E5 here.
+  const exactCounter = (text: string) => Array.from(text).length + 8;
+
+  test('splits an unpunctuated Chinese note without losing its tail', () => {
+    const note = '这是没有空格也没有句号的中文长笔记'.repeat(80);
+    const { chunks, wasTruncated } = chunkNoteTexts('测试文献', [note], {
+      maxTokens: 120,
+      maxChunks: 100,
+      maxChars: 8000,
+      tokenCounter: exactCounter,
+    });
+
+    assert.ok(chunks.length > 1, 'long Chinese note was split');
+    assert.equal(wasTruncated, false);
+    assert.ok(chunks.every(chunk => exactCounter(chunk.text) <= 120));
+    assert.ok(chunks.every(chunk => chunk.tokenCount === exactCounter(chunk.text)));
+
+    const recovered = chunks
+      .map(chunk => chunk.text.slice(chunk.text.indexOf('\n\n') + 2))
+      .join('');
+    assert.equal(recovered, note, 'all original Chinese characters survive');
+  });
+
+  test('keeps short mixed-language paragraphs together when they fit', () => {
+    const note = [
+      '亲子互动 parent-child interaction 与情绪调节。',
+      '第二段 combines 中文 notes with English terminology.',
+    ].join('\n\n');
+    const { chunks } = chunkNoteTexts('Mixed paper', [note], {
+      maxTokens: 180,
+      maxChunks: 100,
+      maxChars: 8000,
+      tokenCounter: exactCounter,
+    });
+
+    assert.equal(chunks.length, 1);
+    assert.match(chunks[0].text, /parent-child interaction/);
+    assert.match(chunks[0].text, /第二段/);
+    assert.equal(chunks[0].tokenCount, exactCounter(chunks[0].text));
+  });
+
+  test('never merges different Zotero child notes', () => {
+    const { chunks } = chunkNoteTexts('Parent', ['第一条独立笔记', 'Second independent note'], {
+      maxTokens: 180,
+      maxChunks: 100,
+      maxChars: 8000,
+      tokenCounter: exactCounter,
+    });
+
+    assert.equal(chunks.length, 2);
+    assert.match(chunks[0].text, /第一条独立笔记/);
+    assert.match(chunks[1].text, /Second independent note/);
   });
 });

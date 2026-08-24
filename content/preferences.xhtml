@@ -168,17 +168,17 @@
 <groupbox>
   <label><html:h2 data-l10n-id="zotseek-pref-actions">Actions</html:h2></label>
 
-  <!-- Update Index - Primary action -->
+  <!-- Index unindexed items - Primary action -->
   <vbox class="zotseek-action-primary" style="border-radius: 6px; padding: 12px; margin-bottom: 8px; border-width: 1px; border-style: solid;">
     <hbox align="center">
       <button id="zotseek-update-index"
-              label="Update Index"
+              label="Index Unindexed Items"
               data-l10n-id="zotseek-pref-updateIndex"
               style="font-weight: 600;" />
       <html:span data-l10n-id="zotseek-pref-recommended" style="margin-left: 8px; color: var(--zotseek-green); font-size: 11px; font-weight: 500;">✓ Recommended</html:span>
     </hbox>
     <html:p data-l10n-id="zotseek-pref-updateIndexDesc" style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 6px 0 0 0;">
-      Index all unindexed items in your library. Resumes safely from where you left off.
+      Generate vectors only for items that have not been indexed. Existing indexed content is not checked for changes.
     </html:p>
   </vbox>
 
@@ -337,22 +337,22 @@
 
 </groupbox>
 
-<!-- Startup index reconciliation -->
+<!-- Startup incremental index reconciliation -->
 <groupbox>
-  <label><html:h2 data-l10n-id="zotseek-pref-autoIndexing">Startup Index Sync</html:h2></label>
+  <label><html:h2 data-l10n-id="zotseek-pref-autoIndexing">Startup Incremental Sync</html:h2></label>
 
   <checkbox id="zotseek-pref-autoIndex"
-            label="Check for index changes once when Zotero starts"
+            label="Sync index changes once when Zotero starts"
             data-l10n-id="zotseek-pref-autoIndexLabel"
             native="true"
             checked="false" />
   <html:p style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 4px 0 0 24px;">
-    <html:span data-l10n-id="zotseek-pref-autoIndexDesc">Checks once after startup, then remains idle. ZotSeek does not monitor notes while you edit.</html:span>
+    <html:span data-l10n-id="zotseek-pref-autoIndexDesc">Finds added, changed, and deleted items, then remains idle. ZotSeek does not monitor notes while you edit.</html:span>
   </html:p>
 
   <html:p style="margin: 8px 0 0 24px;">
     <button id="zotseek-pref-check-now"
-            label="Check for Updates Now"
+            label="Run Incremental Sync Now"
             data-l10n-id="zotseek-pref-checkNow"
             native="true" />
   </html:p>
@@ -367,7 +367,7 @@
     </menulist>
   </html:div>
   <html:p style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 4px 0 0 24px;">
-    <html:span data-l10n-id="zotseek-pref-indexScopeDesc">Choose which libraries are included in startup and manual update checks.</html:span>
+    <html:span data-l10n-id="zotseek-pref-indexScopeDesc">Choose which libraries are included in startup and manual incremental sync.</html:span>
   </html:p>
 </groupbox>
 

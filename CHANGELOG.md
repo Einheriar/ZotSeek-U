@@ -2,6 +2,17 @@
 
 All notable changes to ZotSeek - Semantic Search for Zotero will be documented in this file.
 
+## [1.20.558] - 2026-08-22
+
+### Changed
+- Notes and Full indexing now lazily load and reuse the bundled multilingual
+  E5 tokenizer on the main thread, so long Chinese notes are split by exact
+  model tokens instead of whitespace estimates. This path remains CPU-only.
+- Renamed the two indexing actions to distinguish startup incremental sync from
+  the manual operation that only fills items which have never been indexed.
+
+---
+
 ## [1.20.557] - 2026-08-22
 
 ### Changed
