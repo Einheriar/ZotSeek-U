@@ -1,8 +1,8 @@
 /**
  * Shared tool layer for ZotSeek's local HTTP interfaces (MCP + REST).
  *
- * Module-level functions, not class methods (CLAUDE.md pitfall #6: class
- * methods in the esbuild IIFE bundle may not land on the runtime prototype).
+ * Module-level functions, not class methods: in the esbuild IIFE bundle,
+ * class methods may not land on the runtime prototype.
  * Uses the `Zotero` global directly.
  *
  * All operations are read-only adapters over the existing search engines.

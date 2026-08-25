@@ -3628,7 +3628,7 @@ The Save Results as Collection feature has no automated tests. The project has n
 
 8. **Regression: Add to existing collection.** Right-click → **Add to Collection** → pick an existing collection. Still works (the shared `addItemsToCollection` helper is reused by both the existing flow and the new flow).
 
-If any test fails, check `CLAUDE.md` pitfalls first:
+If any test fails, check these known runtime pitfalls first:
 - XPI override hiding your proxy-file build
 - SpiderMonkey bytecode cache not clearing on plugin reload
 - Fluent attribute form (`data-l10n-id` targets need `.attr = value`, not plain text)

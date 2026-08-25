@@ -12,7 +12,7 @@ declare const Zotero: any;
 
 // Plugin main-thread sandbox (bootstrap loadSubScript) has fetch and URL but
 // lacks the AbortController DOM global. Resolve it once, borrowing from the
-// main window when the bare global is missing (see CLAUDE.md pitfall).
+// main window when the bare global is missing.
 let abortControllerCtor: any | undefined;
 function getAbortControllerCtor(): any | null {
   if (abortControllerCtor !== undefined) return abortControllerCtor;

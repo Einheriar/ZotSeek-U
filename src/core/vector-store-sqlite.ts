@@ -877,7 +877,8 @@ export class VectorStoreSQLite {
    * to the `orphan_items` table (data preserved, not searchable).
    *
    * Detection: presence of `library_key` column in items is the ground truth.
-   * The `schema_version` row is unreliable (see CLAUDE.md pitfall #8).
+   * The `schema_version` row is unreliable because createTables() bumps it
+   * even when its CREATE TABLE statements are no-ops.
    */
   private async migrateToV8(): Promise<void> {
     // Detect v8 by column presence
@@ -942,7 +943,7 @@ export class VectorStoreSQLite {
 
     try {
       // Use parallel columnQueryAsync to dodge the multi-column SELECT
-      // empty-result quirk documented in CLAUDE.md.
+      // empty-result quirk of Zotero 8's DB wrapper.
       const orderBy = `ORDER BY item_id`;
       const [
         itemIds, itemKeys, libraryIds, titles, abstracts, modelIds,
@@ -1286,12 +1287,13 @@ export class VectorStoreSQLite {
    * - New composite PK `(item_pk, chunk_index, model_id)` on chunks
    * - New `item_models` table — per-(item, model) indexing status
    *
-   * Detection: presence of `model_id` column in chunks is ground truth (pitfall #8).
+   * Detection: presence of `model_id` in chunks is the ground truth because
+   * createTables() can bump schema_version even when no table definition changes.
    * Backfills legacy hfPath model_ids (e.g. 'Xenova/nomic-embed-text-v1.5') to short ids
    * via legacyModelIdToShortId, reading per-item model_id from the items table.
    */
   private async migrateToV9(): Promise<void> {
-    // Detect done-ness by column presence, not the schema-version marker (pitfall #8).
+    // Detect completion by column presence, not the unreliable schema-version marker.
     let chunkCols: Set<string>;
     try {
       const cols: any[] = await Zotero.DB.queryAsync(`PRAGMA ${DB_NAME}.table_info(chunks)`);
@@ -2421,8 +2423,8 @@ export class VectorStoreSQLite {
     const unique = new Map<string, { itemPk: number; chunkIndex: number }>();
     for (const p of pairs) unique.set(`${p.itemPk}:${p.chunkIndex}`, p);
 
-    // Parallel single-value queries dodge the Zotero 8 multi-column SELECT quirk
-    // (see CLAUDE.md). The batch is bounded by topK (~20-50), so this is cheap.
+    // Parallel single-value queries dodge the Zotero 8 multi-column SELECT quirk.
+    // The batch is bounded by topK (~20-50), so this is cheap.
     const entries = Array.from(unique.values());
     const texts = await Promise.all(
       entries.map(p =>

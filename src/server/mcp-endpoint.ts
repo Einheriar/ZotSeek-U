@@ -4,12 +4,12 @@
  * Implements the minimal stateless subset of the Streamable HTTP transport:
  * JSON-RPC 2.0 over POST, plain application/json responses, no SSE, no
  * sessions (no Mcp-Session-Id — permitted by the MCP spec and deliberate:
- * Zotero's DB connection can recycle mid-session, so the less state the
- * better; see CLAUDE.md pitfall #11).
+ * Zotero's DB connection can recycle mid-session, so the less state the better).
  *
  * Connect with: claude mcp add --transport http --scope user zotseek http://localhost:23119/zotseek/mcp
  *
- * Module-level functions + plain-constructor endpoint (pitfall #6).
+ * Module-level functions plus a plain-constructor endpoint are used for
+ * reliability under the esbuild IIFE bundle.
  */
 import {
   runSearchTool,
@@ -228,7 +228,7 @@ export async function handleMcpRequest(requestData: any): Promise<EndpointRespon
 /**
  * Endpoint constructor for Zotero.Server.Endpoints. Plain constructor with
  * explicit prototype — the shape Zotero's own endpoints use, and the most
- * reliable under the esbuild IIFE bundle (pitfall #6).
+ * reliable under the esbuild IIFE bundle.
  */
 export function ZotSeekMCPEndpoint(this: any) {}
 ZotSeekMCPEndpoint.prototype = {

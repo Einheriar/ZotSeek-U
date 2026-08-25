@@ -302,7 +302,7 @@ async function generateEmbedding(jobId: string, text: string, kind: 'query' | 'd
     });
 
     const embedding = Array.from(output.data as Float32Array);  // 768 dimensions
-    if (typeof output.dispose === 'function') output.dispose();  // pitfall #9: free WASM tensor
+    if (typeof output.dispose === 'function') output.dispose();  // Free the WASM tensor promptly
     const processingTimeMs = Date.now() - startTime;
 
     postMessage({

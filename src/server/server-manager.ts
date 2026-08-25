@@ -4,7 +4,8 @@
  * (default false). A pref observer toggles registration live, so changing
  * the checkbox in preferences needs no restart.
  *
- * Module-level functions (pitfall #6); uses the Zotero global directly.
+ * Module-level functions are used for reliability under the esbuild IIFE
+ * bundle; this module accesses the Zotero global directly.
  */
 import { Logger } from '../utils/logger';
 import { ZotSeekMCPEndpoint, MCP_PATH } from './mcp-endpoint';

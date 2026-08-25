@@ -350,8 +350,8 @@ export class ItemTreeIndexColumn {
 }
 
 /**
- * Module-level helper (matches the pattern documented in CLAUDE.md
- * for utility functions inside the IIFE bundle).
+ * Module-level helper, matching the pattern used for utility functions
+ * inside the IIFE bundle.
  */
 function hasZotseekExcludeTag(item: any): boolean {
   try {
