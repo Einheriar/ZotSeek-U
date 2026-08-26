@@ -86,7 +86,13 @@ zotseek-pref-minSimilarity = 最低相似度
 zotseek-pref-minSimilarityDesc = % — 过滤低质量匹配（0-100）
 zotseek-pref-advancedSettings = 高级设置
 zotseek-pref-maxTokens = 每分块最大令牌数
-zotseek-pref-maxTokensDesc = 分块大小上限（200-8000）
+zotseek-pref-maxTokensDesc = 可选的用户覆盖值；最终上限由当前模型策略决定
+zotseek-pref-modelInputPolicy = 硬上限：{ $limit } · 推荐值：{ $recommended } · 当前有效值：{ $effective } · 指令前缀：{ $prefix }
+zotseek-pref-modelInputUnknown = 由服务器管理
+zotseek-pref-modelInputPrefixRequired = 需要
+zotseek-pref-modelInputPrefixNone = 不需要
+zotseek-pref-resetMaxTokens =
+    .label = 恢复推荐值
 zotseek-pref-maxChunks = 每篇文献最大分块数
 zotseek-pref-maxChunksDesc = 长文档限制（1-200）
 zotseek-pref-excludeBooks =
@@ -371,3 +377,8 @@ zotseek-export-itemcountEmpty = No items to add.
 zotseek-export-statusExported = Added { $count } items to "{ $name }".
 zotseek-export-statusExportedSkipped = Added { $count } items to "{ $name }", { $skipped } skipped.
 zotseek-export-statusFailed = Failed to save results as collection.
+
+## 模型区域标题
+
+zotseek-pref-embeddingModelTitle = 嵌入模型
+zotseek-pref-manageModelsTitle = 管理已安装模型

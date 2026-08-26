@@ -2,21 +2,27 @@
  * Lazy exact tokenizer for document chunking.
  *
  * The embedding worker owns its own Transformers.js instance. Chunking happens
- * on the main thread before text is sent to that worker, so Notes mode needs a
- * small tokenizer-only instance here to enforce multilingual E5's real
- * 512-token context limit. It is loaded only when Notes/Full extraction runs,
- * then reused for the rest of the Zotero session.
+ * on the main thread before text is sent to that worker, so the two supported
+ * multilingual models use a tokenizer-only instance here to enforce their
+ * real context limits. It is loaded lazily, then reused for the active model.
  */
 
 import { AutoTokenizer, env } from '@huggingface/transformers';
 import type { TokenCounter } from '../utils/chunker';
 import { Logger } from '../utils/logger';
-import { applyPrefix, getActiveModel, modelBasePath, type ModelConfig } from './model-registry';
+import {
+  applyPrefix,
+  getActiveModel,
+  modelBasePath,
+  requiresLocalFiles,
+  type ModelConfig,
+} from './model-registry';
+import { getModelInputConfig } from './model-input-config';
+import { findModelLocation } from './model-download';
 
 declare const Zotero: any;
 declare const ChromeWorker: any;
 
-const EXACT_TOKENIZER_MODEL_ID = 'multilingual-e5-base';
 const TOKEN_CACHE_LIMIT = 4096;
 
 export class TokenizerService {
@@ -27,17 +33,20 @@ export class TokenizerService {
   private failedModelId: string | null = null;
   private tokenCache = new Map<string, number>();
 
-  /**
-   * Return a synchronous document-token counter after one lazy async load.
-   * Unsupported/server models keep using the chunker's conservative fallback.
-   */
   async getDocumentTokenCounter(): Promise<TokenCounter | undefined> {
-    const model = getActiveModel();
+    return this.getTokenCounter('doc');
+  }
 
-    // This fork ships and tunes exact chunking for multilingual E5. Other
-    // selectable models have different tokenizers/context limits and retain
-    // the existing estimator until they receive model-specific tuning.
-    if (model.runtime !== 'onnx' || model.id !== EXACT_TOKENIZER_MODEL_ID) {
+  async getQueryTokenCounter(): Promise<TokenCounter | undefined> {
+    return this.getTokenCounter('query');
+  }
+
+  /** Return a synchronous counter after one model-aware lazy load. */
+  private async getTokenCounter(kind: 'query' | 'doc'): Promise<TokenCounter | undefined> {
+    const model = getActiveModel();
+    const inputConfig = getModelInputConfig(model);
+
+    if (model.runtime !== 'onnx' || !inputConfig.supportsExactTokenCount) {
       if (this.loadedModel?.id !== model.id) this.reset();
       return undefined;
     }
@@ -49,12 +58,18 @@ export class TokenizerService {
     }
 
     if (this.loadedModel?.id === model.id && this.tokenizer) {
-      return text => this.countDocumentTokens(text);
+      return text => this.countTokens(text, kind);
     }
-    if (this.failedModelId === model.id) return undefined;
+    if ((this.loadedModel && this.loadedModel.id !== model.id) ||
+        (this.failedModelId && this.failedModelId !== model.id)) {
+      this.reset();
+    }
+    if (this.failedModelId === model.id) {
+      throw new Error(`Exact tokenizer for ${model.label} is unavailable; indexing cannot continue safely.`);
+    }
 
     const ready = await this.init(model);
-    return ready ? text => this.countDocumentTokens(text) : undefined;
+    return ready ? text => this.countTokens(text, kind) : undefined;
   }
 
   private async init(model: ModelConfig): Promise<boolean> {
@@ -66,7 +81,11 @@ export class TokenizerService {
         env.allowRemoteModels = false;
         env.allowLocalModels = true;
         env.useBrowserCache = false;
-        env.localModelPath = modelBasePath(model);
+        const location = requiresLocalFiles(model) ? await findModelLocation(model) : null;
+        if (requiresLocalFiles(model) && location === null) {
+          throw new Error(`Tokenizer files are missing for ${model.label}`);
+        }
+        env.localModelPath = modelBasePath(model, location ?? 'profile');
 
         this.logger.info(`Loading exact tokenizer for ${model.id}`);
         this.tokenizer = await AutoTokenizer.from_pretrained(model.hfPath, {
@@ -81,10 +100,12 @@ export class TokenizerService {
         this.tokenizer = null;
         this.loadedModel = null;
         this.failedModelId = model.id;
-        this.logger.warn(
-          `Exact tokenizer unavailable for ${model.id}; using fallback estimator: ${error?.message || error}`
+        const reason = error?.message || error;
+        this.logger.error(`Exact tokenizer unavailable for ${model.id}: ${reason}`);
+        throw new Error(
+          `Exact tokenizer for ${model.label} could not be loaded. ` +
+          `ZotSeek will not use an unsafe estimate for multilingual input. ${reason}`
         );
-        return false;
       } finally {
         this.initPromise = null;
       }
@@ -93,17 +114,18 @@ export class TokenizerService {
     return this.initPromise;
   }
 
-  private countDocumentTokens(text: string): number {
+  private countTokens(text: string, kind: 'query' | 'doc'): number {
     if (!this.tokenizer || !this.loadedModel) {
       throw new Error('Exact tokenizer is not initialized');
     }
 
-    const input = applyPrefix(text, 'doc', this.loadedModel);
-    const cached = this.tokenCache.get(input);
+    const input = applyPrefix(text, kind, this.loadedModel);
+    const cacheKey = `${this.loadedModel.id}:${kind}:${input}`;
+    const cached = this.tokenCache.get(cacheKey);
     if (cached !== undefined) {
       // Refresh insertion order for the bounded LRU cache.
-      this.tokenCache.delete(input);
-      this.tokenCache.set(input, cached);
+      this.tokenCache.delete(cacheKey);
+      this.tokenCache.set(cacheKey, cached);
       return cached;
     }
 
@@ -113,7 +135,7 @@ export class TokenizerService {
       if (value && typeof value.dispose === 'function') value.dispose();
     }
 
-    this.tokenCache.set(input, count);
+    this.tokenCache.set(cacheKey, count);
     if (this.tokenCache.size > TOKEN_CACHE_LIMIT) {
       const oldest = this.tokenCache.keys().next().value;
       if (oldest !== undefined) this.tokenCache.delete(oldest);

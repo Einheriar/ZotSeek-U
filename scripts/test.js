@@ -59,6 +59,10 @@ const build = spawnSync(
     // Node's own test module must stay external; bundling it would break the runner.
     '--external:node:test',
     '--external:node:assert',
+    // Real tokenizer/ONNX loading belongs to the Zotero runtime self-tests.
+    // Keeping this external prevents esbuild from treating native .node
+    // binaries as assets of the pure-logic Node test bundle.
+    '--external:@huggingface/transformers',
   ],
   { cwd: rootDir, encoding: 'utf8', stdio: 'inherit', shell: process.platform === 'win32' },
 );

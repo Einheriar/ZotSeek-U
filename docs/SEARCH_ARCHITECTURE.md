@@ -549,7 +549,7 @@ Embedding time scales **O(n²)** with sequence length due to transformer attenti
 | Chunk Size | Speed | Precision | Recall | Best For |
 |------------|-------|-----------|--------|----------|
 | **500-800 tokens** | Very fast (~0.3-0.5s/chunk) | High | Lower | Finding specific claims, methods, passages |
-| **2000 tokens** | Moderate (~3s/chunk) | Balanced | Balanced | General use (default) |
+| **2000 tokens** | Moderate (~3s/chunk) | Balanced | Balanced | Long-context model default |
 | **4000+ tokens** | Slow (~10s+/chunk) | Lower | Higher | Finding papers about broad topics |
 | **7000 tokens** | Very slow (~45s/chunk) | Low | High | Not recommended |
 
@@ -557,9 +557,13 @@ Embedding time scales **O(n²)** with sequence length due to transformer attenti
 - **Smaller chunks** = more precise matches to specific passages, but may miss broader context
 - **Larger chunks** = captures more context, but similarity scores get "diluted" by surrounding text
 
-### Default maxTokens
+### Model-aware maxTokens
 
-The default is **2000 tokens** per chunk. Firefox 140+ (Zotero 8) handles this efficiently. You can override it in Settings > ZotSeek.
+The default depends on the active model: **420 tokens for multilingual E5** and
+**2000 tokens for Nomic v1.5 and BGE-M3**. These are ZotSeek recommendations,
+not model context limits. An explicit global override is preserved across model
+switches and clamped to the active model's hard limit. Clearing the override in
+Settings restores the current model's recommendation.
 
 ### Paragraph-Based Chunking
 
@@ -568,7 +572,8 @@ The `maxTokens` setting is a **ceiling, not a target**. The chunker:
 1. Splits text at paragraph boundaries (`\n\n`)
 2. Accumulates paragraphs into a chunk
 3. Flushes when adding another paragraph would exceed `maxTokens`
-4. **Never splits a paragraph across chunks**
+4. Splits oversized paragraphs at sentence boundaries, then at Unicode
+   character boundaries when an unpunctuated unit is still too large
 
 ```
 Example with maxTokens=800:
@@ -580,7 +585,7 @@ Paragraph 3: 400 tokens  ─┐
                           ├─► Chunk 2 (400 tokens) ← under limit, that's OK
                          ─┘
 Paragraph 4: 900 tokens  ─┐
-                          ├─► Chunk 3 (900 tokens) ← exceeds limit, but kept whole
+                          ├─► Chunk 3a + 3b (both within the limit)
                          ─┘
 ```
 
@@ -603,9 +608,12 @@ These three values are stored on the `items` table (`was_truncated`, `pages_inde
 
 To capture the full content of long papers, raise *Max Chunks per Paper* in **Settings → ZotSeek** or switch the affected papers to Abstract mode (tag them with `zotseek-exclude` if you want only the abstract).
 
-### Token Estimation
+### Token Counting
 
-Tokens are estimated at ~1.3 tokens per word for English academic text:
+E5 and BGE-M3 use their exact local tokenizers for Summary, Child Notes, PDF
+chunks and queries. Counts include the model's document/query prefix and
+special tokens. Nomic and server-managed models use the English-oriented
+heuristic of approximately 1.3 tokens per whitespace-separated word:
 
 ```
 1000 words ≈ 1300 tokens ≈ 6000 characters
@@ -616,6 +624,15 @@ Tokens are estimated at ~1.3 tokens per word for English academic text:
 | 500 | ~385 words, ~1500 chars |
 | 800 | ~615 words, ~2400 chars |
 | 2000 | ~1540 words, ~6000 chars |
+
+All models use an independent 8000-character upstream chunk split threshold.
+Oversized chunks are split into consecutive pieces without dropping their
+tails; only exhausting `maxChunksPerPaper` can make an item partially indexed.
+The local Worker and server paths do not perform a second character-based cut.
+Transformers.js feature extraction enables tokenizer truncation and therefore
+uses each local model's `model_max_length` for a direct over-limit call. Exact
+E5/BGE-M3 preflight counting logs that condition but does not replace the
+tokenizer's automatic behavior with a ZotSeek error.
 
 ### Chunk Overlap
 
@@ -830,21 +847,29 @@ Tested on MacBook Pro M3:
 
 ### Curated Model Set
 
-ZotSeek uses a single source of truth — `src/core/model-registry.ts` — that defines each selectable model:
+ZotSeek separates basic model registration from input policy. The selectable
+identity/loading registry lives in `src/core/model-registry.ts`; hard context
+facts and ZotSeek chunk/runtime policy live in `src/core/model-input-config.ts`.
 
 | Model ID | Label | Dims | Pooling | Prefixes | Bundled | Approx. size |
 |----------|-------|------|---------|----------|---------|--------------|
-| `nomic-embed-text-v1.5` | Nomic v1.5 (English, balanced) | 768 | mean | `search_query:` / `search_document:` | Yes | ~130 MB |
-| `paraphrase-multilingual-MiniLM-L12-v2` | MiniLM multilingual (small, fast) | 384 | mean | none | No | ~135 MB |
-| `multilingual-e5-base` | Multilingual E5 base | 768 | mean | `query:` / `passage:` | No | ~110 MB |
+| `nomic-embed-text-v1.5` | Nomic v1.5 (English, balanced) | 768 | mean | `search_query:` / `search_document:` | No | ~130 MB |
+| `multilingual-e5-base` | Multilingual E5 base | 768 | mean | `query:` / `passage:` | Yes | ~282 MB |
 | `bge-m3` | BGE-M3 (top multilingual) | 1024 | cls | none | No | ~570 MB |
 
 Each `ModelConfig` specifies:
 - `dimensions` — embedding vector length; determines cosine-similarity space. Embeddings from different models are **not** interchangeable.
 - `pooling` — `mean` averages all token embeddings; `cls` uses the `[CLS]` token. Must match the model's training setup.
-- `queryPrefix` / `docPrefix` — instruction strings prepended to queries and documents respectively. Nomic and E5 use these to shift the embedding towards retrieval mode; MiniLM and BGE-M3 do not need them.
+- `queryPrefix` / `docPrefix` — instruction strings prepended to queries and documents respectively. Nomic and E5 use these to shift the embedding towards retrieval mode; BGE-M3 does not need them. Whether instructions are required is derived from these strings.
 - `onnxFile` — path within the Hugging Face repo to the quantized ONNX file.
-- `bundled` — `true` only for the default model shipped inside the XPI (`chrome://zotseek/content/models/`). Non-bundled models are downloaded into `zotseek-models/` inside the Zotero **profile** directory and served from `resource://zotseek-models/`.
+- `bundled` — `true` only for the default model shipped inside the XPI (`chrome://zotseek/content/models/`). Non-bundled installed models are read from `zotseek-models/` inside the Zotero **profile** directory and served from `resource://zotseek-models/`. The Settings model picker does not initiate network downloads; it lists bundled, already-installed and server models only.
+
+`ModelInputConfig` additionally records `maxInputTokens`,
+`recommendedChunkTokens`, `maxChunkChars`, tokenizer type, exact-count support
+and the actual local quantization. `maxChunkChars` is a lossless upstream split
+threshold, not an inference truncation limit. Current values are E5 512/420,
+Nomic 8192/2000 and BGE-M3 8192/2000 (hard limit/recommendation); all local
+artifacts use Q8.
 
   Downloads used to go to the Zotero **data** directory, and models still there are read from `resource://zotseek-models-legacy/` so they keep working. The data directory is the one users relocate to a NAS, an external drive or a synced folder, and reading hundreds of MB of ONNX weights over a network share stalls the load outright, so weights (which are re-downloadable and are not user data) no longer follow the library.
 
@@ -930,6 +955,8 @@ Issue #42 adds a second `runtime` to `ModelConfig` alongside the in-process Chro
 **Model ID namespacing:** every server model is added under an id produced by `sanitizeServerModelId(serverModelName)`, which slugifies the server's model name and prefixes it: `server:<slug>` (e.g. `server:nomic-embed-text-v1.5`). This guarantees a server-backed model never collides with a same-named bundled or Hugging Face model in the `chunks.model_id` partition, even though the underlying weights may be identical: a `server:` id is always its own vector space, requiring its own one-time index pass. Previous indexes (ONNX or other server models) are retained untouched, exactly like switching between any two models (see "Switching Models" above).
 
 **Prefix handling:** ZotSeek applies task prefixes (`search_query: ` / `search_document: ` style instruction strings), not the server. `inferServerPrefixes(serverModelName)` guesses sensible defaults from the model name (`nomic` → Nomic-style prefixes, `e5` → E5-style prefixes, otherwise none) at Add-model time in Settings, and the fields are editable before confirming. The chosen prefixes are stored on the `ServerModelEntry` and applied client-side via the same `applyPrefix()` helper used for ONNX models, so the server always receives already-prefixed text and never needs to know about prefixes itself. The family-to-prefix table lives entirely in `inferServerPrefixes()` in `model-registry.ts`; it is a simple name-substring heuristic, not a lookup against real model metadata, so it can guess wrong for unlisted families, which is why the Settings UI always allows a manual override before Add.
+
+**Input limits:** ZotSeek does not infer a server model's context length and does not truncate server requests by character count. Normal indexing still supplies chunks produced by the upstream token/character policy, while a direct query or document call is sent in full after its prefix. The server owns any final token truncation or context-limit error, so this path remains explicitly best effort.
 
 **Failure semantics:** `ServerEmbeddingClient.embed()` retries network errors, timeouts and 5xx responses with a bounded backoff of 2s, 5s, then 15s; a 4xx response fails immediately (a configuration problem that retrying cannot fix). After the retry budget is exhausted, the client throws `ServerUnavailableError`, which propagates out of `embedChunks()` to the caller's outer catch and stops the run cleanly, the same way a cancellation does. There is deliberately **no fallback to the in-process ONNX model**: silently switching runtimes mid-run would mix two different vector spaces under one `model_id`. Update Index resumes from the same checkpoint mechanism used for any interrupted run once the server is back.
 

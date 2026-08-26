@@ -5,13 +5,21 @@
  */
 
 import { Logger } from '../utils/logger';
-import { getActiveModel, getModel, ModelConfig, modelBasePath, setActiveModelId, applyPrefix,
+import { getActiveModel, getModel, ModelConfig, modelBasePath, setActiveModelId,
   requiresLocalFiles, missingModelMessage, brokenSubstitutionMessage, legacyLocationMessage,
   ModelLocation } from './model-registry';
 import { findModelLocation, ensureModelsResourceSubstitution } from './model-download';
 import { ServerEmbeddingClient } from './server-embedding-client';
+import { getModelInputConfig, type ModelInputConfig } from './model-input-config';
+import {
+  resolveModelInputPolicy,
+  type ResolvedModelInputPolicy,
+} from './model-input-policy';
+import { tokenizerService } from './tokenizer-service';
+import { prepareWorkerInput } from './worker-input';
 
 declare const ChromeWorker: any;
+declare const Zotero: any;
 
 export interface EmbeddingResult {
   embedding: number[];
@@ -34,6 +42,8 @@ export type ProgressCallback = (progress: EmbeddingProgress) => void;
 export class EmbeddingPipeline {
   private logger: Logger;
   private model: ModelConfig = getActiveModel();
+  private inputConfig: ModelInputConfig = getModelInputConfig(this.model);
+  private inputPolicy: ResolvedModelInputPolicy = resolveModelInputPolicy(this.model);
   private worker: any = null;
   private serverClient: ServerEmbeddingClient | null = null;
   private workerReady = false;
@@ -69,6 +79,11 @@ export class EmbeddingPipeline {
     if (this.ready) return;
     if (this.initPromise) return this.initPromise;
     this.model = getActiveModel();
+    this.inputConfig = getModelInputConfig(this.model);
+    const requestedTokens = typeof Zotero !== 'undefined'
+      ? Zotero?.Prefs?.get('zotseek.maxTokens', true)
+      : undefined;
+    this.inputPolicy = resolveModelInputPolicy(this.model, requestedTokens);
 
     this.initPromise = (async () => {
       if (this.model.runtime === 'server') {
@@ -77,9 +92,8 @@ export class EmbeddingPipeline {
       } else {
         // Downloaded models resolve over resource://zotseek-models/. If the
         // files are absent, Transformers.js fails with its own wording naming
-        // that URL, which does not tell the user a download is needed or where
-        // to start one. Nothing else in the load path checks, because
-        // ensureModelDownloaded() is only ever called from the preferences UI.
+        // that URL. Check first so the error can point to an installed model or
+        // manual file placement now that Settings no longer downloads models.
         if (requiresLocalFiles(this.model)) {
           // Files first: absent weights are both the likelier problem and the
           // one with clear advice. Only if they ARE present does an unusable
@@ -221,6 +235,7 @@ export class EmbeddingPipeline {
             queryPrefix: this.model.queryPrefix,
             docPrefix: this.model.docPrefix,
             basePath: modelBasePath(this.model, this.modelLocation ?? 'profile'),
+            quantization: this.inputConfig.quantization,
             // Worker threads cannot read Zotero prefs; resolve the WebGPU
             // opt-in here and ship it with the init message.
             webgpu: this.isWebGPUEnabled(),
@@ -288,6 +303,34 @@ export class EmbeddingPipeline {
     });
   }
 
+  private async diagnoseExactInput(text: string, kind: 'query' | 'doc'): Promise<void> {
+    const maxInputTokens = this.inputPolicy.maxInputTokens;
+    if (!this.inputPolicy.supportsExactTokenCount || maxInputTokens === null) return;
+    try {
+      const counter = kind === 'query'
+        ? await tokenizerService.getQueryTokenCounter()
+        : await tokenizerService.getDocumentTokenCounter();
+      if (!counter) return;
+      const tokenCount = counter(text);
+      if (tokenCount > maxInputTokens) {
+        // This is diagnostic only. Transformers.js feature extraction enables
+        // tokenizer truncation, so preserving the full source input here avoids
+        // an additional character-based cut with different semantics.
+        this.logger.warn(
+          `${this.model.label} ${kind} input is ${tokenCount} tokens after its prefix; ` +
+          `the model tokenizer will truncate it to ${maxInputTokens} tokens.`
+        );
+      }
+    } catch (error: any) {
+      // Chunk extraction still requires the exact tokenizer for supported
+      // multilingual models. This inference preflight must not replace the
+      // model's own tokenizer or turn its automatic truncation into an error.
+      this.logger.warn(
+        `Exact ${kind} input diagnostic unavailable for ${this.model.label}: ${error?.message || error}`
+      );
+    }
+  }
+
   /**
    * Generate embedding for a single text
    * @param text - Text to embed
@@ -303,13 +346,17 @@ export class EmbeddingPipeline {
     if (!this.ready) {
       await this.init();
     }
+    await this.diagnoseExactInput(text, kind);
     if (this.model.runtime === 'server') {
       if (!this.serverClient) await this.init();
       const start = Date.now();
-      const prefixed = applyPrefix(text, kind, this.model);
+      const prepared = prepareWorkerInput(text, kind, {
+        queryPrefix: this.model.queryPrefix,
+        docPrefix: this.model.docPrefix,
+      });
       // Search queries fail fast (1 retry); documents get the full backoff (3).
       const retries = kind === 'query' ? 1 : 3;
-      const [embedding] = await this.serverClient!.embed([prefixed], retries);
+      const [embedding] = await this.serverClient!.embed([prepared], retries);
       return { embedding, modelId: this.model.id, processingTimeMs: Date.now() - start };
     }
     for (let attempt = 0; ; attempt++) {
@@ -385,8 +432,11 @@ export class EmbeddingPipeline {
     if (this.model.runtime !== 'server' || !this.serverClient) {
       throw new Error('embedDocuments is only available with a server-backed model');
     }
-    const prefixed = texts.map(t => applyPrefix(t, 'doc', this.model));
-    return this.serverClient.embed(prefixed);
+    const prepared = texts.map(text => prepareWorkerInput(text, 'doc', {
+      queryPrefix: this.model.queryPrefix,
+      docPrefix: this.model.docPrefix,
+    }));
+    return this.serverClient.embed(prepared);
   }
 
   /**
@@ -429,6 +479,7 @@ export class EmbeddingPipeline {
       job.reject(new Error('Pipeline reset'));
     }
     this.pendingJobs.clear();
+    tokenizerService.reset();
   }
 
   /**
@@ -478,6 +529,7 @@ export class EmbeddingPipeline {
     }
     this.serverClient = null;
     this.pendingJobs.clear();
+    tokenizerService.reset();
   }
 }
 

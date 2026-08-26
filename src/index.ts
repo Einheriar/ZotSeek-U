@@ -35,6 +35,7 @@ import { getActiveModelId } from './core/model-registry';
 import { initServerManager, shutdownServerManager } from './server/server-manager';
 import { registerModelsResourceSubstitution, verifyModelsResourceSubstitution } from './core/model-download';
 import { tokenizerService } from './core/tokenizer-service';
+import { shouldClearLegacyDefaultChunkPreference } from './core/model-input-policy';
 // Self-test harness (mounted only when extensions.zotseek.devMode = true)
 import { selfTest as zotseekSelfTest } from './dev/self-test';
 // Task suites: imported for registration side effects only.
@@ -167,35 +168,61 @@ const SERVER_EMBED_GROUP = 32;
 async function embedChunks(
   chunks: ChunkForEmbedding[],
   onProgress: (processed: number) => Promise<void> | void,
+  expectedModelId: string = getActiveModelId(),
 ): Promise<EmbedChunksResult> {
   const embeddings = new Map<string, { embedding: number[]; modelId: string }>();
   let failedChunks = 0;
   const failedItems = new Set<string>();
 
   if (embeddingPipeline.isServerBacked()) {
-    const modelId = getActiveModelId();
     for (let i = 0; i < chunks.length; i += SERVER_EMBED_GROUP) {
+      if (getActiveModelId() !== expectedModelId || embeddingPipeline.getModelId() !== expectedModelId) {
+        throw new Error('Embedding model changed during indexing; the batch was stopped before saving.');
+      }
       const group = chunks.slice(i, i + SERVER_EMBED_GROUP);
       const vectors = await embeddingPipeline.embedDocuments(group.map(c => c.text));
-      group.forEach((c, j) => embeddings.set(c.id, { embedding: vectors[j], modelId }));
+      group.forEach((c, j) => embeddings.set(c.id, { embedding: vectors[j], modelId: expectedModelId }));
       await onProgress(Math.min(i + group.length, chunks.length));
     }
     return { embeddings, failedChunks, failedItems };
   }
 
   for (let i = 0; i < chunks.length; i++) {
+    if (getActiveModelId() !== expectedModelId || embeddingPipeline.getModelId() !== expectedModelId) {
+      throw new Error('Embedding model changed during indexing; the batch was stopped before saving.');
+    }
     const chunk = chunks[i];
     try {
       const result = await embeddingPipeline.embed(chunk.text);
-      if (result) embeddings.set(chunk.id, result);
+      if (result) {
+        if (result.modelId !== expectedModelId) {
+          throw new Error(`Embedding model changed from ${expectedModelId} to ${result.modelId} during indexing.`);
+        }
+        embeddings.set(chunk.id, result);
+      }
     } catch (embedException: any) {
+      if (getActiveModelId() !== expectedModelId ||
+          embeddingPipeline.getModelId() !== expectedModelId ||
+          /Embedding model changed/.test(embedException?.message || '')) {
+        throw embedException;
+      }
       // Retry once before giving up on this chunk
       try {
         Zotero.debug(`[ZotSeek] Embedding failed for chunk ${chunk.id} ("${chunk.title}"), retrying: ${embedException?.message || embedException}`);
         await new Promise(resolve => setTimeout(resolve, 500));
         const retryResult = await embeddingPipeline.embed(chunk.text);
-        if (retryResult) embeddings.set(chunk.id, retryResult);
-      } catch {
+        if (retryResult) {
+          if (retryResult.modelId !== expectedModelId) {
+            throw new Error(`Embedding model changed from ${expectedModelId} to ${retryResult.modelId} during indexing.`);
+          }
+          embeddings.set(chunk.id, retryResult);
+        }
+      } catch (retryError: any) {
+        if (getActiveModelId() !== expectedModelId ||
+            embeddingPipeline.getModelId() !== expectedModelId ||
+            /Embedding model changed/.test(retryError?.message || '')) {
+          throw retryError;
+        }
         failedChunks++;
         failedItems.add(chunk.title);
         Zotero.debug(`[ZotSeek] Skipping chunk ${chunk.id} ("${chunk.title}") after retry failure: ${embedException?.message || embedException}`);
@@ -259,7 +286,6 @@ class ZotSeekPlugin {
       'zotseek.topK': 20,
       'zotseek.autoIndex': false,
       'zotseek.indexingMode': 'full',  // 'abstract', 'notes', or 'full'
-      'zotseek.maxTokens': 450,        // Stay below multilingual E5's 512-token limit
       'zotseek.maxChunksPerPaper': 100,
       'zotseek.excludeBooks': true,        // Exclude books from search/indexing by default
       'zotseek.excludeTag': 'zotseek-exclude', // Tag name to exclude items from indexing
@@ -267,6 +293,7 @@ class ZotSeekPlugin {
       'zotseek.mcpServer.enabled': false, // Opt-in local MCP/REST endpoints for AI agents
       'zotseek.embeddingModel': 'multilingual-e5-base',
       'zotseek.modelDefaultMigrationE5': false,
+      'zotseek.modelInputPolicyMigrationV1': false,
       'zotseek.indexScope': 'user', // 'user' (My Library) or 'all' (all libraries)
       'zotseek.serverModels': '[]', // JSON array of server-backed model entries (issue #42)
       'zotseek.autoCompact': true, // Reclaim space in zotseek.sqlite during Zotero's idle maintenance (Zotero 10+)
@@ -305,16 +332,27 @@ class ZotSeekPlugin {
           if (minSimilarity === undefined || minSimilarity === 30) {
             Z.Prefs.set('zotseek.minSimilarityPercent', 70, true);
           }
-          const maxTokens = Z.Prefs.get('zotseek.maxTokens', true);
-          if (maxTokens === undefined || maxTokens === 800 || maxTokens === 2000) {
-            Z.Prefs.set('zotseek.maxTokens', 450, true);
-          }
           this.logger.info('Migrated default embedding model to multilingual-e5-base');
         }
         Z.Prefs.set(migrationKey, true, true);
       }
     } catch (error) {
       this.logger.warn(`Could not migrate the default embedding model: ${error}`);
+    }
+
+    // The previous build wrote 450 as a global default. Clear that one
+    // ambiguous value once so each model can use its own recommendation.
+    try {
+      const migrationKey = 'zotseek.modelInputPolicyMigrationV1';
+      const migrated = Z.Prefs.get(migrationKey, true) === true;
+      const maxTokens = Z.Prefs.get('zotseek.maxTokens', true);
+      if (shouldClearLegacyDefaultChunkPreference(maxTokens, migrated)) {
+        Z.Prefs.clear('zotseek.maxTokens', true);
+        this.logger.info('Cleared the legacy global 450-token default');
+      }
+      if (!migrated) Z.Prefs.set(migrationKey, true, true);
+    } catch (error) {
+      this.logger.warn(`Could not migrate the model input policy: ${error}`);
     }
   }
 
@@ -1359,6 +1397,7 @@ class ZotSeekPlugin {
   private async indexItems(items: any[], scope?: BulkScope): Promise<void> {
     this.indexing = true;
     const Z = getZotero();
+    const indexingModelId = getActiveModelId();
 
     // Persist intent for auto-resume after crash/sleep. Only bother for runs
     // big enough that resuming saves real time — single-item indexing doesn't
@@ -1437,6 +1476,9 @@ class ZotSeekPlugin {
 
       progressWindow.updateProgress(getString('indexing-loadingModel'), null);
       await embeddingPipeline.init();
+      if (embeddingPipeline.getModelId() !== indexingModelId) {
+        throw new Error('Embedding model changed while the indexing batch was starting.');
+      }
       this.logger.info('Embedding pipeline initialized (Transformers.js)')
       progressWindow.addLine(getString('indexing-modelLoaded'), 'chrome://zotero/skin/tick.png');
 
@@ -1510,7 +1552,8 @@ class ZotSeekPlugin {
               batchStart + Math.floor((processed / batchChunks.length) * batchItems.length),
               itemsToIndex.length
             );
-          }
+          },
+          indexingModelId,
         );
 
         if (failedChunks > 0) {
@@ -1525,7 +1568,7 @@ class ZotSeekPlugin {
         const batchEmbeddings: PaperEmbedding[] = [];
         for (const extracted of extractedBatch) {
           // Delete existing chunks for the active model only — other models' chunks are preserved
-          await this.vectorStore!.deleteItemChunks(extracted.itemId, getActiveModelId());
+          await this.vectorStore!.deleteItemChunks(extracted.itemId, indexingModelId);
 
           if (extracted.wasTruncated) {
             totalItemsTruncated++;
@@ -1675,6 +1718,7 @@ class ZotSeekPlugin {
 
     this.indexing = true;
     const Z = getZotero();
+    const indexingModelId = getActiveModelId();
 
     this.logger.info(`Auto-indexing ${items.length} items...`);
 
@@ -1777,7 +1821,8 @@ class ZotSeekPlugin {
         textsForEmbedding,
         (processed) => {
           itemRow.setText(getString('indexing-embedding', { current: processed, total: textsForEmbedding.length }));
-        }
+        },
+        indexingModelId,
       );
 
       // Store embeddings with chunk metadata
@@ -1840,7 +1885,7 @@ class ZotSeekPlugin {
       // Replace only items for which at least one new embedding succeeded. This
       // removes stale note chunks when a note shrinks or is deleted.
       for (const { libraryKey, itemKey } of identitiesToReplace.values()) {
-        await this.vectorStore!.deleteChunksForItem(libraryKey, itemKey, getActiveModelId());
+        await this.vectorStore!.deleteChunksForItem(libraryKey, itemKey, indexingModelId);
       }
       await this.vectorStore!.putBatch(paperEmbeddings);
 
@@ -1902,6 +1947,7 @@ class ZotSeekPlugin {
     if (this.indexing || items.length === 0) return [];
     this.indexing = true;
     const Z = getZotero();
+    const indexingModelId = getActiveModelId();
     const progressWin = new (Z.ProgressWindow as any)({ closeOnClick: true });
     progressWin.changeHeadline(getString('indexing-progressTitle'));
     const itemRow = new progressWin.ItemProgress(
@@ -1972,7 +2018,7 @@ class ZotSeekPlugin {
             current: processed,
             total: textsForEmbedding.length,
           }));
-        });
+        }, indexingModelId);
         embeddingMap = embedded.embeddings;
       }
 
@@ -2018,7 +2064,7 @@ class ZotSeekPlugin {
           libraryId: extracted.libraryId,
           title: extracted.title,
           abstract: extracted.abstract || undefined,
-          modelId: getActiveModelId(),
+          modelId: indexingModelId,
           indexedAt: now,
           contentHash,
           wasTruncated: status?.wasTruncated || extracted.wasTruncated,
@@ -2343,7 +2389,8 @@ class ZotSeekPlugin {
 
         const { embeddings: embeddingMap, failedChunks, failedItems } = await embedChunks(
           batchChunks,
-          () => { /* no per-chunk progress text in this path, matches prior behavior */ }
+          () => { /* no per-chunk progress text in this path, matches prior behavior */ },
+          activeModelId,
         );
 
         if (failedChunks > 0) {

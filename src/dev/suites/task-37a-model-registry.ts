@@ -2,14 +2,15 @@ import { selfTest, scenario, assertEq, assertTrue } from '../self-test';
 import {
   MODELS, DEFAULT_MODEL_ID, getModel, getActiveModel,
   isAllowedHfPath, applyPrefix, legacyModelIdToShortId,
+  requiresInstructionPrefix,
 } from '../../core/model-registry';
 
 declare const Zotero: any;
 
 selfTest.register('task-37a-model-registry', async () => {
   return [
-    await scenario('registry has the four curated models', async () => {
-      assertEq(MODELS.length, 4);
+    await scenario('registry has the three curated models', async () => {
+      assertEq(MODELS.length, 3);
       assertTrue(getModel(DEFAULT_MODEL_ID), 'default model missing from registry');
     }),
     await scenario('only nomic is bundled', async () => {
@@ -18,7 +19,6 @@ selfTest.register('task-37a-model-registry', async () => {
     }),
     await scenario('dimensions are correct per model', async () => {
       assertEq(getModel('nomic-embed-text-v1.5')!.dimensions, 768);
-      assertEq(getModel('paraphrase-multilingual-MiniLM-L12-v2')!.dimensions, 384);
       assertEq(getModel('multilingual-e5-base')!.dimensions, 768);
       assertEq(getModel('bge-m3')!.dimensions, 1024);
     }),
@@ -30,6 +30,8 @@ selfTest.register('task-37a-model-registry', async () => {
       assertEq(applyPrefix('cats', 'query', getModel('nomic-embed-text-v1.5')!), 'search_query: cats');
       assertEq(applyPrefix('cats', 'doc', getModel('multilingual-e5-base')!), 'passage: cats');
       assertEq(applyPrefix('cats', 'query', getModel('bge-m3')!), 'cats');
+      assertTrue(requiresInstructionPrefix(getModel('nomic-embed-text-v1.5')!), 'Nomic requires instructions');
+      assertTrue(!requiresInstructionPrefix(getModel('bge-m3')!), 'BGE-M3 has no instruction prefix');
     }),
     await scenario('allowlist accepts registry hfPaths and rejects others', async () => {
       assertTrue(isAllowedHfPath('Xenova/bge-m3'), 'should allow registry hfPath');

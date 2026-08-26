@@ -27,6 +27,8 @@ let useWebGPU = false; // Will be set after actual GPU adapter check
 
 // Import Transformers.js v3
 import { pipeline, env } from '@huggingface/transformers';
+import { prepareWorkerInput } from '../core/worker-input';
+import type { ModelQuantization } from '../core/model-input-config';
 
 // CRITICAL: Configure wasmPaths BEFORE any pipeline initialization
 env.backends.onnx.wasm.wasmPaths = 'chrome://zotseek/content/wasm/';
@@ -68,26 +70,21 @@ let CURRENT: {
   queryPrefix: string;
   docPrefix: string;
   basePath: string;
+  quantization: ModelQuantization;
   webgpu?: boolean;    // experimental opt-in (zotseek.webgpu.enabled)
 } | null = null;
 
-const MODEL_OPTIONS = {
-  quantized: true,         // Use the local quantized model
-  // Every model in the registry ships only onnx/model_quantized.onnx, which
-  // maps to dtype 'q8' in Transformers.js v3 file naming. The legacy
-  // `quantized: true` flag covers the WASM path, but the WebGPU path ignores
-  // it and defaults to fp32 (onnx/model.onnx), a file we do not ship -- so
-  // the dtype must be explicit or GPU loading always fails.
-  dtype: 'q8' as const,
-  local_files_only: true,  // Only use local bundled files
-};
-
-// PERFORMANCE OPTIMIZATION: Smaller chunks = much faster embedding
-// Embedding time scales ~O(n²) with sequence length due to attention
-// - 24000 chars (~8000 tokens): ~45 seconds (too slow!)
-// - 8000 chars (~2000 tokens): ~3-5 seconds (acceptable)
-// The chunker now creates smaller chunks, this is a safety limit.
-const MAX_CHARS = 8000;
+function modelOptions() {
+  if (!CURRENT) throw new Error('Model config missing');
+  if (CURRENT.quantization === 'server-managed') {
+    throw new Error('Server-managed quantization cannot be loaded in the local worker');
+  }
+  return {
+    quantized: CURRENT.quantization === 'q8',
+    dtype: CURRENT.quantization,
+    local_files_only: true,
+  } as const;
+}
 
 /**
  * Check if WebGPU is actually available and working
@@ -162,7 +159,7 @@ async function initPipeline(): Promise<void> {
   // thread and passed in the init message). Even where WebGPU exists
   // (Zotero 11+ / Firefox 153), the WASM path is currently faster, so
   // detection alone must not switch the device.
-  if (CURRENT.webgpu) {
+  if (CURRENT.webgpu && CURRENT.quantization === 'fp16') {
     useWebGPU = await checkWebGPUAvailability();
   } else {
     useWebGPU = false;
@@ -170,7 +167,9 @@ async function initPipeline(): Promise<void> {
       postMessage({
         type: 'log',
         level: 'info',
-        message: 'WebGPU detected but not enabled (zotseek.webgpu.enabled is off)',
+        message: CURRENT.webgpu
+          ? 'WebGPU requested but no FP16 model artifact is configured; using WASM/Q8'
+          : 'WebGPU detected but not enabled (zotseek.webgpu.enabled is off)',
       });
     }
   }
@@ -195,7 +194,7 @@ async function initPipeline(): Promise<void> {
       // node-by-node with a GPU<->CPU transfer around each -- measured ~11x
       // SLOWER than plain WASM. GPU needs fp16 weights (model_fp16.onnx).
       embeddingPipeline = await pipeline('feature-extraction', CURRENT.hfPath, {
-        ...MODEL_OPTIONS,
+        ...modelOptions(),
         dtype: 'fp16',
         device: 'webgpu',
       });
@@ -225,7 +224,7 @@ async function initPipeline(): Promise<void> {
 
   // WASM (CPU) fallback
   try {
-    embeddingPipeline = await pipeline('feature-extraction', CURRENT.hfPath, MODEL_OPTIONS);
+    embeddingPipeline = await pipeline('feature-extraction', CURRENT.hfPath, modelOptions());
 
     const loadTime = Date.now() - startTime;
     postMessage({
@@ -276,27 +275,11 @@ async function generateEmbedding(jobId: string, text: string, kind: 'query' | 'd
   try {
     const startTime = Date.now();
 
-    // Truncate if needed (should be rare with 8K context)
-    let processedText = text.length > MAX_CHARS ? text.substring(0, MAX_CHARS) : text;
-
-    // Add instruction prefix based on whether this is a query or document
-    // Prefixes are model-specific (e.g. nomic uses search_query:/search_document:)
-    const prefix = kind === 'query' ? CURRENT.queryPrefix : CURRENT.docPrefix;
-    if (prefix) {
-      processedText = prefix + processedText;
-    }
-
-    const wasTruncated = text.length > MAX_CHARS;
-    if (wasTruncated) {
-      postMessage({
-        type: 'log',
-        level: 'info',
-        message: 'Text truncated for embedding',
-        data: { originalLength: text.length, truncatedLength: MAX_CHARS }
-      });
-    }
-
-    const output = await embeddingPipeline(processedText, {
+    const prepared = prepareWorkerInput(text, kind, CURRENT);
+    // Preserve the full source string. Transformers.js feature extraction
+    // enables tokenizer truncation and applies the model's model_max_length;
+    // normal indexing has already split long chunks without dropping tails.
+    const output = await embeddingPipeline(prepared, {
       pooling: CURRENT.pooling,
       normalize: CURRENT.normalize,
     });
@@ -363,6 +346,6 @@ postMessage({
   type: 'log',
   level: 'info',
   message: 'Embedding worker initialized (awaiting model config via init message)',
-  data: { maxChars: MAX_CHARS, webGPUAvailable: hasWebGPU }
+  data: { webGPUAvailable: hasWebGPU }
 });
 postMessage({ type: 'status', status: 'initialized', message: `Worker loaded (WebGPU ${hasWebGPU ? 'detected' : 'not available'})` });

@@ -86,7 +86,13 @@ zotseek-pref-minSimilarity = Min similarity
 zotseek-pref-minSimilarityDesc = % — Filter out low-quality matches (0-100)
 zotseek-pref-advancedSettings = Advanced Settings
 zotseek-pref-maxTokens = Max tokens per chunk
-zotseek-pref-maxTokensDesc = Chunk size ceiling (200-8000)
+zotseek-pref-maxTokensDesc = Optional user override; the active model policy applies the final limit
+zotseek-pref-modelInputPolicy = Limit: { $limit } · Recommended: { $recommended } · Effective: { $effective } · Prefix: { $prefix }
+zotseek-pref-modelInputUnknown = server managed
+zotseek-pref-modelInputPrefixRequired = required
+zotseek-pref-modelInputPrefixNone = none
+zotseek-pref-resetMaxTokens =
+    .label = Use recommended
 zotseek-pref-maxChunks = Max chunks per paper
 zotseek-pref-maxChunksDesc = Limit for long documents (1-200)
 zotseek-pref-excludeBooks =
@@ -384,4 +390,4 @@ zotseek-prefs-exclusions = Exclusions
 ## Model section headers (fallbacks existed in XHTML only; adds the missing ftl entries)
 
 zotseek-pref-embeddingModelTitle = Embedding Model
-zotseek-pref-manageModelsTitle = Manage downloaded models
+zotseek-pref-manageModelsTitle = Manage installed models

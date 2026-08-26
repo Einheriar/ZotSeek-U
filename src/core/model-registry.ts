@@ -46,17 +46,6 @@ export const MODELS: ModelConfig[] = [
     bundled: false, approxSizeMB: 130, multilingual: false,
   },
   {
-    id: 'paraphrase-multilingual-MiniLM-L12-v2',
-    label: 'MiniLM multilingual (small, fast)',
-    runtime: 'onnx',
-    hfPath: 'Xenova/paraphrase-multilingual-MiniLM-L12-v2',
-    dimensions: 384, pooling: 'mean', normalize: true,
-    queryPrefix: '', docPrefix: '',
-    onnxFile: 'onnx/model_quantized.onnx',
-    files: [...COMMON_FILES, 'onnx/model_quantized.onnx'],
-    bundled: false, approxSizeMB: 135, multilingual: true,
-  },
-  {
     id: 'multilingual-e5-base',
     label: 'Multilingual E5 base',
     runtime: 'onnx',
@@ -131,27 +120,28 @@ export function setActiveModelId(id: string): void {
  * worker can load it.
  *
  * Bundled models ship inside the plugin and resolve over `chrome://`. Server
- * models keep their weights on the server. Everything else is downloaded into
+ * models keep their weights on the server. Everything else is installed into
  * the profile and resolved over `resource://zotseek-models/`, and is missing
- * until the user downloads it from Settings.
+ * until its files are placed in ZotSeek's model directory.
  */
 export function requiresLocalFiles(model: ModelConfig): boolean {
   return model.runtime !== 'server' && !model.bundled;
 }
 
 /**
- * Message for a model whose downloaded files are not on disk.
+ * Message for a non-bundled model whose files are not on disk.
  *
  * Without this the user sees Transformers.js's own wording, which names a
  * `resource://` URL and mentions `local_files_only`. That is accurate and
- * completely unactionable: it does not say which model, that a download is
- * needed, or where to start one.
+ * completely unactionable: it does not say which model is missing or how to
+ * recover now that Settings no longer starts network downloads.
  */
 export function missingModelMessage(model: ModelConfig): string {
   return (
     `The "${model.label}" embedding model is selected but its files are not on this computer. ` +
-    `Open Settings, ZotSeek, Models and select it again to download it (about ${model.approxSizeMB} MB), ` +
-    `or switch back to a model that is already installed.`
+    `Switch to the built-in model or another model that is already installed. ` +
+    `To use this model, place its configured files in ZotSeek's model directory manually ` +
+    `(about ${model.approxSizeMB} MB).`
   );
 }
 
@@ -205,7 +195,7 @@ export function legacyLocationMessage(model: ModelConfig): string {
   return (
     `"${model.label}" is stored in your Zotero data folder, where ZotSeek used to keep models. ` +
     `It still works from there. If your data folder is on a network drive or remote storage, ` +
-    `remove and download the model again to move it next to Zotero's profile, which avoids the ` +
+    `move the model files manually into ZotSeek's current profile model directory to avoid the ` +
     `stalls that reading large files over a network can cause.`
   );
 }
@@ -213,6 +203,11 @@ export function legacyLocationMessage(model: ModelConfig): string {
 export function applyPrefix(text: string, kind: 'query' | 'doc', model: ModelConfig): string {
   const prefix = kind === 'query' ? model.queryPrefix : model.docPrefix;
   return prefix ? prefix + text : text;
+}
+
+/** Whether either embedding task requires a model-specific instruction. */
+export function requiresInstructionPrefix(model: ModelConfig): boolean {
+  return model.queryPrefix.length > 0 || model.docPrefix.length > 0;
 }
 
 /**

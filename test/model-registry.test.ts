@@ -13,6 +13,7 @@ import {
   getActiveModel,
   setActiveModelId,
   applyPrefix,
+  requiresInstructionPrefix,
   modelBasePath,
   sanitizeServerModelId,
   inferServerPrefixes,
@@ -31,6 +32,14 @@ beforeEach(() => { zotero = installZoteroStub(); });
 afterEach(() => { removeZoteroStub(); });
 
 describe('the curated model set', () => {
+  test('contains only the three academic-use models', () => {
+    assert.deepEqual(MODELS.map((model) => model.id), [
+      'nomic-embed-text-v1.5',
+      'multilingual-e5-base',
+      'bge-m3',
+    ]);
+  });
+
   test('model ids are unique', () => {
     const ids = MODELS.map((m) => m.id);
     assert.equal(new Set(ids).size, ids.length);
@@ -120,6 +129,12 @@ describe('task prefixes and paths', () => {
     assert.equal(applyPrefix('cats', 'query', m), 'cats');
   });
 
+  test('derives instruction requirements from the configured prefixes', () => {
+    assert.equal(requiresInstructionPrefix(getModel('nomic-embed-text-v1.5')!), true);
+    assert.equal(requiresInstructionPrefix(getModel('multilingual-e5-base')!), true);
+    assert.equal(requiresInstructionPrefix(getModel('bge-m3')!), false);
+  });
+
   test('bundled and downloaded models resolve to different roots', () => {
     assert.notEqual(modelBasePath({ bundled: true } as any), modelBasePath({ bundled: false } as any));
   });
@@ -206,11 +221,13 @@ describe('models that need their weights on disk', () => {
     assert.equal(requiresLocalFiles({ runtime: 'server', bundled: false } as any), false);
   });
 
-  test('the message names the model and points at the setting that fixes it', () => {
+  test('the message names the model without pointing at the removed download UI', () => {
     const model = MODELS.find((m) => !m.bundled)!;
     const msg = missingModelMessage(model);
     assert.ok(msg.includes(model.label), 'names the model the user chose');
-    assert.match(msg, /Settings/i, 'points somewhere the user can act');
+    assert.match(msg, /built-in model/i, 'offers an immediately available fallback');
+    assert.match(msg, /manually/i, 'explains how advanced users can install files');
+    assert.doesNotMatch(msg, /Settings/i, 'does not point at the removed download UI');
     assert.ok(!msg.includes('resource://'), 'does not leak the internal URL scheme');
     assert.ok(!/local_files_only/.test(msg), 'does not leak the Transformers.js wording');
   });

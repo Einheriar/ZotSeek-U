@@ -1,8 +1,8 @@
 /**
- * Chunker - Semantic section-based chunking for nomic-embed-text-v1.5
+ * Chunker - model-aware semantic section chunking
  * 
- * Philosophy: With 8K context, chunk by SEMANTIC PURPOSE, not token limits.
- * This improves retrieval quality by creating focused embeddings.
+ * Source boundaries remain semantic, while the active model policy supplies
+ * the final token and character ceilings.
  * 
  * Three indexing modes:
  * - abstract: Title + Abstract only (fast, good for most uses)
@@ -38,11 +38,12 @@ export interface ChunkWithLocation extends Chunk {
 export type TokenCounter = (text: string) => number;
 
 export interface ChunkOptions {
-  maxTokens?: number;      // Safety limit (default: 7000)
-  maxChunks?: number;      // Max chunks per paper (default: 5)
-  maxChars?: number;       // Hard character limit per chunk (must match embedding worker MAX_CHARS)
+  maxTokens?: number;      // Resolved active-model limit
+  maxChunks?: number;      // Max chunks per paper (default: 100)
+  maxChars?: number;       // Lossless per-chunk split threshold; inference does not truncate by chars
   totalPages?: number;     // Total pages from Zotero.Fulltext.getPages() for calibrated estimation
-  tokenCounter?: TokenCounter; // Exact active-model counter, injected lazily for Notes/Full mode
+  tokenCounter?: TokenCounter; // Exact prefixed-input counter for supported multilingual models
+  modelIdSnapshot?: string; // Internal batch snapshot; ignored by pure chunking logic
 }
 
 /**
@@ -59,15 +60,11 @@ export interface ChunkResult {
 // User-selectable indexing modes
 export type IndexingMode = 'abstract' | 'notes' | 'full';
 
-// Default options for nomic-embed-v1.5 (8192 token limit)
-// PERFORMANCE: Smaller chunks embed MUCH faster due to O(n²) attention
-// - 7000 tokens: ~45 seconds per chunk (too slow!)
-// - 500 tokens: ~0.3-0.5 seconds per chunk (very fast!)
-// With paragraph-level chunking, we need many more chunks
+// Defensive fallbacks only. Normal indexing passes a resolved model policy.
 const DEFAULT_OPTIONS: Required<Pick<ChunkOptions, 'maxTokens' | 'maxChunks' | 'maxChars'>> = {
-  maxTokens: 450,     // Stay below multilingual E5 Base's 512-token limit
-  maxChunks: 100,     // Allow up to 100 paragraphs per paper (covers most papers)
-  maxChars: 8000,     // Must match embedding worker MAX_CHARS (hard character ceiling)
+  maxTokens: 450,
+  maxChunks: 100,
+  maxChars: 8000,
 };
 
 // Patterns to identify section boundaries
@@ -80,8 +77,8 @@ const SECTION_PATTERNS = {
 };
 
 /**
- * Estimate token count for nomic tokenizer
- * Conservative estimate: ~1.3 tokens per word for English academic text
+ * English-oriented heuristic used only when exact multilingual counting is
+ * intentionally unavailable. It is not safe for CJK context-limit checks.
  */
 export function estimateTokens(text: string): number {
   if (!text) return 0;
@@ -104,8 +101,14 @@ function splitChunkByCharLimit(chunk: Chunk, maxChars: number): Chunk[] {
   const availableChars = maxChars - prefixLen;
 
   if (availableChars <= 0) {
-    // Title alone exceeds limit; just truncate the whole chunk
-    return [{ ...chunk, text: chunk.text.substring(0, maxChars) }];
+    // A pathological title can consume the whole budget. Preserve the full
+    // input as consecutive pieces instead of silently dropping its tail.
+    const pieces: Chunk[] = [];
+    for (let offset = 0; offset < chunk.text.length; offset += maxChars) {
+      const text = chunk.text.substring(offset, offset + maxChars);
+      pieces.push({ ...chunk, index: 0, text, tokenCount: estimateTokens(text) });
+    }
+    return pieces;
   }
 
   const sentences = body.match(/[^.!?。！？]+[.!?。！？]+|[^.!?。！？]+$/g) || [body];
@@ -564,7 +567,7 @@ export function chunkDocumentEx(
   // Abstract and Notes modes do not process PDF full text. Notes are appended
   // by TextExtractor so note source boundaries remain explicit.
   if (mode !== 'full') {
-    const enforced = enforceCharLimitEx(chunks, opts.maxChars, opts.maxChunks);
+    const enforced = enforceInputLimitsEx(chunks, opts);
     return {
       chunks: enforced.chunks,
       wasTruncated: wasTruncated || enforced.truncatedByCharLimit,
@@ -578,7 +581,7 @@ export function chunkDocumentEx(
   // ═══════════════════════════════════════════════════════════════════════
   if (!fulltext || fulltext.length < 500) {
     // No meaningful fulltext available
-    const enforced = enforceCharLimitEx(chunks, opts.maxChars, opts.maxChunks);
+    const enforced = enforceInputLimitsEx(chunks, opts);
     return {
       chunks: enforced.chunks,
       wasTruncated: wasTruncated || enforced.truncatedByCharLimit,
@@ -680,7 +683,7 @@ export function chunkDocumentEx(
   }
 
   // Enforce character limit as safety net (token estimates can undercount for dense text)
-  const enforced = enforceCharLimitEx(chunks, opts.maxChars, opts.maxChunks);
+  const enforced = enforceInputLimitsEx(chunks, opts);
 
   // pagesIndexed: count distinct pages reflected in surviving chunks
   const distinctPages = new Set<number>();
@@ -793,8 +796,83 @@ function splitExactBodyBySentences(
   return parts;
 }
 
+function splitChunkByExactTokenLimit(
+  chunk: Chunk,
+  maxTokens: number,
+  tokenCounter: TokenCounter,
+): Chunk[] {
+  const exactCount = tokenCounter(chunk.text);
+  if (exactCount <= maxTokens) return [{ ...chunk, tokenCount: exactCount }];
+
+  const separatorIndex = chunk.text.indexOf('\n\n');
+  const titlePrefix = separatorIndex >= 0 ? chunk.text.substring(0, separatorIndex) : '';
+  const body = separatorIndex >= 0 ? chunk.text.substring(separatorIndex + 2) : chunk.text;
+  const buildText = (part: string) => titlePrefix ? `${titlePrefix}\n\n${part}` : part;
+  const countBody = (part: string) => tokenCounter(buildText(part));
+  const parts = splitExactBodyBySentences(body, countBody, maxTokens);
+
+  return parts.map((part, index) => ({
+    ...chunk,
+    index,
+    text: buildText(part.text),
+    tokenCount: part.tokenCount,
+  }));
+}
+
+/** Apply exact token limits first, then the independent lossless character split. */
+function enforceInputLimitsEx(
+  chunks: Chunk[],
+  options: Required<Pick<ChunkOptions, 'maxTokens' | 'maxChunks' | 'maxChars'>> & Pick<ChunkOptions, 'tokenCounter'>,
+  maxChunks: number = options.maxChunks,
+): { chunks: Chunk[]; truncatedByCharLimit: boolean } {
+  const tokenLimited: Chunk[] = [];
+  let truncated = false;
+
+  for (const chunk of chunks) {
+    const parts = options.tokenCounter
+      ? splitChunkByExactTokenLimit(chunk, options.maxTokens, options.tokenCounter)
+      : [chunk];
+    for (const part of parts) {
+      if (tokenLimited.length >= maxChunks) {
+        truncated = true;
+        break;
+      }
+      tokenLimited.push(part);
+    }
+    if (truncated) break;
+  }
+
+  const charLimited = enforceCharLimitEx(tokenLimited, options.maxChars, maxChunks);
+  let finalChunks = charLimited.chunks;
+  if (options.tokenCounter) {
+    const verified: Chunk[] = [];
+    let verificationTruncated = false;
+    for (const chunk of charLimited.chunks) {
+      const parts = splitChunkByExactTokenLimit(chunk, options.maxTokens, options.tokenCounter);
+      for (const part of parts) {
+        if (verified.length >= maxChunks) {
+          verificationTruncated = true;
+          break;
+        }
+        verified.push(part);
+      }
+      if (verificationTruncated) break;
+    }
+    truncated = truncated || verificationTruncated;
+    finalChunks = verified;
+    finalChunks.forEach((chunk, index) => {
+      chunk.index = index;
+      chunk.tokenCount = options.tokenCounter!(chunk.text);
+    });
+  }
+  return {
+    chunks: finalChunks,
+    truncatedByCharLimit: truncated || charLimited.truncatedByCharLimit,
+  };
+}
+
 /**
- * Exact multilingual-E5 note splitting.
+ * Exact multilingual note splitting.
  *
  * Paragraph costs are cached by TokenizerService. We use their additive cost
  * for the common greedy path, then verify each emitted chunk with the real
@@ -937,7 +1015,7 @@ export function chunkNoteTexts(
     if (wasTruncated) break;
   }
 
-  const enforced = enforceCharLimitEx(rawChunks, opts.maxChars, availableSlots);
+  const enforced = enforceInputLimitsEx(rawChunks, opts, availableSlots);
   enforced.chunks.forEach((chunk, index) => {
     chunk.index = startIndex + index;
     if (opts.tokenCounter) {
@@ -1256,7 +1334,7 @@ export function chunkDocumentWithPagesEx(
 
   // For abstract mode, we're done
   if (mode === 'abstract') {
-    const enforced = enforceCharLimitEx(chunks, opts.maxChars, opts.maxChunks);
+    const enforced = enforceInputLimitsEx(chunks, opts);
     return {
       chunks: enforced.chunks,
       wasTruncated: wasTruncated || enforced.truncatedByCharLimit,
@@ -1270,7 +1348,7 @@ export function chunkDocumentWithPagesEx(
   // Each meaningful paragraph gets its own embedding for precise retrieval
   // ═══════════════════════════════════════════════════════════════════════
   if (!pages || pages.length === 0) {
-    const enforced = enforceCharLimitEx(chunks, opts.maxChars, opts.maxChunks);
+    const enforced = enforceInputLimitsEx(chunks, opts);
     return {
       chunks: enforced.chunks,
       wasTruncated: wasTruncated || enforced.truncatedByCharLimit,
@@ -1368,17 +1446,21 @@ export function chunkDocumentWithPagesEx(
         continue;
       }
 
-      const paraTokens = estimateTokens(para);
+      const paraInput = `${titlePrefix}\n\n${para}`;
+      const paraTokens = opts.tokenCounter
+        ? opts.tokenCounter(paraInput)
+        : estimateTokens(para);
 
-      // Skip very short paragraphs by token count
-      if (paraTokens < MIN_PARA_TOKENS) {
+      // The whitespace estimator is useful for English noise filtering but is
+      // not meaningful for CJK. Exact multilingual paths rely on char length.
+      if (!opts.tokenCounter && paraTokens < MIN_PARA_TOKENS) {
         paragraphIdx++;
         continue;
       }
 
       // Split oversized paragraphs into multiple chunks by sentences (fixes #20)
       // Instead of truncating and losing content, we split at sentence boundaries
-      if (paraTokens > opts.maxTokens - titleTokens) {
+      if (!opts.tokenCounter && paraTokens > opts.maxTokens - titleTokens) {
         const availableTokens = opts.maxTokens - titleTokens;
         const sentences = para.match(/[^.!?]+[.!?]+/g) || [para];
         let currentText = '';
@@ -1432,9 +1514,9 @@ export function chunkDocumentWithPagesEx(
         const sectionType = classifySection(para);
         chunks.push({
           index: chunks.length,
-          text: `${titlePrefix}\n\n${para}`,
+          text: paraInput,
           type: sectionType,
-          tokenCount: paraTokens + titleTokens,
+          tokenCount: opts.tokenCounter ? paraTokens : paraTokens + titleTokens,
           pageNumber: page.pageNumber,
           paragraphIndex: paragraphIdx,
         });
@@ -1445,7 +1527,7 @@ export function chunkDocumentWithPagesEx(
   }
 
   // Enforce character limit as safety net (token estimates can undercount for dense text)
-  const enforced = enforceCharLimitEx(chunks, opts.maxChars, opts.maxChunks);
+  const enforced = enforceInputLimitsEx(chunks, opts);
 
   // pagesIndexed: count distinct pages reflected in surviving chunks (excluding summary on p.1)
   const distinctPages = new Set<number>();

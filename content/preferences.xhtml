@@ -213,7 +213,7 @@
   <html:div id="zotseek-embeddingModel-status" style="margin-top:4px; font-size:11px; opacity:.8;"></html:div>
 </groupbox>
 
-<!-- Manage Downloaded Models -->
+<!-- Manage Installed Models -->
 <groupbox>
   <label><html:h2 data-l10n-id="zotseek-pref-manageModelsTitle">Manage downloaded models</html:h2></label>
   <html:div id="zotseek-manageModels"></html:div>
@@ -408,7 +408,7 @@
   <label><html:h2 data-l10n-id="zotseek-pref-searchSettings">Search Settings</html:h2></label>
 
   <html:div class="zotseek-settings-box" style="border-radius: 6px; padding: 12px; border-width: 1px; border-style: solid;">
-    <html:div style="display: grid; grid-template-columns: 150px 70px 1fr; gap: 10px 12px; align-items: center;">
+    <html:div style="display: grid; grid-template-columns: 150px 70px 1fr auto; gap: 10px 12px; align-items: center;">
       <html:label data-l10n-id="zotseek-pref-resultsToShow" for="zotseek-pref-topK" style="color: var(--zotseek-text-primary);">Results to show</html:label>
       <html:input type="number"
                   id="zotseek-pref-topK"
@@ -440,10 +440,10 @@
       <html:input type="number"
                   id="zotseek-pref-maxTokens"
                   class="zotseek-input"
-                  min="200" max="8000" step="100"
-                  value="800"
+                  min="50" max="8192" step="10"
                   style="width: 70px; padding: 4px 8px; border-radius: 4px; border-width: 1px; border-style: solid;" />
-      <html:span data-l10n-id="zotseek-pref-maxTokensDesc" style="font-size: 11px; color: var(--zotseek-text-secondary); margin-left: 12px;">Chunk size ceiling (200-8000)</html:span>
+      <html:span id="zotseek-pref-maxTokensPolicy" style="font-size: 11px; color: var(--zotseek-text-secondary); margin-left: 12px;"></html:span>
+      <button id="zotseek-pref-resetMaxTokens" data-l10n-id="zotseek-pref-resetMaxTokens" />
 
       <html:label data-l10n-id="zotseek-pref-maxChunks" for="zotseek-pref-maxChunksPerPaper" style="color: var(--zotseek-text-primary);">Max chunks per paper</html:label>
       <html:input type="number"
@@ -453,6 +453,7 @@
                   value="100"
                   style="width: 70px; padding: 4px 8px; border-radius: 4px; border-width: 1px; border-style: solid;" />
       <html:span data-l10n-id="zotseek-pref-maxChunksDesc" style="font-size: 11px; color: var(--zotseek-text-secondary); margin-left: 12px;">Limit for long documents (1-200)</html:span>
+      <html:span></html:span>
     </html:div>
 
   </html:div>

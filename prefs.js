@@ -13,10 +13,8 @@ pref("extensions.zotero.zotseek.indexScope", "user");
 // Indexing mode: "abstract", "notes" (metadata + child notes), or "full" (notes + PDF sections)
 pref("extensions.zotero.zotseek.indexingMode", "abstract");
 
-// Chunking options for multilingual-e5-base (512 token context)
-// Keep room for the required passage prefix and tokenizer special tokens.
-// Paragraph-level chunking creates many small chunks for precise page location
-pref("extensions.zotero.zotseek.maxTokens", 450);
+// Chunking options. When maxTokens has no user value, ZotSeek resolves the
+// active model's recommendation and clamps explicit overrides to its hard limit.
 pref("extensions.zotero.zotseek.maxChunksPerPaper", 100);
 
 // Has the index-status column been auto-shown once after installation?
@@ -53,3 +51,4 @@ pref("extensions.zotero.zotseek.mcpServer.enabled", false);
 // Change requires re-indexing the library with the new model.
 pref("extensions.zotero.zotseek.embeddingModel", "multilingual-e5-base");
 pref("extensions.zotero.zotseek.modelDefaultMigrationE5", false);
+pref("extensions.zotero.zotseek.modelInputPolicyMigrationV1", false);

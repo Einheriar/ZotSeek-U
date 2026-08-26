@@ -7,11 +7,12 @@ import { getZotero } from '../utils/zotero-helper';
 import { getString } from '../utils/locale';
 import { autoIndexManager } from '../core/auto-index-manager';
 import { getAllModels, getActiveModelId, getModel, removeServerModel, sanitizeServerModelId, inferServerPrefixes, addServerModel } from '../core/model-registry';
-import { isModelOnDisk, ensureModelDownloaded, removeModelFiles } from '../core/model-download';
+import { isModelOnDisk, removeModelFiles } from '../core/model-download';
 import { vectorStoreSQLite } from '../core/vector-store-sqlite';
 import { embeddingPipeline } from '../core/embedding-pipeline';
 import { ServerEmbeddingClient } from '../core/server-embedding-client';
 import { assertLoopbackUrl } from '../core/loopback-url';
+import { resolveModelInputPolicy } from '../core/model-input-policy';
 
 declare const Services: any;
 declare const Zotero: any;
@@ -26,12 +27,6 @@ let modelSwitchInProgress = false;
  */
 function docAlive(doc: any): boolean {
   try { return !!doc && !!doc.getElementById; } catch { return false; }
-}
-
-function confirmDownload(model: any): boolean {
-  return Services.prompt.confirm(null, 'Download model',
-    `Selecting ${model.label} downloads about ${model.approxSizeMB} MB once from huggingface.co `
-    + `to your computer. None of your library is sent anywhere. Continue?`);
 }
 
 async function maybePromptReindex(doc: any, modelId: string): Promise<void> {
@@ -64,9 +59,10 @@ async function populateModelMenu(doc: any): Promise<void> {
   popup.replaceChildren();
   for (const m of getAllModels()) {
     const onDisk = m.runtime === 'server' ? true : (m.bundled || await isModelOnDisk(m));
+    if (!onDisk) continue;
     const status = m.runtime === 'server'
       ? 'via server'
-      : (m.bundled ? 'Bundled' : (onDisk ? 'Downloaded' : `Download · ${m.approxSizeMB} MB`));
+      : (m.bundled ? 'Bundled' : 'Installed');
     const mi = doc.createXULElement('menuitem');
     mi.setAttribute('value', m.id);
     mi.setAttribute('label', `${m.label} · ${m.dimensions}d${m.multilingual ? ' · multilingual' : ''} · ${status}`);
@@ -76,6 +72,33 @@ async function populateModelMenu(doc: any): Promise<void> {
   const items = popup.querySelectorAll('menuitem');
   for (let i = 0; i < items.length; i++) {
     if (items[i].getAttribute('value') === active) { menu.selectedIndex = i; break; }
+  }
+}
+
+function refreshModelInputPolicy(doc: any): void {
+  const Z = getZotero();
+  const model = getModel(getActiveModelId());
+  if (!Z || !model) return;
+  const policy = resolveModelInputPolicy(
+    model,
+    Z.Prefs.get('zotseek.maxTokens', true),
+  );
+  const input = doc.getElementById('zotseek-pref-maxTokens') as HTMLInputElement | null;
+  if (input) {
+    input.min = '50';
+    input.max = '8192';
+    input.value = String(policy.effectiveChunkTokens);
+  }
+  const status = doc.getElementById('zotseek-pref-maxTokensPolicy');
+  if (status) {
+    status.textContent = getString('pref-modelInputPolicy', {
+      limit: policy.maxInputTokens ?? getString('pref-modelInputUnknown'),
+      recommended: policy.recommendedChunkTokens,
+      effective: policy.effectiveChunkTokens,
+      prefix: policy.requiresInstructionPrefix
+        ? getString('pref-modelInputPrefixRequired')
+        : getString('pref-modelInputPrefixNone'),
+    });
   }
 }
 
@@ -175,7 +198,7 @@ async function renderManageModels(doc: any): Promise<void> {
     host.append(label, statsEl, reason, btn);
   }
   const note = doc.createElement('div');
-  note.textContent = 'Remove deletes a downloaded model and its embeddings. The built-in model and the active model cannot be removed.';
+  note.textContent = 'Remove deletes an installed model and its embeddings. The built-in model and the active model cannot be removed.';
   note.style.cssText = 'font-size:11px;opacity:.6;margin-top:8px;grid-column: 1 / -1;';
   host.appendChild(note);
 }
@@ -467,8 +490,7 @@ class PreferencesManager {
     // Read current preference values
     const prefs = {
       indexingMode: Z.Prefs.get('zotseek.indexingMode', true) || 'abstract',
-      maxTokens: Z.Prefs.get('zotseek.maxTokens', true) ?? 7500,
-      maxChunksPerPaper: Z.Prefs.get('zotseek.maxChunksPerPaper', true) ?? 5,
+      maxChunksPerPaper: Z.Prefs.get('zotseek.maxChunksPerPaper', true) ?? 100,
       topK: Z.Prefs.get('zotseek.topK', true) ?? 20,
       minSimilarity: Z.Prefs.get('zotseek.minSimilarityPercent', true) ?? 70,
       excludeBooks: Z.Prefs.get('zotseek.excludeBooks', true) ?? true,
@@ -485,7 +507,6 @@ class PreferencesManager {
     this.setMenulistValue('zotseek-pref-indexingMode', prefs.indexingMode);
 
     // Set input values
-    this.setInputValue('zotseek-pref-maxTokens', prefs.maxTokens);
     this.setInputValue('zotseek-pref-maxChunksPerPaper', prefs.maxChunksPerPaper);
     this.setInputValue('zotseek-pref-topK', prefs.topK);
     this.setInputValue('zotseek-pref-minSimilarity', prefs.minSimilarity);
@@ -515,6 +536,7 @@ class PreferencesManager {
 
     // Update mode cards to match current selection
     this.updateModeCards();
+    refreshModelInputPolicy(doc);
   }
 
   /**
@@ -601,7 +623,7 @@ class PreferencesManager {
       });
     }
 
-    // Embedding model change: download-on-select, confirm, model-scoped re-index
+    // Embedding model change: only bundled, installed or server models appear.
     const modelMenu = doc.getElementById('zotseek-pref-embeddingModel') as any;
     if (modelMenu) {
       modelMenu.addEventListener('command', async () => {
@@ -614,22 +636,19 @@ class PreferencesManager {
         if (!model) { modelSwitchInProgress = false; return; }
         const statusEl = doc.getElementById('zotseek-embeddingModel-status');
         try {
-          if (model.runtime !== 'server' && !model.bundled && !(await isModelOnDisk(model))) {
-            if (!confirmDownload(model)) {
-              if (docAlive(doc)) await populateModelMenu(doc);
-              return;
-            }
-            if (docAlive(doc) && statusEl) statusEl.textContent = `Downloading ${model.label}...`;
-            await ensureModelDownloaded(model, (done, total) => {
-              if (docAlive(doc) && statusEl) statusEl.textContent = `Downloading ${model.label}: file ${done} of ${total}`;
-            });
+          const zs = (typeof Zotero !== 'undefined') ? (Zotero as any).ZotSeek : null;
+          if (zs?.indexing) {
+            if (statusEl) statusEl.textContent = 'Finish or cancel the current indexing run before switching models.';
+            await populateModelMenu(doc);
+            return;
           }
           await embeddingPipeline.setModel(id);   // persists the pref + reloads the worker
           if (docAlive(doc)) {
             if (statusEl) statusEl.textContent = '';
-            await populateModelMenu(doc);          // refresh status chips
+            await populateModelMenu(doc);
+            refreshModelInputPolicy(doc);
             await renderCoverage(doc);
-            await renderManageModels(doc);         // show a just-downloaded model in the manage list
+            await renderManageModels(doc);
           }
           // maybePromptReindex may trigger a long reindex; guard doc touches inside it
           await maybePromptReindex(doc, id);
@@ -646,7 +665,6 @@ class PreferencesManager {
 
     // Number inputs
     const numberInputs = [
-      { id: 'zotseek-pref-maxTokens', pref: 'zotseek.maxTokens' },
       { id: 'zotseek-pref-maxChunksPerPaper', pref: 'zotseek.maxChunksPerPaper' },
       { id: 'zotseek-pref-topK', pref: 'zotseek.topK' },
       { id: 'zotseek-pref-minSimilarity', pref: 'zotseek.minSimilarityPercent' }
@@ -664,6 +682,28 @@ class PreferencesManager {
         });
       }
     }
+
+    const maxTokensInput = doc.getElementById('zotseek-pref-maxTokens') as HTMLInputElement | null;
+    if (maxTokensInput) {
+      maxTokensInput.addEventListener('change', () => {
+        const parsed = parseInt(maxTokensInput.value, 10);
+        if (!Number.isFinite(parsed)) {
+          refreshModelInputPolicy(doc);
+          return;
+        }
+        const requested = Math.max(50, Math.min(8192, parsed));
+        Z.Prefs.set('zotseek.maxTokens', requested, true);
+        refreshModelInputPolicy(doc);
+        this.logger.debug(`zotseek.maxTokens override changed to: ${requested}`);
+      });
+    }
+
+    const resetTokens = doc.getElementById('zotseek-pref-resetMaxTokens') as any;
+    resetTokens?.addEventListener('command', () => {
+      Z.Prefs.clear('zotseek.maxTokens', true);
+      refreshModelInputPolicy(doc);
+      this.logger.debug('zotseek.maxTokens override cleared');
+    });
 
     // Checkbox inputs
     const excludeBooksCheckbox = doc.getElementById('zotseek-pref-excludeBooks') as any;

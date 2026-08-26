@@ -4,14 +4,14 @@ import { isModelOnDisk, ensureModelDownloaded, removeModelFiles } from '../../co
 import { embeddingPipeline } from '../../core/embedding-pipeline';
 
 selfTest.register('task-37e-model-download', async () => {
-  const mini = getModel('paraphrase-multilingual-MiniLM-L12-v2')!;
+  const nomic = getModel('nomic-embed-text-v1.5')!;
   return [
     await scenario('download the smallest model end-to-end', async () => {
-      await removeModelFiles(mini).catch(() => {});
-      assertTrue(!(await isModelOnDisk(mini)), 'should start absent');
+      await removeModelFiles(nomic).catch(() => {});
+      assertTrue(!(await isModelOnDisk(nomic)), 'should start absent');
       let lastDone = 0;
-      await ensureModelDownloaded(mini, (done) => { lastDone = done; });
-      assertTrue(await isModelOnDisk(mini), 'should be on disk after download');
+      await ensureModelDownloaded(nomic, (done) => { lastDone = done; });
+      assertTrue(await isModelOnDisk(nomic), 'should be on disk after download');
       assertTrue(lastDone > 0, 'progress callback fired');
     }),
     await scenario('load the downloaded model via resource:// and embed', async () => {
@@ -19,18 +19,18 @@ selfTest.register('task-37e-model-download', async () => {
       // resource://zotseek-models/. A successful embed of the right dimension
       // proves the download + resource substitution + worker load chain works.
       try {
-        await embeddingPipeline.setModel('paraphrase-multilingual-MiniLM-L12-v2');
+        await embeddingPipeline.setModel('nomic-embed-text-v1.5');
         const r = await embeddingPipeline.embedQuery('a test sentence');
-        assertEq(r.embedding.length, 384, 'MiniLM should produce 384-dim vectors');
-        assertEq(r.modelId, 'paraphrase-multilingual-MiniLM-L12-v2', 'modelId should be the short id');
+        assertEq(r.embedding.length, 768, 'Nomic should produce 768-dim vectors');
+        assertEq(r.modelId, 'nomic-embed-text-v1.5', 'modelId should be the short id');
       } finally {
         // Always restore the default model so the rest of the session is unaffected.
-        await embeddingPipeline.setModel('nomic-embed-text-v1.5');
+        await embeddingPipeline.setModel('multilingual-e5-base');
       }
     }),
     await scenario('removeModelFiles deletes the directory', async () => {
-      await removeModelFiles(mini);
-      assertTrue(!(await isModelOnDisk(mini)), 'should be gone after remove');
+      await removeModelFiles(nomic);
+      assertTrue(!(await isModelOnDisk(nomic)), 'should be gone after remove');
     }),
   ];
 });

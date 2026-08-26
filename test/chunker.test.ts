@@ -4,6 +4,7 @@ import {
   estimateTokens,
   chunkDocument,
   chunkDocumentEx,
+  chunkDocumentWithPagesEx,
   createPageEstimationContext,
   estimatePageNumber,
   estimatePageForRange,
@@ -113,9 +114,9 @@ describe('chunkDocument, full mode', () => {
     assert.ok(chunks.length <= 100, `${chunks.length} chunks exceeds the default maxChunks of 100`);
   });
 
-  test('never exceeds the hard character limit the embedding worker enforces', () => {
-    // maxChars must match MAX_CHARS in the worker; a longer chunk would be
-    // silently truncated at embedding time, or crash it.
+  test('never exceeds the configured character split threshold', () => {
+    // maxChars is an upstream chunking policy. Inference receives every
+    // resulting chunk unchanged and lets the tokenizer enforce token limits.
     const { chunks } = chunkDocumentEx('T', null, paragraphs(30), 'full', { maxChars: 1000, maxChunks: 500 });
     for (const c of chunks) {
       assert.ok(c.text.length <= 1000, `chunk of ${c.text.length} chars exceeds maxChars`);
@@ -284,5 +285,80 @@ describe('exact token-aware note chunking', () => {
     assert.equal(chunks.length, 2);
     assert.match(chunks[0].text, /第一条独立笔记/);
     assert.match(chunks[1].text, /Second independent note/);
+  });
+
+  test('splits a long multilingual summary with exact final-input counts', () => {
+    const abstract = '这是没有空格的长摘要内容'.repeat(80);
+    const result = chunkDocumentEx('测试文献', abstract, null, 'abstract', {
+      maxTokens: 120,
+      maxChunks: 100,
+      maxChars: 8000,
+      tokenCounter: exactCounter,
+    });
+
+    assert.ok(result.chunks.length > 1);
+    assert.ok(result.chunks.every(chunk => chunk.type === 'summary'));
+    assert.ok(result.chunks.every(chunk => chunk.tokenCount === exactCounter(chunk.text)));
+    assert.ok(result.chunks.every(chunk => exactCounter(chunk.text) <= 120));
+    const recovered = result.chunks
+      .map(chunk => chunk.text.slice(chunk.text.indexOf('\n\n') + 2))
+      .join('');
+    assert.equal(recovered, abstract);
+  });
+
+  test('keeps every exact chunk that fits before reporting the chunk cap', () => {
+    const result = chunkDocumentEx('测试文献', '长摘要'.repeat(200), null, 'abstract', {
+      maxTokens: 80,
+      maxChunks: 2,
+      maxChars: 8000,
+      tokenCounter: exactCounter,
+    });
+    assert.equal(result.chunks.length, 2);
+    assert.equal(result.wasTruncated, true);
+    assert.ok(result.chunks.every(chunk => exactCounter(chunk.text) <= 80));
+  });
+
+  test('splits legacy PDF text exactly without losing an unpunctuated tail', () => {
+    const fulltext = '无空格中文PDF正文内容'.repeat(100);
+    const result = chunkDocumentEx('PDF title', null, fulltext, 'full', {
+      maxTokens: 140,
+      maxChunks: 100,
+      maxChars: 8000,
+      tokenCounter: exactCounter,
+    });
+    const bodyChunks = result.chunks.filter(chunk => chunk.type !== 'summary');
+    assert.ok(bodyChunks.length > 1);
+    assert.ok(bodyChunks.every(chunk => exactCounter(chunk.text) <= 140));
+    const recovered = bodyChunks
+      .map(chunk => chunk.text.slice(chunk.text.indexOf('\n\n') + 2))
+      .join('');
+    assert.equal(recovered, fulltext);
+  });
+
+  test('keeps exact page-aware PDF chunks on their original page', () => {
+    const pageText = '逐页中文内容没有空格但必须完整保留'.repeat(60);
+    const result = chunkDocumentWithPagesEx('Page title', null, [
+      { pageNumber: 7, text: pageText },
+    ], 'full', {
+      maxTokens: 130,
+      maxChunks: 100,
+      maxChars: 8000,
+      tokenCounter: exactCounter,
+    });
+    const bodyChunks = result.chunks.filter(chunk => chunk.type !== 'summary');
+    assert.ok(bodyChunks.length > 1);
+    assert.ok(bodyChunks.every(chunk => chunk.pageNumber === 7));
+    assert.ok(bodyChunks.every(chunk => exactCounter(chunk.text) <= 130));
+    const recovered = bodyChunks
+      .map(chunk => chunk.text.slice(chunk.text.indexOf('\n\n') + 2))
+      .join('');
+    assert.equal(recovered, pageText);
+  });
+
+  test('preserves a title that is longer than the character split threshold', () => {
+    const title = '超长标题'.repeat(40);
+    const { chunks } = chunkDocumentEx(title, null, null, 'abstract', { maxChars: 50, maxChunks: 100 });
+    assert.equal(chunks.map(chunk => chunk.text).join(''), title);
+    assert.ok(chunks.every(chunk => chunk.text.length <= 50));
   });
 });

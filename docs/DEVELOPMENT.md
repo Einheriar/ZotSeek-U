@@ -15,7 +15,7 @@
 
 A guide for building Zotero 9+ plugins with TypeScript, featuring lessons learned from running **Transformers.js v3** with local AI embeddings.
 
-**Current Achievement:** This fork runs **multilingual-e5-base** (512-token context, 768 dimensions) locally in Zotero via ChromeWorker, with model-aware prefixes and Chinese note chunking. See [ChromeWorker + Transformers.js Solution](#chromeworker--transformersjs-solution).
+**Current Achievement:** This fork runs **multilingual-e5-base** (512-token context, 768 dimensions) locally in Zotero via ChromeWorker, with model-aware prefixes and exact multilingual chunking for summaries, notes, PDFs and queries. See [ChromeWorker + Transformers.js Solution](#chromeworker--transformersjs-solution).
 
 ---
 
@@ -502,7 +502,8 @@ class EmbeddingPipeline {
 Key concepts:
 - **ChromeWorker** - Runs Transformers.js v3 in separate thread with privileged access
 - **Feature extraction** - Converts text to vectors whose dimensions are defined by the active model; bundled E5 uses 768
-- **Model-aware context** - The bundled multilingual E5 model has a 512-token context, so long notes and PDFs are split before embedding
+- **Model-aware context** - `model-input-config.ts` records hard input facts and ZotSeek recommendations; `model-input-policy.ts` resolves the active limit
+- **Exact multilingual counting** - E5 and BGE-M3 use their local tokenizer for summaries, notes, PDFs and queries; Nomic retains the English estimator
 - **Instruction prefixes** - The model registry applies each model's prefixes; E5 uses `passage:` for documents and `query:` for queries
 - **Quantized model** - The bundled multilingual E5 model is approximately 282MB including tokenizer files
 - **Mean pooling** - Averages token embeddings with normalization
@@ -696,8 +697,10 @@ import './helpers/zotero-stub';                        // must come first
 import { isAllowedOrigin } from '../src/server/http-tools';
 ```
 
-Currently covered: `chunker.ts`, `model-registry.ts`, `collection-items.ts`, and
-the `isAllowedOrigin` guard from `http-tools.ts`. Deliberately *not* covered:
+Currently covered: `chunker.ts`, model registry/input config/input policy,
+Worker input preparation, `collection-items.ts`, and the `isAllowedOrigin` guard
+from `http-tools.ts`. Transformers.js is external to the Node test bundle because
+real tokenizer/ONNX loading belongs to Zotero runtime self-tests. Deliberately *not* covered:
 `search-engine.ts` and `hybrid-search.ts`, which need real embeddings and real
 Zotero items. Mocking those would produce tests that always pass and say nothing
 about retrieval quality; that is the eval framework's job.
@@ -1412,6 +1415,13 @@ We run Transformers.js in a **ChromeWorker** - a special Firefox/Zotero worker w
 ```
 
 #### Worker Implementation (`src/worker/embedding-worker.ts`)
+
+> The following Nomic-specific listing is retained as development history. The
+> current Worker receives model ID, prefixes, pooling and Q8 dtype through its
+> init message. It preserves the full source string and relies on the
+> Transformers.js tokenizer's `model_max_length`; the 8000-character value is
+> now an upstream lossless chunk split threshold. Do not copy the constants or
+> manual truncation in this historical listing back into current code.
 
 ```typescript
 /**
@@ -2258,7 +2268,8 @@ Create a `prefs.js` file in your plugin root with default values:
 // prefs.js
 pref("extensions.zotero.zotseek.topK", 20);
 pref("extensions.zotero.zotseek.autoIndex", false);
-pref("extensions.zotero.zotseek.maxTokens", 450);  // Below E5 Base's 512-token limit
+// Omit maxTokens to use the active model's recommendation. A stored number is
+// treated as a user override and clamped to the current model's hard limit.
 ```
 
 These defaults are automatically loaded when the plugin is installed/enabled.

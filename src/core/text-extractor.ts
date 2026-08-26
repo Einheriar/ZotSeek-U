@@ -23,6 +23,8 @@ import {
 import { noteHTMLToText } from '../utils/note-text';
 import { TextSourceType } from './vector-store-sqlite';
 import { tokenizerService } from './tokenizer-service';
+import { getActiveModel } from './model-registry';
+import { resolveModelInputPolicy } from './model-input-policy';
 
 declare const Zotero: any;
 
@@ -71,19 +73,29 @@ export class TextExtractor {
     this.logger = new Logger('TextExtractor');
   }
 
-  /**
-   * Add multilingual E5's exact, session-cached token counter only on paths
-   * that index Notes. Abstract-only extraction remains lightweight.
-   */
+  /** Resolve one immutable model policy snapshot for an extraction batch. */
   private async resolveChunkOptions(
     options: ChunkOptions | undefined,
-    mode: IndexingMode
   ): Promise<ChunkOptions> {
-    const base = options ?? getChunkOptionsFromPrefs(Zotero);
-    if (mode === 'abstract' || base.tokenCounter) return base;
+    if (options?.modelIdSnapshot) return options;
 
-    const tokenCounter = await tokenizerService.getDocumentTokenCounter();
-    return tokenCounter ? { ...base, tokenCounter } : base;
+    const model = getActiveModel();
+    const base = options ?? getChunkOptionsFromPrefs(Zotero);
+    const requestedTokens = options?.maxTokens
+      ?? Zotero?.Prefs?.get('zotseek.maxTokens', true);
+    const policy = resolveModelInputPolicy(model, requestedTokens);
+    const tokenCounter = options?.tokenCounter
+      ?? (policy.supportsExactTokenCount
+        ? await tokenizerService.getDocumentTokenCounter()
+        : undefined);
+
+    return {
+      ...base,
+      maxTokens: policy.effectiveChunkTokens,
+      maxChars: policy.maxChunkChars,
+      tokenCounter,
+      modelIdSnapshot: model.id,
+    };
   }
 
   /**
@@ -134,7 +146,7 @@ export class TextExtractor {
 
       // Get indexing mode from preference if not specified
       const indexingMode = mode ?? getIndexingMode(Zotero);
-      const chunkOptions = await this.resolveChunkOptions(options, indexingMode);
+      const chunkOptions = await this.resolveChunkOptions(options);
 
       let chunks: Chunk[];
       let wasTruncated = false;
@@ -388,7 +400,7 @@ export class TextExtractor {
 
     // Get mode and options once
     const indexingMode = mode ?? getIndexingMode(Zotero);
-    const chunkOptions = await this.resolveChunkOptions(options, indexingMode);
+    const chunkOptions = await this.resolveChunkOptions(options);
     
     this.logger.info(`Extracting chunks with mode: ${indexingMode}`);
 

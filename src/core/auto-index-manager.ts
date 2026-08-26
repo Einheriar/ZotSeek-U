@@ -10,7 +10,8 @@ import { Logger } from '../utils/logger';
 import { noteHTMLToText } from '../utils/note-text';
 import { getIndexingMode } from '../utils/chunker';
 import { identityFromItem, localItemIDFromIdentity } from './identity-resolver';
-import { getActiveModelId } from './model-registry';
+import { getActiveModel, getActiveModelId } from './model-registry';
+import { modelInputPolicyFingerprint, resolveModelInputPolicy } from './model-input-policy';
 import { textExtractor } from './text-extractor';
 import { isModifiedAfterVerification } from '../utils/timestamp';
 import type { StartupFingerprint, TextSourceType } from './vector-store-sqlite';
@@ -177,9 +178,17 @@ export class AutoIndexManager {
 
   private getConfigFingerprint(): string {
     const mode = getIndexingMode(Zotero);
-    const maxTokens = Zotero.Prefs.get('zotseek.maxTokens', true) ?? 450;
     const maxChunks = Zotero.Prefs.get('zotseek.maxChunksPerPaper', true) ?? 100;
-    return hashText(JSON.stringify({ version: 1, mode, maxTokens, maxChunks }));
+    const policy = resolveModelInputPolicy(
+      getActiveModel(),
+      Zotero.Prefs.get('zotseek.maxTokens', true),
+    );
+    return hashText(JSON.stringify({
+      version: 2,
+      mode,
+      maxChunks,
+      modelInputPolicy: modelInputPolicyFingerprint(policy),
+    }));
   }
 
   private shouldProcess(item: any): boolean {
