@@ -973,6 +973,7 @@ class ZotSeekPlugin {
       if (this.vectorStore) {
         progressWindow.updateProgress(getString('indexing-deletingAll'), 50);
         await this.vectorStore.clear();
+        itemTreeIndexColumn.invalidate();
 
         progressWindow.complete(getString('indexing-clearedSuccess'));
         this.logger.info('Index cleared via preferences');
@@ -1036,6 +1037,7 @@ class ZotSeekPlugin {
 
       if (this.vectorStore) {
         await this.vectorStore.clear();
+        itemTreeIndexColumn.invalidate();
         this.logger.info('Index cleared for rebuild');
         progressWindow.addLine(getString('indexing-existingCleared'), 'chrome://zotero/skin/tick.png');
 
