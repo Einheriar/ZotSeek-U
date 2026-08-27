@@ -10,6 +10,7 @@ import { Logger } from '../utils/logger';
 import { getZotero } from '../utils/zotero-helper';
 import { getString } from '../utils/locale';
 import { exportItemsToNewCollection } from './collection-export';
+import { showServerModelConfigurationPromptIfNeeded } from './server-model-prompt';
 
 class SimilarDocumentsDialog {
   private logger: Logger;
@@ -109,6 +110,10 @@ class SimilarDocumentsDialog {
   private async findSimilarDocuments(): Promise<void> {
     if (!this.sourceItemId) {
       this.setStatus(getString('similar-noSource'), 'error');
+      return;
+    }
+    if (showServerModelConfigurationPromptIfNeeded()) {
+      this.setStatus(getString('pref-serverModelIncomplete'), 'error');
       return;
     }
 

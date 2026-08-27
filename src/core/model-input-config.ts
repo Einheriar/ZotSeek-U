@@ -48,17 +48,20 @@ export const LOCAL_MODEL_INPUT_CONFIGS: Readonly<Record<string, ModelInputConfig
   }),
 });
 
-const SERVER_INPUT_CONFIG: Readonly<ModelInputConfig> = Object.freeze({
-  maxInputTokens: null,
-  recommendedChunkTokens: 450,
-  maxChunkChars: 8000,
-  quantization: 'server-managed',
-  tokenizerType: 'server-managed',
-  supportsExactTokenCount: false,
-});
-
 export function getModelInputConfig(model: ModelConfig): ModelInputConfig {
-  if (model.runtime === 'server') return SERVER_INPUT_CONFIG;
+  if (model.runtime === 'server') {
+    if (!model.serverMaxInputTokens || !model.serverRecommendedChunkTokens) {
+      throw new Error(`Server model "${model.id}" is missing its input contract`);
+    }
+    return {
+      maxInputTokens: model.serverMaxInputTokens,
+      recommendedChunkTokens: model.serverRecommendedChunkTokens,
+      maxChunkChars: 8000,
+      quantization: 'server-managed',
+      tokenizerType: 'server-managed',
+      supportsExactTokenCount: false,
+    };
+  }
   const config = LOCAL_MODEL_INPUT_CONFIGS[model.id];
   if (!config) throw new Error(`Missing input config for local model "${model.id}"`);
   return config;

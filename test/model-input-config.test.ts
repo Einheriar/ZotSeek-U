@@ -37,16 +37,27 @@ describe('local model input contracts', () => {
     }
   });
 
-  test('keeps unknown server capabilities explicitly server-managed', () => {
+  test('uses each server model\'s declared input contract', () => {
     const server = {
       ...getModel('multilingual-e5-base')!,
       id: 'server:test',
       runtime: 'server' as const,
+      serverMaxInputTokens: 4096,
+      serverRecommendedChunkTokens: 1000,
     };
     assert.deepEqual(getModelInputConfig(server), {
-      maxInputTokens: null, recommendedChunkTokens: 450, maxChunkChars: 8000,
+      maxInputTokens: 4096, recommendedChunkTokens: 1000, maxChunkChars: 8000,
       quantization: 'server-managed', tokenizerType: 'server-managed',
       supportsExactTokenCount: false,
     });
+  });
+
+  test('rejects a server model without a complete input contract', () => {
+    const server = {
+      ...getModel('multilingual-e5-base')!,
+      id: 'server:incomplete',
+      runtime: 'server' as const,
+    };
+    assert.throws(() => getModelInputConfig(server), /missing its input contract/);
   });
 });

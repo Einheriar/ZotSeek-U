@@ -2,6 +2,19 @@
 
 All notable changes to ZotSeek - Semantic Search for Zotero will be documented in this file.
 
+## Unreleased
+
+### Changed
+- Server-backed embedding models now use an advanced JSON template in the
+  Zotero profile. The template explicitly declares connection details,
+  dimensions, input limits, recommended chunk size, and task prefixes; the
+  settings pane only reports its path and validation status.
+- Server initialization now verifies both `/v1/models` membership and embedding
+  dimensions before indexing, and document-prefix changes participate in the
+  model input policy fingerprint.
+
+---
+
 ## [1.20.558] - 2026-08-22
 
 ### Changed
@@ -203,8 +216,12 @@ Stable release of the local inference server support introduced in 1.19.0-beta.1
 ### Technical
 - New `ServerEmbeddingClient` with request-time loopback validation, bounded retry
   (2s/5s/15s) and batched requests (32 chunks per call).
-- Server models are stored in the `zotseek.serverModels` pref and index under a
-  `server:`-namespaced model_id (own vector space; one-time index per model).
+- The model menu now has one fixed Server slot. Its schema-v2 profile template
+  distinguishes `NONE`, `UNKNOWN` and ready states; the persisted `server-slot`
+  selection is separate from the ready model's `server:`-namespaced vector-space id.
+- An incomplete selected Server never falls back to an ONNX model. Explicit
+  indexing and semantic search report the template path, while startup and
+  background reconciliation skip embedding work without opening a modal.
 - Indexing paths unified behind a shared `embedChunks()` helper; a dead server stops
   the run cleanly and Update Index resumes where it left off.
 

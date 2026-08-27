@@ -219,39 +219,19 @@
   <html:div id="zotseek-manageModels"></html:div>
 </groupbox>
 
-<!-- Local Inference Server (issue #42) -->
+<!-- Advanced local inference server configuration -->
 <groupbox>
-  <label><html:h2>Local inference server</html:h2></label>
-  <html:p style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 0 0 6px 0;">
-    Use an embedding model served by LM Studio, Ollama, llama.cpp or vLLM running on this computer
-    (OpenAI-compatible API). Connections are restricted to this machine (localhost only).
+  <label><html:h2 data-l10n-id="zotseek-pref-serverConfigTitle">Advanced Server model</html:h2></label>
+  <html:p data-l10n-id="zotseek-pref-serverConfigDesc"
+          style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 0 0 6px 0;">
+    Configure the fixed Server model slot in the profile JSON template. ZotSeek validates the template at startup; edit it and restart Zotero to apply changes.
   </html:p>
-  <hbox align="center">
-    <label value="Server URL:" style="min-width: 120px;" />
-    <html:input type="text" id="zotseek-server-url" placeholder="http://127.0.0.1:1234" style="width: 220px;" />
-    <button id="zotseek-server-test" label="Test connection" />
-  </hbox>
-  <html:div id="zotseek-server-status" style="margin: 4px 0 0 120px; font-size: 11px; opacity: .8; min-height: 14px;"></html:div>
-  <hbox align="center" id="zotseek-server-model-row" style="margin-top: 6px; display: none;">
-    <label value="Model:" style="min-width: 120px;" />
-    <menulist id="zotseek-server-model-menu" native="true" style="min-width: 280px;">
-      <menupopup/>
-    </menulist>
-    <button id="zotseek-server-add" label="Add model" disabled="true" />
-  </hbox>
-  <html:div id="zotseek-server-advanced" style="margin: 6px 0 0 120px; display: none; font-size: 11px;">
-    <html:div style="display: grid; grid-template-columns: auto 1fr; gap: 6px 8px; align-items: center; max-width: 420px; font-size: 11px;">
-      <html:label for="zotseek-server-queryPrefix">Query prefix:</html:label>
-      <html:input type="text" id="zotseek-server-queryPrefix" />
-      <html:label for="zotseek-server-docPrefix">Document prefix:</html:label>
-      <html:input type="text" id="zotseek-server-docPrefix" />
-      <html:label for="zotseek-server-apiKey">API key (optional):</html:label>
-      <html:input type="password" id="zotseek-server-apiKey" />
-    </html:div>
-    <html:p style="color: var(--zotseek-text-secondary); font-size: 10px; margin: 4px 0 0 0;">
-      Filled automatically for known model families (Nomic, E5). Leave empty unless the model card says otherwise.
-    </html:p>
+  <html:div style="font-size: 11px;">
+    <html:span data-l10n-id="zotseek-pref-serverConfigPath">Template:</html:span>
+    <html:code id="zotseek-server-config-path" style="user-select: all;"></html:code>
   </html:div>
+  <html:p id="zotseek-server-config-status"
+          style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 5px 0 0 0;"></html:p>
 </groupbox>
 
 </html:details>

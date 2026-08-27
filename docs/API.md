@@ -2,7 +2,7 @@
 
 ZotSeek exposes a JavaScript API at `Zotero.ZotSeek.api` that other Zotero plugins can use to run local semantic searches against the user's indexed library.
 
-All operations are local — embeddings are generated via Transformers.js (ONNX Runtime, WASM) and stored in a local SQLite file. No network calls are made.
+All data stays on this computer. Embeddings are generated either by the in-process Transformers.js runtime or by the optional loopback-only Server model, and are stored in a local SQLite file. Server mode makes HTTP requests only to the explicitly configured localhost endpoint.
 
 > Looking for access from *outside* Zotero (CLI scripts, AI agents, MCP clients)? See [MCP.md](MCP.md) for the local MCP server and REST endpoints.
 
@@ -24,9 +24,9 @@ if (Zotero.ZotSeek.api.isReady()) {
 
 ## Cold start
 
-The embedding pipeline (ONNX model, ~30s to load) initializes automatically on the first call to `search()`. Subsequent calls are instant. If you want to pre-warm the pipeline, call `search()` with a dummy query during your plugin's startup.
+The embedding pipeline initializes automatically on the first call to `search()`. A local ONNX model can take about 30 seconds to load; Server mode validates `/v1/models` and probes its output dimensions on first use. Subsequent calls reuse the initialized pipeline. If you want to pre-warm it, call `search()` with a dummy query during your plugin's startup.
 
-Methods that don't need the embedding pipeline (`findSimilar`, `getStats`, `isReady`) are available immediately.
+Methods that don't need the embedding pipeline (`getStats`, `isReady`) are available immediately. `findSimilar` does not load the pipeline, but it still requires a complete active model selection so ZotSeek can choose the correct stored vector partition. If the fixed Server slot is selected while its JSON template is incomplete, `search()` and `findSimilar()` reject with a configuration error and never fall back to a local model.
 
 ## Methods
 

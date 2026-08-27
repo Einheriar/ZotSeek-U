@@ -6,13 +6,23 @@
 import { getZotero } from '../utils/zotero-helper';
 import { getString } from '../utils/locale';
 import { autoIndexManager } from '../core/auto-index-manager';
-import { getAllModels, getActiveModelId, getModel, removeServerModel, sanitizeServerModelId, inferServerPrefixes, addServerModel } from '../core/model-registry';
+import {
+  getAllModels,
+  getActiveModelId,
+  getActiveModelSelectionId,
+  getModel,
+  SERVER_SLOT_SELECTION_ID,
+  setActiveModelId,
+} from '../core/model-registry';
 import { isModelOnDisk, removeModelFiles } from '../core/model-download';
 import { vectorStoreSQLite } from '../core/vector-store-sqlite';
 import { embeddingPipeline } from '../core/embedding-pipeline';
-import { ServerEmbeddingClient } from '../core/server-embedding-client';
-import { assertLoopbackUrl } from '../core/loopback-url';
 import { resolveModelInputPolicy } from '../core/model-input-policy';
+import {
+  getLastServerModelConfigLoadResult,
+  getServerModelConfigPath,
+} from '../core/server-model-config';
+import { showServerModelConfigurationPromptIfNeeded } from './server-model-prompt';
 
 declare const Services: any;
 declare const Zotero: any;
@@ -58,17 +68,25 @@ async function populateModelMenu(doc: any): Promise<void> {
   if (!popup) return;
   popup.replaceChildren();
   for (const m of getAllModels()) {
-    const onDisk = m.runtime === 'server' ? true : (m.bundled || await isModelOnDisk(m));
+    if (m.runtime === 'server') continue;
+    const onDisk = m.bundled || await isModelOnDisk(m);
     if (!onDisk) continue;
-    const status = m.runtime === 'server'
-      ? 'via server'
-      : (m.bundled ? 'Bundled' : 'Installed');
+    const status = m.bundled ? 'Bundled' : 'Installed';
     const mi = doc.createXULElement('menuitem');
     mi.setAttribute('value', m.id);
     mi.setAttribute('label', `${m.label} · ${m.dimensions}d${m.multilingual ? ' · multilingual' : ''} · ${status}`);
     popup.appendChild(mi);
   }
-  const active = getActiveModelId();
+  const serverConfig = getLastServerModelConfigLoadResult();
+  const serverItem = doc.createXULElement('menuitem');
+  serverItem.setAttribute('value', SERVER_SLOT_SELECTION_ID);
+  const serverLabel = serverConfig?.kind === 'ready' && serverConfig.model
+    ? `Server (${serverConfig.model.serverModelName})`
+    : `Server (${serverConfig?.kind === 'unknown' ? 'UNKNOWN' : 'NONE'})`;
+  serverItem.setAttribute('label', serverLabel);
+  popup.appendChild(serverItem);
+
+  const active = getActiveModelSelectionId();
   const items = popup.querySelectorAll('menuitem');
   for (let i = 0; i < items.length; i++) {
     if (items[i].getAttribute('value') === active) { menu.selectedIndex = i; break; }
@@ -77,19 +95,25 @@ async function populateModelMenu(doc: any): Promise<void> {
 
 function refreshModelInputPolicy(doc: any): void {
   const Z = getZotero();
-  const model = getModel(getActiveModelId());
-  if (!Z || !model) return;
+  if (!Z) return;
+  const model = getModel(getActiveModelSelectionId());
+  const input = doc.getElementById('zotseek-pref-maxTokens') as HTMLInputElement | null;
+  const status = doc.getElementById('zotseek-pref-maxTokensPolicy');
+  if (!model) {
+    if (input) input.disabled = true;
+    if (status) status.textContent = getString('pref-serverModelIncomplete');
+    return;
+  }
+  if (input) input.disabled = false;
   const policy = resolveModelInputPolicy(
     model,
     Z.Prefs.get('zotseek.maxTokens', true),
   );
-  const input = doc.getElementById('zotseek-pref-maxTokens') as HTMLInputElement | null;
   if (input) {
     input.min = '50';
-    input.max = '8192';
+    input.max = String(policy.maxInputTokens ?? 8192);
     input.value = String(policy.effectiveChunkTokens);
   }
-  const status = doc.getElementById('zotseek-pref-maxTokensPolicy');
   if (status) {
     status.textContent = getString('pref-modelInputPolicy', {
       limit: policy.maxInputTokens ?? getString('pref-modelInputUnknown'),
@@ -103,12 +127,18 @@ function refreshModelInputPolicy(doc: any): void {
 }
 
 async function renderCoverage(doc: any): Promise<void> {
-  const active = getActiveModelId();
-  const { covered, total } = await vectorStoreSQLite.getCoverage(active);
   const el = doc.getElementById('zotseek-embeddingModel-coverage');
   if (!el) return;
   el.replaceChildren();
   const text = doc.createElement('span');
+  if (getActiveModelSelectionId() === SERVER_SLOT_SELECTION_ID &&
+      getLastServerModelConfigLoadResult()?.kind !== 'ready') {
+    text.textContent = getString('pref-serverModelIncomplete');
+    el.appendChild(text);
+    return;
+  }
+  const active = getActiveModelId();
+  const { covered, total } = await vectorStoreSQLite.getCoverage(active);
   text.textContent = total === 0
     ? 'No items indexed yet.'
     : `${covered} of ${total} items searchable with the active model.`;
@@ -169,201 +199,60 @@ async function renderManageModels(doc: any): Promise<void> {
       statsEl.textContent = 'not indexed';
     }
     const btn = doc.createElement('button') as any;
-    const removable = !m.bundled && m.id !== active;
-    btn.textContent = 'Remove';
+    const removable = m.runtime !== 'server' && !m.bundled && m.id !== active;
+    btn.textContent = m.runtime === 'server' ? 'Configured in JSON' : 'Remove';
     btn.disabled = !removable;
     if (!removable) {
-      btn.title = m.bundled
-        ? 'Built-in model, included with ZotSeek and cannot be removed'
-        : 'Active model, switch to another model first to remove this one';
+      btn.title = m.runtime === 'server'
+        ? 'Edit the server model template and restart Zotero to change this entry'
+        : (m.bundled
+          ? 'Built-in model, included with ZotSeek and cannot be removed'
+          : 'Active model, switch to another model first to remove this one');
     }
     btn.addEventListener('click', async () => {
       const yes = Services.prompt.confirm(null, 'Remove model',
-        m.runtime === 'server'
-          ? `Remove ${m.label} from ZotSeek and delete its embeddings from your library? The server itself is not touched.`
-          : `Remove ${m.label} files and its embeddings from your library?`);
+        `Remove ${m.label} files and its embeddings from your library?`);
       if (!yes) return;
-      if (m.runtime === 'server') {
-        removeServerModel(m.id);
-      } else {
-        await removeModelFiles(m);
-      }
+      await removeModelFiles(m);
       await vectorStoreSQLite.deleteModelEmbeddings(m.id);
       if (docAlive(doc)) await renderManageModels(doc);
       if (docAlive(doc)) await populateModelMenu(doc);
     });
     const reason = doc.createElement('span');
-    reason.textContent = removable ? '' : (m.bundled ? 'Built-in' : 'Active');
+    reason.textContent = removable
+      ? ''
+      : (m.runtime === 'server' ? 'Template' : (m.bundled ? 'Built-in' : 'Active'));
     reason.style.cssText = 'font-size:11px;opacity:.6;white-space:nowrap;';
     host.append(label, statsEl, reason, btn);
   }
   const note = doc.createElement('div');
-  note.textContent = 'Remove deletes an installed model and its embeddings. The built-in model and the active model cannot be removed.';
+  note.textContent = 'Remove deletes an installed local model and its embeddings. Server entries are managed in the JSON template.';
   note.style.cssText = 'font-size:11px;opacity:.6;margin-top:8px;grid-column: 1 / -1;';
   host.appendChild(note);
 }
 
-/**
- * Heuristic: does this model name look like a dedicated embedding model?
- * The OpenAI-compatible /v1/models route cannot distinguish chat from
- * embedding models, so this is a soft warning, not a gate.
- */
-function looksLikeEmbeddingModel(name: string): boolean {
-  return /embed|bge|e5|gte|minilm|nomic|mxbai|arctic|snowflake|jina/i.test(name);
-}
+function renderServerTemplateStatus(doc: any): void {
+  const result = getLastServerModelConfigLoadResult();
+  const path = result?.path || getServerModelConfigPath();
+  const pathEl = doc.getElementById('zotseek-server-config-path');
+  if (pathEl) pathEl.textContent = path;
 
-/** Result of the last successful probe in the server section; gates Add model. */
-let serverProbe: { baseUrl: string; modelName: string; dims: number; apiKey: string | undefined } | null = null;
-let serverTestInProgress = false;
-/** Bumped whenever the URL or apiKey changes, or a new test/probe starts; stale async callbacks bail if their gen is out of date. */
-let serverProbeGeneration = 0;
-
-function serverSectionEls(doc: any) {
-  return {
-    url: doc.getElementById('zotseek-server-url') as HTMLInputElement | null,
-    test: doc.getElementById('zotseek-server-test') as any,
-    status: doc.getElementById('zotseek-server-status') as HTMLElement | null,
-    modelRow: doc.getElementById('zotseek-server-model-row') as HTMLElement | null,
-    modelMenu: doc.getElementById('zotseek-server-model-menu') as any,
-    add: doc.getElementById('zotseek-server-add') as any,
-    advanced: doc.getElementById('zotseek-server-advanced') as HTMLElement | null,
-    queryPrefix: doc.getElementById('zotseek-server-queryPrefix') as HTMLInputElement | null,
-    docPrefix: doc.getElementById('zotseek-server-docPrefix') as HTMLInputElement | null,
-    apiKey: doc.getElementById('zotseek-server-apiKey') as HTMLInputElement | null,
-  };
-}
-
-function setServerStatus(doc: any, text: string): void {
-  const el = serverSectionEls(doc).status;
-  if (el) el.textContent = text;
-}
-
-/**
- * Invalidate any completed or in-flight probe: bumps the generation counter (so stale
- * probeServerModel callbacks bail out before writing back), clears the cached probe result,
- * and disables Add. Called whenever the URL or apiKey field is edited, since either would
- * make a previously-verified probe describe a server/credential that's no longer current.
- */
-function invalidateServerProbe(doc: any): void {
-  serverProbeGeneration++;
-  serverProbe = null;
-  const els = serverSectionEls(doc);
-  if (els.add) els.add.disabled = true;
-}
-
-async function testServerConnection(doc: any): Promise<void> {
-  if (serverTestInProgress) return;
-  serverTestInProgress = true;
-  serverProbeGeneration++;
-  const els = serverSectionEls(doc);
-  serverProbe = null;
-  if (els.add) els.add.disabled = true;
-  try {
-    const raw = (els.url?.value || '').trim();
-    const base = assertLoopbackUrl(raw); // throws with a user-readable message
-    setServerStatus(doc, 'Connecting...');
-    const client = new ServerEmbeddingClient({ baseUrl: base.origin, serverModelName: '' });
-    const models = await client.listModels();
-    if (!docAlive(doc)) return;
-    if (models.length === 0) {
-      setServerStatus(doc, 'Connected, but the server lists no models. Load a model in the server first.');
-      return;
-    }
-    const popup = els.modelMenu?.querySelector('menupopup');
-    if (popup) {
-      popup.replaceChildren();
-      // Placeholder first: an unselected XUL menulist sizes itself to nothing (no label to
-      // measure), collapsing to a few px wide. Selecting this placeholder is a safe no-op:
-      // probeServerModel returns early when the selected value is falsy.
-      const placeholder = doc.createXULElement('menuitem');
-      placeholder.setAttribute('value', '');
-      placeholder.setAttribute('label', 'Choose a model...');
-      popup.appendChild(placeholder);
-      for (const name of models) {
-        const mi = doc.createXULElement('menuitem');
-        mi.setAttribute('value', name);
-        mi.setAttribute('label', name);
-        popup.appendChild(mi);
-      }
-      if (els.modelMenu) els.modelMenu.selectedIndex = 0;
-    }
-    if (els.modelRow) els.modelRow.style.display = 'flex';
-    if (els.advanced) els.advanced.style.display = 'block';
-    setServerStatus(doc, `Connected. ${models.length} model(s) available: pick one to test it.`);
-  } catch (e: any) {
-    if (docAlive(doc)) setServerStatus(doc, `Failed: ${e?.message || e}`);
-  } finally {
-    serverTestInProgress = false;
-  }
-}
-
-async function probeServerModel(doc: any): Promise<void> {
-  const gen = ++serverProbeGeneration;
-  const els = serverSectionEls(doc);
-  const name = els.modelMenu?.selectedItem?.getAttribute('value');
-  const raw = (els.url?.value || '').trim();
-  if (!name || !raw) return;
-  serverProbe = null;
-  if (els.add) els.add.disabled = true;
-  // Pre-fill inferred task prefixes (editable before Add)
-  const inferred = inferServerPrefixes(name);
-  if (els.queryPrefix) els.queryPrefix.value = inferred.queryPrefix;
-  if (els.docPrefix) els.docPrefix.value = inferred.docPrefix;
-  try {
-    const base = assertLoopbackUrl(raw);
-    const apiKey = els.apiKey?.value || undefined;
-    setServerStatus(doc, `Testing ${name}...`);
-    const client = new ServerEmbeddingClient({
-      baseUrl: base.origin, serverModelName: name,
-      apiKey,
+  const statusEl = doc.getElementById('zotseek-server-config-status');
+  if (!statusEl) return;
+  if (!result) {
+    statusEl.textContent = getString('pref-serverConfigNotLoaded');
+  } else if (result.kind === 'unknown') {
+    statusEl.textContent = getString('pref-serverConfigErrors', {
+      errors: result.errors.length,
+      detail: result.errors.slice(0, 2).join(' '),
     });
-    const dims = await client.embed(['zotseek probe'], 0).then(v => v[0]?.length || 0);
-    if (gen !== serverProbeGeneration) return; // superseded by a newer probe or URL/key edit
-    if (!docAlive(doc)) return;
-    if (dims <= 0) { setServerStatus(doc, `Failed: ${name} returned no embedding.`); return; }
-    serverProbe = { baseUrl: base.origin, modelName: name, dims, apiKey };
-    if (els.add) els.add.disabled = false;
-    let statusMsg = `${name}: ${dims} dimensions. Review the prefixes below, then Add model.`;
-    if (!looksLikeEmbeddingModel(name)) {
-      statusMsg += ' Note: this looks like a chat model, not an embedding model; search quality will likely be poor.';
-    }
-    setServerStatus(doc, statusMsg);
-  } catch (e: any) {
-    if (gen !== serverProbeGeneration) return; // superseded; don't overwrite newer status
-    if (docAlive(doc)) setServerStatus(doc, `Failed: ${e?.message || e}`);
+  } else if (result.kind === 'none') {
+    statusEl.textContent = getString('pref-serverConfigNone');
+  } else {
+    statusEl.textContent = getString('pref-serverConfigLoaded', {
+      model: result.model?.serverModelName || '',
+    });
   }
-}
-
-async function addProbedServerModel(doc: any): Promise<void> {
-  const els = serverSectionEls(doc);
-  if (!serverProbe) return;
-  addServerModel({
-    id: sanitizeServerModelId(serverProbe.modelName),
-    label: `${serverProbe.modelName} (server)`,
-    baseUrl: serverProbe.baseUrl,
-    serverModelName: serverProbe.modelName,
-    dimensions: serverProbe.dims,
-    queryPrefix: els.queryPrefix?.value ?? '',
-    docPrefix: els.docPrefix?.value ?? '',
-    apiKey: serverProbe.apiKey,
-  });
-  setServerStatus(doc, 'Added. Select it in the Embedding Model menu above to start using it.');
-  if (docAlive(doc)) {
-    await populateModelMenu(doc);
-    await renderManageModels(doc);
-  }
-}
-
-function initServerSection(doc: any): void {
-  const els = serverSectionEls(doc);
-  els.test?.addEventListener('command', () => { void testServerConnection(doc); });
-  els.modelMenu?.addEventListener('command', () => { void probeServerModel(doc); });
-  els.add?.addEventListener('command', () => { void addProbedServerModel(doc); });
-  // Editing the URL or API key invalidates any completed/in-flight probe: the persisted
-  // baseUrl/apiKey must match what was actually verified, not whatever is in the field at
-  // Add time. Prefix fields intentionally stay editable post-probe.
-  els.url?.addEventListener('input', () => { invalidateServerProbe(doc); });
-  els.apiKey?.addEventListener('input', () => { invalidateServerProbe(doc); });
 }
 
 /** Groups open by default; all others start collapsed. */
@@ -454,8 +343,8 @@ class PreferencesManager {
       await renderCoverage(this.window.document);
       await renderManageModels(this.window.document);
 
-      // Local inference server section (issue #42)
-      initServerSection(this.window.document);
+      // Advanced server models are configured in a profile-side JSON template.
+      renderServerTemplateStatus(this.window.document);
 
       // Keep collapsible groups in sync with the Settings search field
       initPrefsGroupSearchSync(this.window.document);
@@ -632,8 +521,6 @@ class PreferencesManager {
         modelSwitchInProgress = true;
         const id = modelMenu.selectedItem?.getAttribute('value');
         if (!id) { modelSwitchInProgress = false; return; }
-        const model = getModel(id);
-        if (!model) { modelSwitchInProgress = false; return; }
         const statusEl = doc.getElementById('zotseek-embeddingModel-status');
         try {
           const zs = (typeof Zotero !== 'undefined') ? (Zotero as any).ZotSeek : null;
@@ -642,7 +529,27 @@ class PreferencesManager {
             await populateModelMenu(doc);
             return;
           }
+          if (id === SERVER_SLOT_SELECTION_ID) {
+            setActiveModelId(SERVER_SLOT_SELECTION_ID);
+            const config = getLastServerModelConfigLoadResult();
+            if (config?.kind !== 'ready' || !config.model) {
+              embeddingPipeline.reset();
+              autoIndexManager.stop();
+              showServerModelConfigurationPromptIfNeeded();
+              if (docAlive(doc)) {
+                if (statusEl) statusEl.textContent = getString('pref-serverModelIncomplete');
+                await populateModelMenu(doc);
+                refreshModelInputPolicy(doc);
+                await renderCoverage(doc);
+                await renderManageModels(doc);
+              }
+              return;
+            }
+          }
+          const model = getModel(id);
+          if (!model) return;
           await embeddingPipeline.setModel(id);   // persists the pref + reloads the worker
+          autoIndexManager.reload();
           if (docAlive(doc)) {
             if (statusEl) statusEl.textContent = '';
             await populateModelMenu(doc);
@@ -651,7 +558,7 @@ class PreferencesManager {
             await renderManageModels(doc);
           }
           // maybePromptReindex may trigger a long reindex; guard doc touches inside it
-          await maybePromptReindex(doc, id);
+          await maybePromptReindex(doc, model.id);
         } catch (e: any) {
           // Guard: statusEl may throw if the prefs window was closed during a long await
           try {
@@ -691,7 +598,11 @@ class PreferencesManager {
           refreshModelInputPolicy(doc);
           return;
         }
-        const requested = Math.max(50, Math.min(8192, parsed));
+        const model = getModel(getActiveModelId());
+        const hardLimit = model
+          ? resolveModelInputPolicy(model).maxInputTokens ?? 8192
+          : 8192;
+        const requested = Math.max(50, Math.min(hardLimit, parsed));
         Z.Prefs.set('zotseek.maxTokens', requested, true);
         refreshModelInputPolicy(doc);
         this.logger.debug(`zotseek.maxTokens override changed to: ${requested}`);

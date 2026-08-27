@@ -10,7 +10,12 @@ import { Logger } from '../utils/logger';
 import { noteHTMLToText } from '../utils/note-text';
 import { getIndexingMode } from '../utils/chunker';
 import { identityFromItem, localItemIDFromIdentity } from './identity-resolver';
-import { getActiveModel, getActiveModelId } from './model-registry';
+import {
+  getActiveModel,
+  getActiveModelId,
+  getActiveModelSelectionId,
+  SERVER_SLOT_SELECTION_ID,
+} from './model-registry';
 import { modelInputPolicyFingerprint, resolveModelInputPolicy } from './model-input-policy';
 import { textExtractor } from './text-extractor';
 import { isModifiedAfterVerification } from '../utils/timestamp';
@@ -330,6 +335,11 @@ export class AutoIndexManager {
   private async runCheck(): Promise<StartupCheckResult> {
     if (this.checking || !this.itemProvider || !this.vectorStore ||
         !this.fullIndexCallback || !this.noteIndexCallback) {
+      return this.emptyResult(true);
+    }
+    if (getActiveModelSelectionId() === SERVER_SLOT_SELECTION_ID &&
+        getActiveModelId() === SERVER_SLOT_SELECTION_ID) {
+      this.logger.info('Startup reconciliation skipped: the selected Server model is incomplete');
       return this.emptyResult(true);
     }
 

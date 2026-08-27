@@ -41,4 +41,23 @@ describe('model input policy resolution', () => {
     assert.notEqual(modelInputPolicyFingerprint(e5), modelInputPolicyFingerprint(bge));
     assert.match(modelInputPolicyFingerprint(e5), /^v1:multilingual-e5-base:420:512:8000:exact$/);
   });
+
+  test('server document prefixes are part of the index policy fingerprint', () => {
+    const base = getModel('multilingual-e5-base')!;
+    const server = {
+      ...base,
+      id: 'server:e5-local',
+      runtime: 'server' as const,
+      docPrefix: 'passage: ',
+      serverMaxInputTokens: 512,
+      serverRecommendedChunkTokens: 420,
+    };
+    const first = modelInputPolicyFingerprint(resolveModelInputPolicy(server));
+    const changed = modelInputPolicyFingerprint(resolveModelInputPolicy({
+      ...server,
+      docPrefix: 'document: ',
+    }));
+    assert.notEqual(first, changed);
+    assert.match(first, /doc=passage%3A%20$/);
+  });
 });

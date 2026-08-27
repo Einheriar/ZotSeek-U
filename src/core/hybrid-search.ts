@@ -273,6 +273,7 @@ export class HybridSearchEngine {
         paragraphIndex: r.paragraphIndex,
       }));
     } catch (error) {
+      if ((error as any)?.code === 'SERVER_MODEL_NOT_READY') throw error;
       this.logger.error('Semantic search failed:', error);
       return [];
     }

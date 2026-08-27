@@ -93,6 +93,23 @@ zotseek-pref-modelInputPrefixRequired = 需要
 zotseek-pref-modelInputPrefixNone = 不需要
 zotseek-pref-resetMaxTokens =
     .label = 恢复推荐值
+zotseek-pref-serverConfigTitle = 高级 Server 模型
+zotseek-pref-serverConfigDesc = 在 Zotero profile 的 JSON 模板中配置固定的单一 Server 模型槽位。ZotSeek 会在启动时校验模板；编辑后请重启 Zotero 使其生效。
+zotseek-pref-serverConfigPath = 模板：
+zotseek-pref-serverConfigNotLoaded = 模板尚未加载，请重启 Zotero。
+zotseek-pref-serverConfigLoaded = Server（{ $model }）已配置。编辑文件后请重启 Zotero 使其生效。
+zotseek-pref-serverConfigNone = Server（NONE）：尚未配置 Server 模型。请在模型菜单中选择 Server 查看配置提示。
+zotseek-pref-serverConfigErrors = Server（UNKNOWN）：发现 { $errors } 个配置错误。{ $detail }
+zotseek-pref-serverModelIncomplete = Server 模型信息不完整。请填写 JSON 模板并重启 Zotero。
+zotseek-serverConfigRequiredTitle = 需要补全 Server 模型配置
+zotseek-serverConfigRequiredMessage = 当前选择了 Server（{ $state }），但模型信息不完整。ZotSeek 会保留这一选择，但暂时不能建立索引或执行语义搜索。
+
+    请编辑：{ $path }
+
+    保存文件后请重启 Zotero。
+
+    { $errors }
+zotseek-serverConfigMissingEntry = 请把模板中的“model”字段填写为一个完整的 Server 模型对象。
 zotseek-pref-maxChunks = 每篇文献最大分块数
 zotseek-pref-maxChunksDesc = 长文档限制（1-200）
 zotseek-pref-excludeBooks =

@@ -24,6 +24,8 @@ export interface ModelConfig {
   baseUrl?: string;          // e.g. 'http://127.0.0.1:1234' (loopback enforced at request time)
   serverModelName?: string;  // the model id the server knows, e.g. 'text-embedding-nomic-embed-text-v1.5'
   apiKey?: string;           // optional bearer token (vLLM)
+  serverMaxInputTokens?: number;
+  serverRecommendedChunkTokens?: number;
 }
 
 const COMMON_FILES = [
@@ -70,12 +72,24 @@ export const MODELS: ModelConfig[] = [
 ];
 
 export const DEFAULT_MODEL_ID = 'multilingual-e5-base';
+/** Stable preference/menu value for the single Server configuration slot. */
+export const SERVER_SLOT_SELECTION_ID = 'server-slot';
+
+export class ServerModelNotReadyError extends Error {
+  readonly code = 'SERVER_MODEL_NOT_READY' as const;
+
+  constructor() {
+    super('The Server model is selected, but its model information is incomplete.');
+    this.name = 'ServerModelNotReadyError';
+  }
+}
 
 export function getAllModels(): ModelConfig[] {
   return [...MODELS, ...getServerModels()];
 }
 
 export function getModel(id: string): ModelConfig | undefined {
+  if (id === SERVER_SLOT_SELECTION_ID) return getServerModels()[0];
   return MODELS.find(m => m.id === id) || getServerModels().find(m => m.id === id);
 }
 
@@ -89,18 +103,40 @@ export function legacyModelIdToShortId(stored: string): string {
   return stored; // already a short id (or unknown); leave as-is
 }
 
-export function getActiveModelId(): string {
+export function getActiveModelSelectionId(): string {
   try {
     const v = Zotero.Prefs.get('zotseek.embeddingModel', true);
-    if (typeof v === 'string' && getModel(v)) return v;
+    if (typeof v === 'string') {
+      if (v === SERVER_SLOT_SELECTION_ID || v.startsWith('server:')) {
+        return SERVER_SLOT_SELECTION_ID;
+      }
+      if (MODELS.some(model => model.id === v)) return v;
+    }
   } catch (e: any) {
-    Zotero.debug('[ZotSeek] getActiveModelId error: ' + (e?.message || e));
+    Zotero.debug('[ZotSeek] getActiveModelSelectionId error: ' + (e?.message || e));
   }
   return DEFAULT_MODEL_ID;
 }
 
+/**
+ * Operational model id used by vector storage and embedding calls. When the
+ * Server slot is selected but incomplete, return the slot sentinel rather
+ * than silently substituting the default local model.
+ */
+export function getActiveModelId(): string {
+  const selectionId = getActiveModelSelectionId();
+  if (selectionId !== SERVER_SLOT_SELECTION_ID) return selectionId;
+  return getServerModels()[0]?.id || SERVER_SLOT_SELECTION_ID;
+}
+
 export function getActiveModel(): ModelConfig {
-  return getModel(getActiveModelId()) || getModel(DEFAULT_MODEL_ID)!;
+  const selectionId = getActiveModelSelectionId();
+  if (selectionId === SERVER_SLOT_SELECTION_ID) {
+    const serverModel = getServerModels()[0];
+    if (!serverModel) throw new ServerModelNotReadyError();
+    return serverModel;
+  }
+  return MODELS.find(model => model.id === selectionId) || MODELS.find(model => model.id === DEFAULT_MODEL_ID)!;
 }
 
 /**
@@ -109,7 +145,10 @@ export function getActiveModel(): ModelConfig {
  */
 export function setActiveModelId(id: string): void {
   try {
-    Zotero.Prefs.set('zotseek.embeddingModel', id, true);
+    const selectionId = id === SERVER_SLOT_SELECTION_ID || id.startsWith('server:')
+      ? SERVER_SLOT_SELECTION_ID
+      : id;
+    Zotero.Prefs.set('zotseek.embeddingModel', selectionId, true);
   } catch (e: any) {
     Zotero.debug('[ZotSeek] setActiveModelId error: ' + (e?.message || e));
   }
@@ -211,10 +250,11 @@ export function requiresInstructionPrefix(model: ModelConfig): boolean {
 }
 
 /**
- * Server-backed models (issue #42). Persisted in the 'zotseek.serverModels'
- * pref as a JSON array of ServerModelEntry. A server model is a separate
- * vector space from any bundled ONNX model (even for the "same" weights),
- * so it always indexes under its own 'server:'-namespaced model_id.
+ * Server-backed models (issue #42). The validated profile template is copied
+ * into the 'zotseek.serverModels' pref as a synchronous runtime cache. A server
+ * model is a separate vector space from any bundled ONNX model (even for the
+ * "same" weights), so it always indexes under its own 'server:'-namespaced
+ * model_id.
  */
 export interface ServerModelEntry {
   id: string;
@@ -222,6 +262,8 @@ export interface ServerModelEntry {
   baseUrl: string;
   serverModelName: string;
   dimensions: number;
+  maxInputTokens: number;
+  recommendedChunkTokens: number;
   queryPrefix: string;
   docPrefix: string;
   apiKey?: string;
@@ -251,6 +293,9 @@ function isValidServerEntry(e: any): e is ServerModelEntry {
     && typeof e.baseUrl === 'string'
     && typeof e.serverModelName === 'string'
     && typeof e.dimensions === 'number' && e.dimensions > 0
+    && typeof e.maxInputTokens === 'number' && Number.isInteger(e.maxInputTokens) && e.maxInputTokens > 0
+    && typeof e.recommendedChunkTokens === 'number' && Number.isInteger(e.recommendedChunkTokens)
+    && e.recommendedChunkTokens > 0 && e.recommendedChunkTokens <= e.maxInputTokens
     && typeof e.queryPrefix === 'string'
     && typeof e.docPrefix === 'string';
 }
@@ -263,6 +308,8 @@ function serverEntryToModelConfig(e: ServerModelEntry): ModelConfig {
     hfPath: '', onnxFile: '', files: [], bundled: false, approxSizeMB: 0, // onnx-only fields, unused
     multilingual: false,
     baseUrl: e.baseUrl, serverModelName: e.serverModelName, apiKey: e.apiKey,
+    serverMaxInputTokens: e.maxInputTokens,
+    serverRecommendedChunkTokens: e.recommendedChunkTokens,
   };
 }
 
@@ -272,7 +319,9 @@ export function getServerModelEntries(): ServerModelEntry[] {
     if (typeof raw !== 'string' || !raw) return [];
     const arr = JSON.parse(raw);
     if (!Array.isArray(arr)) return [];
-    return arr.filter(isValidServerEntry);
+    // The runtime cache represents one fixed Server slot. Legacy callers may
+    // still write an array, but operational code never exposes multiple models.
+    return arr.filter(isValidServerEntry).slice(0, 1);
   } catch (e: any) {
     Zotero.debug('[ZotSeek] getServerModelEntries: malformed pref ignored: ' + (e?.message || e));
     return [];
@@ -284,9 +333,9 @@ export function getServerModels(): ModelConfig[] {
 }
 
 export function addServerModel(entry: ServerModelEntry): void {
-  const list = getServerModelEntries().filter(x => x.id !== entry.id);
-  list.push(entry);
-  Zotero.Prefs.set(SERVER_MODELS_PREF, JSON.stringify(list), true);
+  // Kept for self-tests and compatibility with older callers. The runtime
+  // contract is a single fixed slot, so adding always replaces its contents.
+  Zotero.Prefs.set(SERVER_MODELS_PREF, JSON.stringify([entry]), true);
 }
 
 export function removeServerModel(id: string): void {

@@ -510,6 +510,25 @@ Key concepts:
 - **Worker isolation** - Model inference runs outside the main Zotero thread
 - **wasmPaths configuration** - Critical for v3 to work in ChromeWorker (bypasses dynamic import)
 
+#### Server-backed model configuration
+
+Advanced users configure local OpenAI-compatible embedding services in
+`<Zotero profile>/zotseek-server-models.json`. The plugin creates the template
+on first startup. Schema v2 contains one `model` field. A configured model must
+declare an explicit `server:` id, loopback `baseUrl`, server model name,
+dimensions, maximum input tokens, recommended chunk tokens, and
+query/document prefixes; `apiKey` is optional and the UI label is derived.
+
+`src/core/server-model-config.ts` classifies the slot as `none`, `unknown` or
+`ready` and copies only a ready model to `zotseek.serverModels` as a one-entry
+runtime cache. The menu persists the `server-slot` selection sentinel, while
+storage and embedding use only the ready model's real `server:` id. Do not add
+GUI-only defaults, infer missing model facts or fall back to a local model when
+Server is incomplete. Explicit embedding actions report the template error;
+startup/background work skips it without a modal. Runtime initialization checks
+both `GET /v1/models` and the embedding dimensions. Template edits require a
+Zotero restart.
+
 ### 4. Search Engine (`src/core/search-engine.ts`)
 
 Performs similarity search using cosine similarity:

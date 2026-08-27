@@ -4,8 +4,9 @@ import assert from 'node:assert/strict';
 // the Zotero global while their module bodies are evaluated. This import
 // installs the stub as a side effect and MUST stay above the one below: import
 // hoisting means a function call here would run too late.
-import './helpers/zotero-stub';
-import { isAllowedOrigin } from '../src/server/http-tools';
+import { installZoteroStub } from './helpers/zotero-stub';
+import { isAllowedOrigin, runFindSimilarTool, runSearchTool } from '../src/server/http-tools';
+import { SERVER_SLOT_SELECTION_ID } from '../src/core/model-registry';
 
 // Only the pure guard is exercised here; the search tools themselves need a
 // real index and live in the in-Zotero suite (src/dev/suites/mcp-server.ts).
@@ -58,5 +59,23 @@ describe('isAllowedOrigin', () => {
   test('rejects non-http schemes pointing at loopback', () => {
     assert.equal(isAllowedOrigin('file://localhost'), false);
     assert.equal(isAllowedOrigin('ws://localhost:23119'), false);
+  });
+});
+
+describe('incomplete Server slot over MCP/REST tools', () => {
+  test('returns a configuration error for semantic search without opening UI', async () => {
+    installZoteroStub({ 'zotseek.embeddingModel': SERVER_SLOT_SELECTION_ID });
+    await assert.rejects(
+      runSearchTool({ query: 'test', mode: 'semantic' }),
+      /model information is incomplete[\s\S]*zotseek-server-models\.json/,
+    );
+  });
+
+  test('returns the same configuration error for find_similar', async () => {
+    installZoteroStub({ 'zotseek.embeddingModel': SERVER_SLOT_SELECTION_ID });
+    await assert.rejects(
+      runFindSimilarTool({ item_key: 'ABCDEFGH' }),
+      /Server \(NONE\).*restart Zotero/,
+    );
   });
 });

@@ -31,11 +31,23 @@ import { toolbarButton } from './ui/toolbar-button';
 import { itemTreeIndexColumn } from './ui/item-tree-column';
 import { preferencesManager } from './ui/preferences';
 import { identityFromItem, libraryKeyFromLocalID, localItemIDFromIdentity } from './core/identity-resolver';
-import { getActiveModelId } from './core/model-registry';
+import {
+  getActiveModelId,
+  getActiveModelSelectionId,
+  SERVER_SLOT_SELECTION_ID,
+} from './core/model-registry';
 import { initServerManager, shutdownServerManager } from './server/server-manager';
 import { registerModelsResourceSubstitution, verifyModelsResourceSubstitution } from './core/model-download';
 import { tokenizerService } from './core/tokenizer-service';
 import { shouldClearLegacyDefaultChunkPreference } from './core/model-input-policy';
+import {
+  formatServerModelConfigErrors,
+  getLastServerModelConfigLoadResult,
+  getSelectedServerModelConfigurationIssue,
+  getServerModelConfigPath,
+  loadServerModelConfig,
+  serverModelConfigurationErrorMessage,
+} from './core/server-model-config';
 // Self-test harness (mounted only when extensions.zotseek.devMode = true)
 import { selfTest as zotseekSelfTest } from './dev/self-test';
 // Task suites: imported for registration side effects only.
@@ -247,6 +259,7 @@ class ZotSeekPlugin {
   public vectorStore: IVectorStore | null = null;  // Public for preference pane access
   private initialized = false;
   private indexing = false;
+  private serverBackgroundSkipLogged = false;
   private collectionMenuRegistrationID: string | null = null;
 
   // Hooks for bootstrap.js
@@ -295,7 +308,7 @@ class ZotSeekPlugin {
       'zotseek.modelDefaultMigrationE5': false,
       'zotseek.modelInputPolicyMigrationV1': false,
       'zotseek.indexScope': 'user', // 'user' (My Library) or 'all' (all libraries)
-      'zotseek.serverModels': '[]', // JSON array of server-backed model entries (issue #42)
+      'zotseek.serverModels': '[]', // Validated one-entry runtime cache for the fixed Server slot
       'zotseek.autoCompact': true, // Reclaim space in zotseek.sqlite during Zotero's idle maintenance (Zotero 10+)
       // Experimental: run embeddings on the GPU via WebGPU (Zotero 11+ only).
       // Off by default: Firefox 153's WebGPU is 6-11x SLOWER than the WASM
@@ -373,6 +386,19 @@ class ZotSeekPlugin {
 
     // Set default preferences if not already set
     this.initDefaultPreferences();
+
+    // Load the advanced profile-side template before any model-aware module or
+    // startup reconciliation reads the synchronous server-model cache.
+    const serverConfig = await loadServerModelConfig();
+    if (serverConfig.created) {
+      this.logger.info(`Created server model template: ${serverConfig.path}`);
+    }
+    if (serverConfig.kind === 'unknown') {
+      this.logger.warn(
+        `Server model template loaded with ${serverConfig.errors.length} error(s): ` +
+        serverConfig.errors.join(' | '),
+      );
+    }
 
     // Initialize core modules
     try {
@@ -576,6 +602,7 @@ class ZotSeekPlugin {
    * un-indexed items in that scope.
    */
   private async checkAndOfferResume(): Promise<void> {
+    if (!this.ensureOperationalModel(false)) return;
     const Z = getZotero();
     if (!Z) return;
 
@@ -695,8 +722,9 @@ class ZotSeekPlugin {
       autoIndexManager.setVectorStore(this.vectorStore);
     }
 
-    // Schedule one check after startup (respects the existing preference).
-    autoIndexManager.start();
+    // An incomplete Server slot remains selected across startup without
+    // triggering a prompt or an automatic reconciliation run.
+    if (this.ensureOperationalModel(false)) autoIndexManager.start();
     this.logger.info('Startup index reconciliation initialized');
   }
 
@@ -970,6 +998,12 @@ class ZotSeekPlugin {
 
   /** Run the same one-shot reconciliation used after startup. */
   public async checkForIndexUpdates(): Promise<import('./core/auto-index-manager').StartupCheckResult> {
+    if (!this.ensureOperationalModel(true)) {
+      return {
+        checked: 0, indexedNew: 0, rebuilt: 0, notesUpdated: 0,
+        baselined: 0, removed: 0, unchanged: 0, skipped: true,
+      };
+    }
     await this.ensureStoreReady();
     if (this.vectorStore) autoIndexManager.setVectorStore(this.vectorStore);
     return autoIndexManager.runNow();
@@ -980,6 +1014,7 @@ class ZotSeekPlugin {
    * This ensures the new indexing mode setting is applied
    */
   public async rebuildIndex(): Promise<void> {
+    if (!this.ensureOperationalModel(true)) return;
     const Z = getZotero();
 
     const confirmed = Services.prompt.confirm(
@@ -1217,6 +1252,7 @@ class ZotSeekPlugin {
       this.showAlert(getString('indexing-alreadyInProgress'));
       return;
     }
+    if (!this.ensureOperationalModel(true)) return;
 
     const Z = getZotero();
     if (!Z) return;
@@ -1240,6 +1276,7 @@ class ZotSeekPlugin {
       this.showAlert(getString('indexing-alreadyInProgress'));
       return;
     }
+    if (!this.ensureOperationalModel(true)) return;
 
     const Z = getZotero();
     if (!Z) return;
@@ -1309,6 +1346,7 @@ class ZotSeekPlugin {
       this.showAlert(getString('indexing-alreadyInProgress'));
       return;
     }
+    if (!this.ensureOperationalModel(true)) return;
 
     const Z = getZotero();
     if (!Z) return;
@@ -1395,6 +1433,7 @@ class ZotSeekPlugin {
    *                a crash or sleep. Pass undefined for one-off runs.
    */
   private async indexItems(items: any[], scope?: BulkScope): Promise<void> {
+    if (!this.ensureOperationalModel(true)) return;
     this.indexing = true;
     const Z = getZotero();
     const indexingModelId = getActiveModelId();
@@ -1716,6 +1755,8 @@ class ZotSeekPlugin {
       return [];
     }
 
+    if (!this.ensureOperationalModel(false)) return [];
+
     this.indexing = true;
     const Z = getZotero();
     const indexingModelId = getActiveModelId();
@@ -1945,6 +1986,7 @@ class ZotSeekPlugin {
    */
   private async indexNoteChangesSilent(items: any[]): Promise<number[]> {
     if (this.indexing || items.length === 0) return [];
+    if (!this.ensureOperationalModel(false)) return [];
     this.indexing = true;
     const Z = getZotero();
     const indexingModelId = getActiveModelId();
@@ -2117,6 +2159,8 @@ class ZotSeekPlugin {
   private async onFindSimilar(): Promise<void> {
     this.logger.info('Find Similar Documents triggered');
 
+    if (!this.ensureOperationalModel(true)) return;
+
     const Z = getZotero();
     if (!Z) return;
 
@@ -2204,9 +2248,40 @@ class ZotSeekPlugin {
     // TODO: Show actual progress bar UI
   }
 
-  /**
-   * Show alert dialog using proper Zotero/Mozilla prompt service
-   */
+  /** Gate embedding work without substituting the default local model. */
+  private ensureOperationalModel(userInitiated: boolean): boolean {
+    if (getActiveModelSelectionId() !== SERVER_SLOT_SELECTION_ID) {
+      this.serverBackgroundSkipLogged = false;
+      return true;
+    }
+
+    const result = getLastServerModelConfigLoadResult();
+    if (result?.kind === 'ready' && result.model &&
+        getActiveModelId() !== SERVER_SLOT_SELECTION_ID) {
+      this.serverBackgroundSkipLogged = false;
+      return true;
+    }
+
+    const path = result?.path || getServerModelConfigPath();
+    const state = result?.kind === 'unknown' ? 'UNKNOWN' : 'NONE';
+    const errors = result?.errors.length
+      ? formatServerModelConfigErrors(result.errors)
+      : getString('serverConfigMissingEntry');
+    if (userInitiated) {
+      this.showAlert(
+        getString('serverConfigRequiredMessage', { state, path, errors }),
+        getString('serverConfigRequiredTitle'),
+      );
+    } else if (!this.serverBackgroundSkipLogged) {
+      this.logger.info(
+        `Background embedding work skipped: Server (${state}) is selected; edit ${path}`,
+      );
+      this.serverBackgroundSkipLogged = true;
+    }
+    return false;
+  }
+
+  /** Show an alert through Zotero's prompt service. */
   private showAlert(message: string, title = 'ZotSeek'): void {
     const Z = getZotero();
     const win = Z?.getMainWindow();
@@ -2296,6 +2371,8 @@ class ZotSeekPlugin {
       this.logger.debug('reindexForActiveModel: indexing already in progress, skipping');
       return;
     }
+
+    if (!this.ensureOperationalModel(true)) return;
 
     this.indexing = true;
     const Z = getZotero();
@@ -2464,8 +2541,16 @@ class ZotSeekPlugin {
 
   // Public API for other plugins/scripts
   public api = {
-    search: (query: string, options?: any) => searchEngine.search(query, options),
-    findSimilar: (itemId: number, options?: any) => searchEngine.findSimilar(itemId, options),
+    search: (query: string, options?: any) => {
+      const issue = getSelectedServerModelConfigurationIssue();
+      if (issue) return Promise.reject(new Error(serverModelConfigurationErrorMessage(issue)));
+      return searchEngine.search(query, options);
+    },
+    findSimilar: (itemId: number, options?: any) => {
+      const issue = getSelectedServerModelConfigurationIssue();
+      if (issue) return Promise.reject(new Error(serverModelConfigurationErrorMessage(issue)));
+      return searchEngine.findSimilar(itemId, options);
+    },
     indexItems: (items: any[]) => this.indexItems(items),
     getStats: () => this.vectorStore?.getStats() ?? Promise.resolve({ totalPapers: 0, indexedPapers: 0, modelId: 'none', lastIndexed: null, storageUsedBytes: 0 }),
     compactDatabase: () => this.compactDatabase(),

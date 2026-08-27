@@ -16,6 +16,8 @@ export interface ResolvedModelInputPolicy {
   supportsExactTokenCount: boolean;
   policyVersion: number;
   usesUserOverride: boolean;
+  runtime: ModelConfig['runtime'];
+  docPrefix: string;
 }
 
 export function normalizeRequestedChunkTokens(value: unknown): number | undefined {
@@ -45,6 +47,8 @@ export function resolveModelInputPolicy(
     supportsExactTokenCount: config.supportsExactTokenCount,
     policyVersion: MODEL_INPUT_POLICY_VERSION,
     usesUserOverride: requestedOverride !== undefined,
+    runtime: model.runtime,
+    docPrefix: model.docPrefix,
   };
 }
 
@@ -57,12 +61,16 @@ export function shouldClearLegacyDefaultChunkPreference(
 }
 
 export function modelInputPolicyFingerprint(policy: ResolvedModelInputPolicy): string {
-  return [
+  const parts: Array<string | number> = [
     `v${policy.policyVersion}`,
     policy.modelId,
     policy.effectiveChunkTokens,
     policy.maxInputTokens ?? 'unknown',
     policy.maxChunkChars,
     policy.supportsExactTokenCount ? 'exact' : 'estimated',
-  ].join(':');
+  ];
+  // Server document prefixes are user-editable input-contract data. A change
+  // alters every stored document vector and must be visible to reconciliation.
+  if (policy.runtime === 'server') parts.push(`doc=${encodeURIComponent(policy.docPrefix)}`);
+  return parts.join(':');
 }

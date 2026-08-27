@@ -5,7 +5,7 @@
  */
 
 import { Logger } from '../utils/logger';
-import { getActiveModel, getModel, ModelConfig, modelBasePath, setActiveModelId,
+import { DEFAULT_MODEL_ID, getActiveModel, getModel, ModelConfig, modelBasePath, setActiveModelId,
   requiresLocalFiles, missingModelMessage, brokenSubstitutionMessage, legacyLocationMessage,
   ModelLocation } from './model-registry';
 import { findModelLocation, ensureModelsResourceSubstitution } from './model-download';
@@ -41,7 +41,9 @@ export type ProgressCallback = (progress: EmbeddingProgress) => void;
  */
 export class EmbeddingPipeline {
   private logger: Logger;
-  private model: ModelConfig = getActiveModel();
+  // Keep module construction safe when the user has persisted an incomplete
+  // Server slot. init() resolves the actual operational model on first use.
+  private model: ModelConfig = getModel(DEFAULT_MODEL_ID)!;
   private inputConfig: ModelInputConfig = getModelInputConfig(this.model);
   private inputPolicy: ResolvedModelInputPolicy = resolveModelInputPolicy(this.model);
   private worker: any = null;
@@ -250,10 +252,9 @@ export class EmbeddingPipeline {
   }
 
   /**
-   * Initialize the server-backed branch: build the client and probe once to
-   * (a) verify the server is reachable and (b) confirm the dimensions still
-   * match what this model was configured with. A mismatch means the user
-   * swapped the model behind the same name: indexing under the stored
+   * Initialize the server-backed branch: verify the configured model is listed,
+   * then probe once to confirm the dimensions still match. A mismatch means
+   * the user swapped the model behind the same name: indexing under the stored
    * model_id would corrupt the vector space, so we refuse.
    */
   private async initServerClient(): Promise<void> {
@@ -262,13 +263,20 @@ export class EmbeddingPipeline {
       throw new Error(`Server model '${this.model.id}' is missing its server configuration`);
     }
     const client = new ServerEmbeddingClient({ baseUrl, serverModelName, apiKey });
+    const availableModels = await client.listModels();
+    if (!availableModels.includes(serverModelName)) {
+      throw new Error(
+        `Server model '${serverModelName}' is not listed by ${baseUrl}. ` +
+        'Load that model in the inference server or correct zotseek-server-models.json.'
+      );
+    }
     const dims = await client.probe();
     if (dims !== this.model.dimensions) {
       throw new Error(
         `Server model '${serverModelName}' now returns ${dims}-dimensional embeddings, ` +
         `but this ZotSeek model was added with ${this.model.dimensions}. ` +
-        `The model behind this name has changed: remove and re-add it in ZotSeek settings ` +
-        `(a re-index will be required).`
+        `The model behind this name has changed: update zotseek-server-models.json ` +
+        `with a new model id (a re-index will be required).`
       );
     }
     this.serverClient = client;

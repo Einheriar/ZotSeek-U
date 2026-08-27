@@ -1,6 +1,7 @@
 import { selfTest, scenario, assertEq, assertTrue } from '../self-test';
 import {
-  MODELS, DEFAULT_MODEL_ID, getAllModels, getModel, getActiveModel,
+  MODELS, DEFAULT_MODEL_ID, SERVER_SLOT_SELECTION_ID,
+  getAllModels, getModel, getActiveModelId, getActiveModelSelectionId,
   sanitizeServerModelId, inferServerPrefixes,
   getServerModelEntries, addServerModel, removeServerModel,
 } from '../../core/model-registry';
@@ -10,7 +11,8 @@ declare const Zotero: any;
 const TEST_ENTRY = {
   id: 'server:test-nomic', label: 'test-nomic (server)',
   baseUrl: 'http://127.0.0.1:1234', serverModelName: 'test-nomic',
-  dimensions: 768, queryPrefix: 'search_query: ', docPrefix: 'search_document: ',
+  dimensions: 768, maxInputTokens: 8192, recommendedChunkTokens: 2000,
+  queryPrefix: 'search_query: ', docPrefix: 'search_document: ',
 };
 
 selfTest.register('task-42b-server-registry', async () => {
@@ -44,10 +46,11 @@ selfTest.register('task-42b-server-registry', async () => {
         assertEq(getServerModelEntries().length, 0);
         assertEq(getAllModels().length, MODELS.length);
       }),
-      await scenario('active pref pointing at removed server model falls back to default', async () => {
+      await scenario('incomplete server selection remains selected without local fallback', async () => {
         Zotero.Prefs.set('zotseek.serverModels', '[]', true);
         Zotero.Prefs.set('zotseek.embeddingModel', 'server:gone', true);
-        assertEq(getActiveModel().id, DEFAULT_MODEL_ID);
+        assertEq(getActiveModelSelectionId(), SERVER_SLOT_SELECTION_ID);
+        assertEq(getActiveModelId(), SERVER_SLOT_SELECTION_ID);
       }),
       await scenario('curated models all carry runtime onnx', async () => {
         assertTrue(MODELS.every(m => m.runtime === 'onnx'), 'runtime field present on curated set');

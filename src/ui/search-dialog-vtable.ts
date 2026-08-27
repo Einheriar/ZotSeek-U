@@ -13,6 +13,7 @@ import { Logger } from '../utils/logger';
 import { getZotero } from '../utils/zotero-helper';
 import { getString } from '../utils/locale';
 import { isValidSearchQuery } from '../utils/query-validation';
+import { showServerModelConfigurationPromptIfNeeded } from './server-model-prompt';
 import {
   addItemsToCollection as sharedAddItemsToCollection,
   populateCollectionMenu as sharedPopulateCollectionMenu,
@@ -350,6 +351,10 @@ export class ZotSeekDialogVTable {
     }
     if (activeQueries.length === 0) {
       this.setStatus(getString('search-queryTooShort'));
+      return;
+    }
+    if (this.searchMode !== 'keyword' && showServerModelConfigurationPromptIfNeeded()) {
+      this.setStatus(getString('pref-serverModelIncomplete'));
       return;
     }
 

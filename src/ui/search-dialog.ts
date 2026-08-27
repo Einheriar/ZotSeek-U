@@ -6,6 +6,7 @@
 import { Logger } from '../utils/logger';
 import { searchEngine, SearchResult } from '../core/search-engine';
 import { ZoteroAPI } from '../utils/zotero-api';
+import { showServerModelConfigurationPromptIfNeeded } from './server-model-prompt';
 
 declare const Zotero: any;
 declare const Services: any;
@@ -65,6 +66,7 @@ export class ZotSeekDialog {
    * Perform semantic search
    */
   private async performSearch(query: string): Promise<SearchResult[]> {
+    if (showServerModelConfigurationPromptIfNeeded()) return [];
     try {
       this.logger.info('Performing semantic search for:', query);
       

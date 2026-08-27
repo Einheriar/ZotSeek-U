@@ -11,6 +11,10 @@ import { searchEngine, SearchResult } from '../core/search-engine';
 import { HybridSearchEngine, HybridSearchResult, SearchMode } from '../core/hybrid-search';
 import { getVectorStore } from '../core/storage-factory';
 import { getActiveModelId } from '../core/model-registry';
+import {
+  getSelectedServerModelConfigurationIssue,
+  serverModelConfigurationErrorMessage,
+} from '../core/server-model-config';
 import { identityFromItem } from '../core/identity-resolver';
 import { OPEN_PATH } from './open-endpoint';
 
@@ -352,6 +356,10 @@ export async function runSearchTool(args: SearchToolArgs): Promise<{ results: To
   }
   const finalTopK = clampInt(args.max_results, 1, 100, 10);
   const mode: SearchMode = args.mode && VALID_MODES.includes(args.mode) ? args.mode : 'hybrid';
+  const serverIssue = getSelectedServerModelConfigurationIssue();
+  if (mode !== 'keyword' && serverIssue) {
+    throw new Error(serverModelConfigurationErrorMessage(serverIssue));
+  }
   const returnAllChunks = args.granularity === 'passages';
   const minSimilarity =
     args.min_similarity !== undefined
@@ -375,6 +383,8 @@ export async function runSearchTool(args: SearchToolArgs): Promise<{ results: To
 }
 
 export async function runFindSimilarTool(args: FindSimilarToolArgs): Promise<{ results: ToolResultItem[] }> {
+  const serverIssue = getSelectedServerModelConfigurationIssue();
+  if (serverIssue) throw new Error(serverModelConfigurationErrorMessage(serverIssue));
   const key = typeof args?.item_key === 'string' ? args.item_key.trim().toUpperCase() : '';
   if (!/^[A-Z0-9]{8}$/.test(key)) {
     throw new Error('find_similar: "item_key" must be an 8-character Zotero item key');
@@ -391,18 +401,26 @@ export async function runIndexStatusTool(): Promise<object> {
     await store.init();
   }
   const stats = await store.getStats();
+  const serverIssue = getSelectedServerModelConfigurationIssue();
   const activeModel = getActiveModelId();
-  const coverage = await store.getCoverage(activeModel);
+  // A placeholder selection is not a vector-space id. Report zero usable
+  // coverage without querying the database under that sentinel.
+  const coverage = serverIssue
+    ? { covered: 0, total: stats.indexedPapers }
+    : await store.getCoverage(activeModel);
   return {
     // "Will searches return meaningful results?" — the embedding pipeline
     // lazy-loads on first search, so readiness is about the index itself.
-    ready: stats.indexedPapers > 0,
-    modelLoaded: Zotero.ZotSeek?.api?.isReady?.() ?? false,
+    ready: !serverIssue && stats.indexedPapers > 0,
+    modelLoaded: !serverIssue && (Zotero.ZotSeek?.api?.isReady?.() ?? false),
     indexedPapers: stats.indexedPapers,
     totalChunks: stats.totalChunks,
     modelId: stats.modelId,
     activeModel,
     coverage,
+    ...(serverIssue
+      ? { configurationError: serverModelConfigurationErrorMessage(serverIssue) }
+      : {}),
     lastIndexed: stats.lastIndexed,
     storageUsedBytes: stats.storageUsedBytes,
   };

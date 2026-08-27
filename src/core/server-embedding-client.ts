@@ -95,7 +95,7 @@ export class ServerEmbeddingClient {
     }
   }
 
-  /** Model ids the server offers, for the settings dropdown. */
+  /** Model ids the server offers, used to validate the configured model name. */
   async listModels(): Promise<string[]> {
     const json = await this.request('/v1/models', { method: 'GET' }, 10000);
     return (Array.isArray(json?.data) ? json.data : []).map((m: any) => String(m.id));

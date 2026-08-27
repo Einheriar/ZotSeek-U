@@ -93,6 +93,23 @@ zotseek-pref-modelInputPrefixRequired = required
 zotseek-pref-modelInputPrefixNone = none
 zotseek-pref-resetMaxTokens =
     .label = Use recommended
+zotseek-pref-serverConfigTitle = Advanced Server model
+zotseek-pref-serverConfigDesc = Configure the fixed Server model slot in the profile JSON template. ZotSeek validates it at startup; edit the file and restart Zotero to apply changes.
+zotseek-pref-serverConfigPath = Template:
+zotseek-pref-serverConfigNotLoaded = The template has not been loaded yet. Restart Zotero.
+zotseek-pref-serverConfigLoaded = Server ({ $model }) is configured. Edit the file and restart Zotero to apply changes.
+zotseek-pref-serverConfigNone = Server (NONE): no server model is configured. Select Server in the model menu to see setup instructions.
+zotseek-pref-serverConfigErrors = Server (UNKNOWN): { $errors } configuration error(s). { $detail }
+zotseek-pref-serverModelIncomplete = Server model information is incomplete. Configure the JSON template and restart Zotero.
+zotseek-serverConfigRequiredTitle = Server model configuration required
+zotseek-serverConfigRequiredMessage = Server ({ $state }) is selected, but its model information is incomplete. ZotSeek will keep this selection but cannot index or run semantic searches yet.
+
+    Edit: { $path }
+
+    Restart Zotero after saving the file.
+
+    { $errors }
+zotseek-serverConfigMissingEntry = Set the template's "model" field to one complete server model object.
 zotseek-pref-maxChunks = Max chunks per paper
 zotseek-pref-maxChunksDesc = Limit for long documents (1-200)
 zotseek-pref-excludeBooks =

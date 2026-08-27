@@ -5,11 +5,13 @@ import { installZoteroStub, removeZoteroStub } from './helpers/zotero-stub';
 import {
   MODELS,
   DEFAULT_MODEL_ID,
+  SERVER_SLOT_SELECTION_ID,
   getAllModels,
   getModel,
   isAllowedHfPath,
   legacyModelIdToShortId,
   getActiveModelId,
+  getActiveModelSelectionId,
   getActiveModel,
   setActiveModelId,
   applyPrefix,
@@ -115,6 +117,32 @@ describe('the active model pref', () => {
     zotero.prefs.set('zotseek.embeddingModel', 12345 as any);
     assert.ok(getActiveModel().dimensions > 0);
   });
+
+  test('persists an incomplete Server slot without falling back to the default model', () => {
+    setActiveModelId(SERVER_SLOT_SELECTION_ID);
+    assert.equal(zotero.prefs.get('zotseek.embeddingModel'), SERVER_SLOT_SELECTION_ID);
+    assert.equal(getActiveModelSelectionId(), SERVER_SLOT_SELECTION_ID);
+    assert.equal(getActiveModelId(), SERVER_SLOT_SELECTION_ID);
+    assert.throws(() => getActiveModel(), (error: any) => error?.code === 'SERVER_MODEL_NOT_READY');
+  });
+
+  test('resolves a ready Server selection to its real vector-space id', () => {
+    zotero.prefs.set('zotseek.serverModels', JSON.stringify([{
+      id: 'server:ready', label: 'Server (ready)', baseUrl: 'http://127.0.0.1:1234',
+      serverModelName: 'ready', dimensions: 768,
+      maxInputTokens: 512, recommendedChunkTokens: 420,
+      queryPrefix: '', docPrefix: '',
+    }]));
+    setActiveModelId(SERVER_SLOT_SELECTION_ID);
+    assert.equal(getActiveModelSelectionId(), SERVER_SLOT_SELECTION_ID);
+    assert.equal(getActiveModelId(), 'server:ready');
+    assert.equal(getActiveModel().id, 'server:ready');
+  });
+
+  test('normalizes a legacy concrete Server preference to the fixed slot', () => {
+    zotero.prefs.set('zotseek.embeddingModel', 'server:legacy');
+    assert.equal(getActiveModelSelectionId(), SERVER_SLOT_SELECTION_ID);
+  });
 });
 
 describe('task prefixes and paths', () => {
@@ -159,7 +187,9 @@ describe('server-backed models', () => {
   // required strings, not optional, even when empty.
   const entry = {
     id: 'server:test', label: 'Test', baseUrl: 'http://127.0.0.1:1234',
-    serverModelName: 'test', dimensions: 768, queryPrefix: '', docPrefix: '',
+    serverModelName: 'test', dimensions: 768,
+    maxInputTokens: 512, recommendedChunkTokens: 420,
+    queryPrefix: '', docPrefix: '',
   };
 
   test('entries round-trip through the pref', () => {
@@ -175,6 +205,12 @@ describe('server-backed models', () => {
     const all = getServerModelEntries();
     assert.equal(all.length, 1);
     assert.equal(all[0].label, 'Renamed');
+  });
+
+  test('adding a different id replaces the fixed Server slot', () => {
+    addServerModel(entry as any);
+    addServerModel({ ...entry, id: 'server:replacement', serverModelName: 'replacement' } as any);
+    assert.deepEqual(getServerModelEntries().map((e) => e.id), ['server:replacement']);
   });
 
   test('a malformed pref is ignored instead of throwing', () => {
