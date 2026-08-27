@@ -7,8 +7,8 @@
  */
 
 import { Logger } from '../utils/logger';
-import { noteHTMLToText } from '../utils/note-text';
-import { getIndexingMode } from '../utils/chunker';
+import { noteHTMLToIndexText } from '../utils/note-text';
+import { getIndexingMode, NOTE_CHUNK_STRATEGY_VERSION } from '../utils/chunker';
 import { identityFromItem, localItemIDFromIdentity } from './identity-resolver';
 import {
   getActiveModel,
@@ -81,6 +81,7 @@ export class AutoIndexManager {
   private logger = new Logger('StartupIndexManager');
   private running = false;
   private checking = false;
+  private chunkStrategyBlocked = false;
   private startupTimer: any = null;
   private generation = 0;
 
@@ -119,6 +120,18 @@ export class AutoIndexManager {
     this.vectorStore = store;
   }
 
+  public setChunkStrategyBlocked(blocked: boolean): void {
+    this.chunkStrategyBlocked = blocked;
+    if (blocked) {
+      this.running = false;
+      this.generation++;
+      if (this.startupTimer) {
+        clearTimeout(this.startupTimer);
+        this.startupTimer = null;
+      }
+    }
+  }
+
   private isEnabled(): boolean {
     try {
       return Zotero.Prefs.get('zotseek.autoIndex', true) === true;
@@ -129,7 +142,7 @@ export class AutoIndexManager {
 
   /** Schedule exactly one reconciliation pass after Zotero's UI has settled. */
   public start(): void {
-    if (this.running || !this.isEnabled()) return;
+    if (this.running || !this.isEnabled() || this.chunkStrategyBlocked) return;
     this.running = true;
     const generation = ++this.generation;
     this.startupTimer = setTimeout(() => {
@@ -189,9 +202,10 @@ export class AutoIndexManager {
       Zotero.Prefs.get('zotseek.maxTokens', true),
     );
     return hashText(JSON.stringify({
-      version: 2,
+      version: 3,
       mode,
       maxChunks,
+      noteChunkStrategyVersion: NOTE_CHUNK_STRATEGY_VERSION,
       modelInputPolicy: modelInputPolicyFingerprint(policy),
     }));
   }
@@ -244,7 +258,7 @@ export class AutoIndexManager {
   private async contentSnapshot(item: any, quick: QuickSnapshot): Promise<ContentSnapshot> {
     const normalizedNotes = quick.notes.map((note: any) => ({
       key: String(note.key || ''),
-      text: noteHTMLToText(note.getNote?.() || ''),
+      text: noteHTMLToIndexText(note.getNote?.() || ''),
     }));
     const noteContentFingerprint = hashText(normalizedNotes
       .map(note => `${note.key}\u0000${note.text}`)
@@ -335,6 +349,10 @@ export class AutoIndexManager {
   private async runCheck(): Promise<StartupCheckResult> {
     if (this.checking || !this.itemProvider || !this.vectorStore ||
         !this.fullIndexCallback || !this.noteIndexCallback) {
+      return this.emptyResult(true);
+    }
+    if (this.chunkStrategyBlocked) {
+      this.logger.info('Startup reconciliation paused until the old chunk strategy is rebuilt');
       return this.emptyResult(true);
     }
     if (getActiveModelSelectionId() === SERVER_SLOT_SELECTION_ID &&

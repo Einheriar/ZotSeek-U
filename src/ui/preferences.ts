@@ -549,7 +549,10 @@ class PreferencesManager {
           const model = getModel(id);
           if (!model) return;
           await embeddingPipeline.setModel(id);   // persists the pref + reloads the worker
-          autoIndexManager.reload();
+          const strategyWritable = typeof zs?.api?.refreshChunkStrategyState === 'function'
+            ? await zs.api.refreshChunkStrategyState(true)
+            : true;
+          if (strategyWritable) autoIndexManager.reload();
           if (docAlive(doc)) {
             if (statusEl) statusEl.textContent = '';
             await populateModelMenu(doc);

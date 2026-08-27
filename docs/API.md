@@ -63,6 +63,8 @@ interface SearchResult {
   textSource: string;      // "summary" | "methods" | "findings" | "content" | "abstract"
   matchedChunkIndex?: number;
   chunkIndex?: number;     // Present when returnAllChunks=true
+  chunkText?: string;      // Faithful matched evidence text, populated for visible results
+  sectionPaths?: string[][]; // Child Note heading paths represented by this chunk
   authors?: string[];
   year?: number;
   pageNumber?: number;     // 1-based page number of matched chunk

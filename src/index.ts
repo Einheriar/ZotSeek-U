@@ -17,7 +17,11 @@ import { embeddingPipeline, EmbeddingProgress } from './core/embedding-pipeline'
 import { searchEngine, SearchResult } from './core/search-engine';
 import { textExtractor, ExtractedText, ExtractedChunks } from './core/text-extractor';
 import { ZoteroAPI } from './utils/zotero-api';
-import { getIndexingMode } from './utils/chunker';
+import {
+  assessChunkStrategyState,
+  getIndexingMode,
+  NOTE_CHUNK_STRATEGY_VERSION,
+} from './utils/chunker';
 import { getZotero } from './utils/zotero-helper';
 import { autoIndexManager } from './core/auto-index-manager';
 import { getString } from './utils/locale';
@@ -260,6 +264,7 @@ class ZotSeekPlugin {
   private initialized = false;
   private indexing = false;
   private serverBackgroundSkipLogged = false;
+  private chunkStrategyNoticeShown = false;
   private collectionMenuRegistrationID: string | null = null;
 
   // Hooks for bootstrap.js
@@ -477,6 +482,14 @@ class ZotSeekPlugin {
       }
     } catch (e: any) {
       this.logger.warn(`Could not register item-tree column: ${e?.message || e}`);
+    }
+
+    try {
+      const strategyWritable = await this.ensureChunkStrategyWritable(true);
+      if (strategyWritable && this.ensureOperationalModel(false)) autoIndexManager.start();
+    } catch (e: any) {
+      this.logger.warn(`Could not verify chunk strategy version: ${e?.message || e}`);
+      autoIndexManager.setChunkStrategyBlocked(true);
     }
 
     // Dev-only self-test harness (gated by extensions.zotseek.devMode pref)
@@ -722,9 +735,6 @@ class ZotSeekPlugin {
       autoIndexManager.setVectorStore(this.vectorStore);
     }
 
-    // An incomplete Server slot remains selected across startup without
-    // triggering a prompt or an automatic reconciliation run.
-    if (this.ensureOperationalModel(false)) autoIndexManager.start();
     this.logger.info('Startup index reconciliation initialized');
   }
 
@@ -761,6 +771,41 @@ class ZotSeekPlugin {
         throw error;
       }
     }
+  }
+
+  /**
+   * Prevent old and new Note chunk strategies from sharing one model partition.
+   * Existing vectors remain searchable; only writes and startup reconciliation
+   * pause until the user explicitly clears/rebuilds the index.
+   */
+  private async ensureChunkStrategyWritable(showNotice: boolean): Promise<boolean> {
+    await this.ensureStoreReady();
+    if (!this.vectorStore) return false;
+
+    const modelId = getActiveModelId();
+    const metadataKey = `chunk_strategy_version:${modelId}`;
+    const stats = await this.vectorStore.getPerModelStats();
+    const chunkCount = stats.find(stat => stat.modelId === modelId)?.chunks ?? 0;
+    const storedVersion = Number(await this.vectorStore.getMetadata(metadataKey));
+    const state = assessChunkStrategyState(
+      chunkCount,
+      Number.isFinite(storedVersion) ? storedVersion : undefined,
+    );
+
+    if (state === 'initialize') {
+      await this.vectorStore.setMetadata(metadataKey, NOTE_CHUNK_STRATEGY_VERSION);
+      autoIndexManager.setChunkStrategyBlocked(false);
+      this.chunkStrategyNoticeShown = false;
+      return true;
+    }
+
+    const current = state === 'current';
+    autoIndexManager.setChunkStrategyBlocked(!current);
+    if (!current && showNotice && !this.chunkStrategyNoticeShown) {
+      this.chunkStrategyNoticeShown = true;
+      this.showAlert(getString('indexing-chunkStrategyRebuildRequired'));
+    }
+    return current;
   }
 
   onMainWindowLoad(window: Window): void {
@@ -973,6 +1018,7 @@ class ZotSeekPlugin {
       if (this.vectorStore) {
         progressWindow.updateProgress(getString('indexing-deletingAll'), 50);
         await this.vectorStore.clear();
+        await this.ensureChunkStrategyWritable(false);
         itemTreeIndexColumn.invalidate();
 
         progressWindow.complete(getString('indexing-clearedSuccess'));
@@ -1006,8 +1052,18 @@ class ZotSeekPlugin {
       };
     }
     await this.ensureStoreReady();
+    if (!await this.ensureChunkStrategyWritable(true)) {
+      return {
+        checked: 0, indexedNew: 0, rebuilt: 0, notesUpdated: 0,
+        baselined: 0, removed: 0, unchanged: 0, skipped: true,
+      };
+    }
     if (this.vectorStore) autoIndexManager.setVectorStore(this.vectorStore);
     return autoIndexManager.runNow();
+  }
+
+  public async refreshChunkStrategyState(showNotice = true): Promise<boolean> {
+    return this.ensureChunkStrategyWritable(showNotice);
   }
 
   /**
@@ -1037,6 +1093,7 @@ class ZotSeekPlugin {
 
       if (this.vectorStore) {
         await this.vectorStore.clear();
+        await this.ensureChunkStrategyWritable(false);
         itemTreeIndexColumn.invalidate();
         this.logger.info('Index cleared for rebuild');
         progressWindow.addLine(getString('indexing-existingCleared'), 'chrome://zotero/skin/tick.png');
@@ -1472,6 +1529,10 @@ class ZotSeekPlugin {
       // Ensure vector store is ready
       progressWindow.updateProgress(getString('indexing-initStorage'), null);
       await this.ensureStoreReady();
+      if (!await this.ensureChunkStrategyWritable(true)) {
+        progressWindow.close();
+        return;
+      }
 
       // Get indexing mode
       const indexingMode = getIndexingMode(Z);
@@ -1572,7 +1633,7 @@ class ZotSeekPlugin {
           for (const chunk of extracted.chunks) {
             batchChunks.push({
               id: `${extracted.itemId}_${chunk.index}`,
-              text: chunk.text,
+              text: chunk.embedText ?? chunk.text,
               title: extracted.title,
             });
           }
@@ -1642,6 +1703,7 @@ class ZotSeekPlugin {
                 title: extracted.title,
                 abstract: extracted.abstract || undefined,
                 chunkText: chunk.text,
+                sectionPaths: chunk.sectionPaths,
                 textSource: chunk.type,
                 embedding: embeddingResult.embedding,
                 modelId: embeddingResult.modelId,
@@ -1758,6 +1820,7 @@ class ZotSeekPlugin {
     }
 
     if (!this.ensureOperationalModel(false)) return [];
+    if (!await this.ensureChunkStrategyWritable(false)) return [];
 
     this.indexing = true;
     const Z = getZotero();
@@ -1853,7 +1916,7 @@ class ZotSeekPlugin {
         for (const chunk of extracted.chunks) {
           textsForEmbedding.push({
             id: `${extracted.itemId}_${chunk.index}`,
-            text: chunk.text,
+            text: chunk.embedText ?? chunk.text,
             title: extracted.title,
           });
         }
@@ -1905,6 +1968,7 @@ class ZotSeekPlugin {
             title: extracted.title,
             abstract: extracted.abstract || undefined,
             chunkText: chunk.text,
+            sectionPaths: chunk.sectionPaths,
             textSource: chunk.type,
             embedding: embeddingData.embedding,
             modelId: embeddingData.modelId,
@@ -1989,6 +2053,7 @@ class ZotSeekPlugin {
   private async indexNoteChangesSilent(items: any[]): Promise<number[]> {
     if (this.indexing || items.length === 0) return [];
     if (!this.ensureOperationalModel(false)) return [];
+    if (!await this.ensureChunkStrategyWritable(false)) return [];
     this.indexing = true;
     const Z = getZotero();
     const indexingModelId = getActiveModelId();
@@ -2046,7 +2111,7 @@ class ZotSeekPlugin {
         noteChunks.forEach((chunk, index) => {
           textsForEmbedding.push({
             id: `startup-note:${extracted.itemId}:${index}`,
-            text: chunk.text,
+            text: chunk.embedText ?? chunk.text,
             title: extracted.title,
           });
         });
@@ -2086,6 +2151,7 @@ class ZotSeekPlugin {
             title: extracted.title,
             abstract: extracted.abstract || undefined,
             chunkText: noteChunks[index].text,
+            sectionPaths: noteChunks[index].sectionPaths,
             textSource: 'note',
             embedding: embedded.embedding,
             modelId: embedded.modelId,
@@ -2375,6 +2441,7 @@ class ZotSeekPlugin {
     }
 
     if (!this.ensureOperationalModel(true)) return;
+    if (!await this.ensureChunkStrategyWritable(true)) return;
 
     this.indexing = true;
     const Z = getZotero();
@@ -2459,7 +2526,11 @@ class ZotSeekPlugin {
         const batchChunks: Array<{ id: string; text: string; title: string }> = [];
         for (const extracted of extractedBatch) {
           for (const chunk of extracted.chunks) {
-            batchChunks.push({ id: `${extracted.itemId}_${chunk.index}`, text: chunk.text, title: extracted.title });
+            batchChunks.push({
+              id: `${extracted.itemId}_${chunk.index}`,
+              text: chunk.embedText ?? chunk.text,
+              title: extracted.title,
+            });
           }
         }
 
@@ -2500,6 +2571,7 @@ class ZotSeekPlugin {
               title: extracted.title,
               abstract: extracted.abstract || undefined,
               chunkText: chunk.text,
+              sectionPaths: chunk.sectionPaths,
               textSource: chunk.type,
               embedding: embeddingData.embedding,
               modelId: embeddingData.modelId,
@@ -2560,6 +2632,7 @@ class ZotSeekPlugin {
     isReady: () => this.initialized && embeddingPipeline.isReady(),
     reindexForActiveModel: () => this.reindexForActiveModel(),
     checkForIndexUpdates: () => this.checkForIndexUpdates(),
+    refreshChunkStrategyState: (showNotice?: boolean) => this.refreshChunkStrategyState(showNotice),
   };
 }
 

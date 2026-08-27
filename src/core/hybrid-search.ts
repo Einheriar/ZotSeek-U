@@ -15,7 +15,7 @@
 import { Logger } from '../utils/logger';
 import { SearchEngine, SearchResult } from './search-engine';
 import { TextSourceType } from './vector-store-sqlite';
-import { noteHTMLToText } from '../utils/note-text';
+import { boundedTextSnippet, noteHTMLToStructuredText } from '../utils/note-text';
 
 declare const Zotero: any;
 
@@ -48,6 +48,7 @@ export interface HybridSearchResult {
 
   // Text of the matched chunk (top results only) — for snippet display on hover
   chunkText?: string;
+  sectionPaths?: string[][];
 
   // Location information from matched chunk
   pageNumber?: number;        // 1-based page number
@@ -106,6 +107,7 @@ interface KeywordSearchHit {
   score: number;
   textSource?: TextSourceType;
   chunkText?: string;
+  sectionPaths?: string[][];
 }
 
 /**
@@ -182,6 +184,7 @@ export class HybridSearchEngine {
       textSource: r.textSource,
       chunkIndex: r.chunkIndex,
       chunkText: r.chunkText,
+      sectionPaths: r.sectionPaths,
       pageNumber: r.pageNumber,
       paragraphIndex: r.paragraphIndex,
     }));
@@ -213,6 +216,7 @@ export class HybridSearchEngine {
       source: 'keyword' as const,
       textSource: r.textSource,
       chunkText: r.chunkText,
+      sectionPaths: r.sectionPaths,
     }));
 
     await this.populateItemMetadata(hybridResults.slice(0, opts.finalTopK));
@@ -225,7 +229,7 @@ export class HybridSearchEngine {
   private async semanticSearchQuery(
     query: string,
     opts: Required<Omit<HybridSearchOptions, 'collectionId' | 'libraryId' | 'mode'>> & HybridSearchOptions
-  ): Promise<Array<{ itemId: number; score: number; textSource?: TextSourceType; chunkIndex?: number; chunkText?: string; pageNumber?: number; paragraphIndex?: number }>> {
+  ): Promise<Array<{ itemId: number; score: number; textSource?: TextSourceType; chunkIndex?: number; chunkText?: string; sectionPaths?: string[][]; pageNumber?: number; paragraphIndex?: number }>> {
     try {
       // Initialize search engine if needed
       if (!this.semanticSearch.isReady()) {
@@ -269,6 +273,7 @@ export class HybridSearchEngine {
         textSource: r.textSource,
         chunkIndex: r.chunkIndex,
         chunkText: r.chunkText,
+        sectionPaths: r.sectionPaths,
         pageNumber: r.pageNumber,
         paragraphIndex: r.paragraphIndex,
       }));
@@ -355,7 +360,7 @@ export class HybridSearchEngine {
 
             item = await Zotero.Items.getAsync(parentID);
             if (!item?.isRegularItem?.()) continue;
-            noteText = noteHTMLToText(matchedItem.getNote?.() || '');
+            noteText = noteHTMLToStructuredText(matchedItem.getNote?.() || '').filteredText;
           }
 
           if (excludeBooks && item.itemType === 'book') continue;
@@ -391,6 +396,10 @@ export class HybridSearchEngine {
               score = Math.max(score, 1.0);
             } else if (queryTerms.length > 0 && matchedTerms > 0) {
               score = Math.max(score, 0.65 + 0.3 * (matchedTerms / queryTerms.length));
+            } else {
+              // Zotero quicksearch saw only content filtered from our index
+              // (for example Basic Information or References).
+              continue;
             }
           }
 
@@ -422,10 +431,12 @@ export class HybridSearchEngine {
             itemId: item.id,
             score,
             textSource: isNoteMatch ? 'note' : undefined,
-            chunkText: isNoteMatch ? noteText : undefined,
+            chunkText: isNoteMatch ? boundedTextSnippet(noteText, query) : undefined,
           };
           const previous = scoredResults.get(hit.itemId);
-          if (!previous || hit.score > previous.score) {
+          // Indexed text is already a bounded production chunk and may carry
+          // section paths, so it wins ties over the quicksearch fallback.
+          if (!previous || hit.score >= previous.score) {
             scoredResults.set(hit.itemId, hit);
           }
         } catch (e) {
@@ -453,6 +464,7 @@ export class HybridSearchEngine {
             score: match.score,
             textSource: match.textSource,
             chunkText: match.chunkText,
+            sectionPaths: match.sectionPaths,
           };
           const previous = scoredResults.get(hit.itemId);
           if (!previous || hit.score > previous.score) {
@@ -491,7 +503,7 @@ export class HybridSearchEngine {
    * @param opts - Options including rrfK and semanticWeight
    */
   private reciprocalRankFusion(
-    semanticResults: Array<{ itemId: number; score: number; textSource?: TextSourceType; chunkIndex?: number; chunkText?: string; pageNumber?: number; paragraphIndex?: number }>,
+    semanticResults: Array<{ itemId: number; score: number; textSource?: TextSourceType; chunkIndex?: number; chunkText?: string; sectionPaths?: string[][]; pageNumber?: number; paragraphIndex?: number }>,
     keywordResults: KeywordSearchHit[],
     opts: Required<Omit<HybridSearchOptions, 'collectionId' | 'libraryId' | 'mode'>>
   ): HybridSearchResult[] {
@@ -505,7 +517,7 @@ export class HybridSearchEngine {
 
     // Build maps for quick lookup
     // Key is either "itemId" or "itemId-chunkIndex" depending on mode
-    const semanticMap = new Map<string, { itemId: number; chunkIndex?: number; chunkText?: string; rank: number; score: number; textSource?: TextSourceType; pageNumber?: number; paragraphIndex?: number }>();
+    const semanticMap = new Map<string, { itemId: number; chunkIndex?: number; chunkText?: string; sectionPaths?: string[][]; rank: number; score: number; textSource?: TextSourceType; pageNumber?: number; paragraphIndex?: number }>();
     semanticResults.forEach((r, index) => {
       const key = useChunkKey ? `${r.itemId}-${r.chunkIndex ?? 0}` : String(r.itemId);
       // In all-chunks mode, keep all entries; in MaxSim mode, keep only first (best) per item
@@ -514,6 +526,7 @@ export class HybridSearchEngine {
           itemId: r.itemId,
           chunkIndex: r.chunkIndex,
           chunkText: r.chunkText,
+          sectionPaths: r.sectionPaths,
           rank: index + 1,
           score: r.score,
           textSource: r.textSource,
@@ -581,6 +594,7 @@ export class HybridSearchEngine {
         textSource: semantic?.textSource ?? keyword?.textSource,
         chunkIndex: semantic?.chunkIndex,
         chunkText: semantic?.chunkText ?? keyword?.chunkText,
+        sectionPaths: semantic?.sectionPaths ?? keyword?.sectionPaths,
         pageNumber: semantic?.pageNumber,
         paragraphIndex: semantic?.paragraphIndex,
       });

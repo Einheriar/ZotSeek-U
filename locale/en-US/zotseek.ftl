@@ -291,6 +291,7 @@ zotseek-indexing-clearedMsg = Index cleared successfully.
 zotseek-indexing-rebuildTitle = Rebuild ZotSeek Index
 zotseek-indexing-rebuildConfirmTitle = Rebuild ZotSeek Index
 zotseek-indexing-rebuildConfirmMsg = This will delete all stored embeddings and rebuild the index with your current settings.
+zotseek-indexing-chunkStrategyRebuildRequired = ZotSeek detected that the current model's index uses an older chunking strategy. The existing index remains searchable, but background incremental updates are paused to avoid mixing old and new chunks. Use "Rebuild Index" in Settings to perform a full rebuild.
 
     This may take several minutes depending on library size.
 

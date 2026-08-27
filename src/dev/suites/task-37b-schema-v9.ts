@@ -9,12 +9,13 @@ async function columns(table: string): Promise<string[]> {
   return (rows || []).map((r: any) => r.name);
 }
 
-selfTest.register('task-37b-schema-v9', async () => {
+selfTest.register('task-37b-schema-current', async () => {
   // Force init/migration to have run.
   await vectorStoreSQLite.getStats();
   return [
     await scenario('chunks table has model_id column', async () => {
       assertContains(await columns('chunks'), 'model_id', 'chunks.model_id missing');
+      assertContains(await columns('chunks'), 'section_paths', 'chunks.section_paths missing');
     }),
     await scenario('item_models table exists with expected columns', async () => {
       const cols = await columns('item_models');
@@ -22,10 +23,10 @@ selfTest.register('task-37b-schema-v9', async () => {
       assertContains(cols, 'model_id');
       assertContains(cols, 'pages_indexed');
     }),
-    await scenario('schema_version is 9', async () => {
+    await scenario('schema_version is 11', async () => {
       const v = await Zotero.DB.valueQueryAsync(
         `SELECT value FROM ${DB}.metadata WHERE key = 'schema_version'`);
-      assertEq(String(v), '9');
+      assertEq(String(v), '11');
     }),
   ];
 });

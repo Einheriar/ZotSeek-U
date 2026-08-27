@@ -27,6 +27,7 @@ export interface MatchedChunk {
   snippet?: string;
   page?: number;
   textSource?: string;
+  sectionPaths?: string[][];
 }
 
 export interface ResultLinks {
@@ -142,12 +143,13 @@ function round3(n: number): number {
   return Math.round(n * 1000) / 1000;
 }
 
-function chunkOf(r: { chunkText?: string; pageNumber?: number; textSource?: string }): MatchedChunk | null {
+function chunkOf(r: { chunkText?: string; pageNumber?: number; textSource?: string; sectionPaths?: string[][] }): MatchedChunk | null {
   if (!r.chunkText && r.pageNumber === undefined) return null;
   return {
     snippet: r.chunkText || undefined,
     page: r.pageNumber,
     textSource: r.textSource || undefined,
+    sectionPaths: r.sectionPaths,
   };
 }
 

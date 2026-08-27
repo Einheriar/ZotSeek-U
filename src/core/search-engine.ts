@@ -32,6 +32,7 @@ export interface SearchResult {
   matchedChunkIndex?: number;  // Which chunk had the highest similarity
   chunkIndex?: number;         // Chunk index (when returnAllChunks=true)
   chunkText?: string;          // Text of the matched chunk (populated for top results only, for snippet display)
+  sectionPaths?: string[][];   // Child Note heading paths for the matched chunk
   authors?: string[];          // Optional: author names for display
   year?: number;               // Optional: publication year for display
   pageNumber?: number;         // 1-based page number of matched chunk
@@ -770,8 +771,11 @@ export class SearchEngine {
       const texts = await (store as VectorStoreSQLite).getChunkTexts(pairs);
       for (const r of results) {
         if (r.matchedChunkIndex === undefined) continue;
-        const text = texts.get(`${r.itemPk}:${r.matchedChunkIndex}`);
-        if (text) r.chunkText = text;
+        const passage = texts.get(`${r.itemPk}:${r.matchedChunkIndex}`);
+        if (passage) {
+          r.chunkText = passage.text;
+          r.sectionPaths = passage.sectionPaths;
+        }
       }
     } catch (e) {
       this.logger.debug(`populateChunkText failed (non-fatal): ${e}`);

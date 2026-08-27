@@ -75,7 +75,8 @@ For `index_status`, `ready` is `true` when the index contains papers and the sel
   "matchedChunk": {
     "snippet": "The Transformer relies entirely on self-attention to compute representations...",
     "page": 3,
-    "textSource": "methods"
+    "textSource": "note",
+    "sectionPaths": [["核心发现与价值 (The Finding)", "核心故事线"]]
   },
   "links": {
     "select": "zotero://select/library/items/ABCD2345",
@@ -91,7 +92,8 @@ Notes on the shape:
 - `source` (`"both"` | `"semantic"` | `"keyword"`) is present on `search` results only — it reports which engine found the item.
 - `libraryKey` is `"user"` or `"group:<groupID>"`, or `null` for items that can no longer be resolved locally (e.g. indexed on another machine and not present in this library); a `null` `libraryKey` also means no `links` are emitted.
 - `authors` is a formatted string for `search` results and an array of strings for `find_similar` results.
-- `matchedChunk` is `null` when no excerpt or page is available; `page` and `textSource` may be absent within it.
+- `matchedChunk` is `null` when no excerpt or page is available; `page`, `textSource` and `sectionPaths` may be absent within it. `sectionPaths` is a list because one compact Child Note chunk may combine multiple adjacent small subsections under the same `h2`.
+- Child Note keyword fallbacks return a query-centred excerpt capped at 1200 Unicode characters, never the complete long Note. When the stored index has the matching chunk, its faithful chunk text and `sectionPaths` take precedence.
 - `score` is a relevance score (RRF score for `search`, cosine similarity for `find_similar`), rounded to three decimals. RRF scores are small by construction (typically 0.005-0.03) and only meaningful for ranking within a single result set; don't read them as percentages. Cosine scores (semantic mode, `find_similar`) range 0-1.
 
 ### Deep links

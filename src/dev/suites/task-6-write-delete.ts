@@ -16,6 +16,7 @@
 
 import { selfTest, scenario, assertEq, assertTrue } from '../self-test';
 import { vectorStoreSQLite, PaperEmbedding } from '../../core/vector-store-sqlite';
+import { getActiveModelId } from '../../core/model-registry';
 
 declare const Zotero: any;
 
@@ -154,6 +155,23 @@ selfTest.register('task-6-write-delete', async () => {
           [pk2]
         );
         assertEq(hash, 'hash-updated');
+      } finally {
+        await vectorStoreSQLite.deleteItem('user', sample.key);
+      }
+    }),
+
+    await scenario('put persists Child Note section paths', async () => {
+      assertTrue(sample, 'no unindexed user-library item available');
+      await vectorStoreSQLite.deleteItem('user', sample.key);
+      try {
+        const sectionPaths = [['核心发现', '机制'], ['核心发现', '证据']];
+        await vectorStoreSQLite.put(makeEmbedding(sample.key, {
+          textSource: 'note',
+          sectionPaths,
+          modelId: getActiveModelId(),
+        }));
+        const stored = await vectorStoreSQLite.getByIdentity('user', sample.key);
+        assertEq(JSON.stringify(stored?.sectionPaths), JSON.stringify(sectionPaths));
       } finally {
         await vectorStoreSQLite.deleteItem('user', sample.key);
       }

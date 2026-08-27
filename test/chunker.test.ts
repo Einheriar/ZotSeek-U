@@ -10,9 +10,11 @@ import {
   estimatePageForRange,
   countParagraphsUpTo,
   chunkNoteTexts,
+  assessChunkStrategyState,
   getChunkOptionsFromPrefs,
   getIndexingMode,
 } from '../src/utils/chunker';
+import { boundedTextSnippet, noteHTMLToStructuredText } from '../src/utils/note-text';
 
 /**
  * Prose with real sentence boundaries. The chunker can only split an oversized
@@ -231,6 +233,18 @@ describe('preference reading', () => {
   });
 });
 
+describe('persisted Note chunk strategy state', () => {
+  test('initializes an empty partition even when it has no marker', () => {
+    assert.equal(assessChunkStrategyState(0, undefined), 'initialize');
+  });
+
+  test('accepts only the current marker for a non-empty partition', () => {
+    assert.equal(assessChunkStrategyState(20, 2), 'current');
+    assert.equal(assessChunkStrategyState(20, undefined), 'rebuild-required');
+    assert.equal(assessChunkStrategyState(20, 1), 'rebuild-required');
+  });
+});
+
 describe('exact token-aware note chunking', () => {
   // Simulates a tokenizer that counts every Unicode code point plus document
   // prefix/special-token overhead. Production injects multilingual E5 here.
@@ -247,12 +261,11 @@ describe('exact token-aware note chunking', () => {
 
     assert.ok(chunks.length > 1, 'long Chinese note was split');
     assert.equal(wasTruncated, false);
-    assert.ok(chunks.every(chunk => exactCounter(chunk.text) <= 120));
-    assert.ok(chunks.every(chunk => chunk.tokenCount === exactCounter(chunk.text)));
+    assert.ok(chunks.every(chunk => exactCounter(chunk.embedText ?? chunk.text) <= 120));
+    assert.ok(chunks.every(chunk => chunk.tokenCount === exactCounter(chunk.embedText ?? chunk.text)));
+    assert.ok(chunks.every(chunk => !chunk.text.includes('测试文献')));
 
-    const recovered = chunks
-      .map(chunk => chunk.text.slice(chunk.text.indexOf('\n\n') + 2))
-      .join('');
+    const recovered = chunks.map(chunk => chunk.text).join('');
     assert.equal(recovered, note, 'all original Chinese characters survive');
   });
 
@@ -271,7 +284,8 @@ describe('exact token-aware note chunking', () => {
     assert.equal(chunks.length, 1);
     assert.match(chunks[0].text, /parent-child interaction/);
     assert.match(chunks[0].text, /第二段/);
-    assert.equal(chunks[0].tokenCount, exactCounter(chunks[0].text));
+    assert.equal(chunks[0].tokenCount, exactCounter(chunks[0].embedText ?? chunks[0].text));
+    assert.ok(!chunks[0].text.includes('Mixed paper'));
   });
 
   test('never merges different Zotero child notes', () => {
@@ -285,6 +299,110 @@ describe('exact token-aware note chunking', () => {
     assert.equal(chunks.length, 2);
     assert.match(chunks[0].text, /第一条独立笔记/);
     assert.match(chunks[1].text, /Second independent note/);
+  });
+
+  test('filters basic information and reference subtrees but resumes at a peer heading', () => {
+    const note = noteHTMLToStructuredText([
+      '<h1>学术简报</h1>',
+      '<p>Author (2024). 完整论文标题与期刊信息。</p>',
+      '<h2>基本信息</h2><p>论文标题：应被过滤</p><h3>作者</h3><p>某某</p>',
+      '<h2>核心发现</h2><h3>机制</h3><p>执行功能预测后续学业表现。</p>',
+      '<h2>参考文献</h2><p>Author, 2024.</p><h3>更多文献</h3><p>Other, 2023.</p>',
+      '<h2>附记</h2><p>这一段应当恢复索引。</p>',
+    ].join(''));
+
+    assert.ok(!note.indexText.includes('应被过滤'));
+    assert.ok(!note.indexText.includes('完整论文标题'));
+    assert.ok(!note.indexText.includes('Author, 2024'));
+    assert.match(note.indexText, /执行功能预测/);
+    assert.match(note.indexText, /这一段应当恢复/);
+    assert.ok(note.filteredPreambleChars > 0);
+    assert.deepEqual(note.sections.map(section => section.path), [
+      ['核心发现', '机制'],
+      ['附记'],
+    ]);
+  });
+
+  test('uses heading paths for embeddings, keeps paths as metadata, and never crosses h2', () => {
+    const note = noteHTMLToStructuredText([
+      '<h1>简报</h1>',
+      '<h2>研究背景</h2><h3>Gap</h3><p>现有研究缺少纵向证据。</p>',
+      '<h3>问题</h3><p>本研究检验发展路径。</p>',
+      '<h2>核心发现</h2><h3>结果</h3><p>路径系数显著。</p>',
+    ].join(''));
+    const { chunks } = chunkNoteTexts('不应进入嵌入的论文标题', [note], {
+      maxTokens: 220,
+      maxChunks: 100,
+      maxChars: 8000,
+      tokenCounter: exactCounter,
+    });
+
+    assert.equal(chunks.length, 2, 'the two small h3 sections merge, but the next h2 stays separate');
+    assert.deepEqual(chunks[0].sectionPaths, [
+      ['研究背景', 'Gap'],
+      ['研究背景', '问题'],
+    ]);
+    assert.deepEqual(chunks[1].sectionPaths, [['核心发现', '结果']]);
+    assert.match(chunks[0].embedText ?? '', /^章节：研究背景/u);
+    assert.ok(chunks.every(chunk => !(chunk.embedText ?? '').includes('不应进入嵌入')));
+    assert.ok(chunks.every(chunk => exactCounter(chunk.embedText ?? chunk.text) <= 220));
+  });
+
+  test('does not merge two distinct h2 occurrences that happen to share a title', () => {
+    const note = noteHTMLToStructuredText([
+      '<h1>简报</h1>',
+      '<h2>核心发现</h2><h3>研究一</h3><p>第一段证据。</p>',
+      '<h2>核心发现</h2><h3>研究二</h3><p>第二段证据。</p>',
+    ].join(''));
+    const { chunks } = chunkNoteTexts('Parent title', [note], {
+      maxTokens: 220,
+      maxChunks: 100,
+      maxChars: 8000,
+      tokenCounter: exactCounter,
+    });
+
+    assert.equal(chunks.length, 2);
+    assert.notEqual(note.sections[0].h2Group, note.sections[1].h2Group);
+  });
+
+  test('treats a generic h1-only note as plain text without a synthetic path', () => {
+    const note = noteHTMLToStructuredText('<h1>简报</h1><p>只有随手记录的正文。</p>');
+    const { chunks } = chunkNoteTexts('Parent title', [note], {
+      maxTokens: 180,
+      maxChunks: 100,
+      maxChars: 8000,
+      tokenCounter: exactCounter,
+    });
+
+    assert.equal(note.onlyGenericRoot, true);
+    assert.deepEqual(chunks[0].sectionPaths, []);
+    assert.equal(chunks[0].embedText, '只有随手记录的正文。');
+  });
+
+  test('bounds keyword Note evidence around the query without splitting Unicode characters', () => {
+    const text = `${'前'.repeat(900)}🧠关键证据${'后'.repeat(900)}`;
+    const snippet = boundedTextSnippet(text, '关键证据', 1200);
+    assert.ok(Array.from(snippet).length <= 1200);
+    assert.match(snippet, /🧠关键证据/u);
+    assert.match(snippet, /^…/u);
+    assert.match(snippet, /…$/u);
+  });
+
+  test('keeps pathological long headings under the final embedding limit', () => {
+    const longHeading = '过长章节标题'.repeat(80);
+    const note = noteHTMLToStructuredText(
+      `<h1>简报</h1><h2>${longHeading}</h2><p>仍然需要保留的正文证据。</p>`,
+    );
+    const { chunks } = chunkNoteTexts('Parent title', [note], {
+      maxTokens: 120,
+      maxChunks: 100,
+      maxChars: 8000,
+      tokenCounter: exactCounter,
+    });
+
+    assert.ok(chunks.length > 1);
+    assert.ok(chunks.every(chunk => exactCounter(chunk.embedText ?? chunk.text) <= 120));
+    assert.ok(chunks.every(chunk => chunk.sectionPaths?.[0]?.[0] === longHeading));
   });
 
   test('splits a long multilingual summary with exact final-input counts', () => {

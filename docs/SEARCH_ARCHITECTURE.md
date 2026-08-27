@@ -466,7 +466,7 @@ The matched passage is fetched lazily, only for the rows the user will actually 
     4. result.chunkText is now set → UI shows it on hover
 ```
 
-`getChunkTexts()` issues one `valueQueryAsync` per `(item_pk, chunk_index)` pair in parallel (bounded by `topK`), following the Zotero 8 single-column query convention. No schema change is involved: `chunk_text` has been stored in the `chunks` table since the v6 normalization.
+`getChunkTexts()` issues parallel single-column queries for `chunk_text` and the optional `section_paths`, scoped to the active model and bounded by `topK`, following the Zotero 8 single-column query convention. `chunk_text` has been stored since schema v6; schema v11 adds the nullable JSON `section_paths` column for structured Child Notes.
 
 The UI (`SearchResultsTable`) renders `chunkText` as a floating tooltip on row hover, windowed around the first matched query term and with those terms highlighted (keyword/hybrid modes only).
 
@@ -591,6 +591,20 @@ Paragraph 4: 900 tokens  ─┐
 
 A chunk might be 400 tokens if that's where the paragraph ends naturally. Paragraphs larger than `maxTokens` are split at sentence boundaries into multiple chunks, preserving all content with correct page location data.
 
+### Structured Child Note Chunking
+
+Child Notes retain Zotero `h1` through `h6` heading structure before plain-text normalization. Any meaningful heading enables structured processing; a Note with only a generic root such as “简报” falls back to ordinary paragraph chunking. This avoids the stricter “three distinct heading levels” rule, which missed usable briefs in the fixed local snapshot.
+
+The production strategy is:
+
+1. Remove conservative “基本信息” and reference-list subtrees before fingerprinting, quota allocation and chunking. A citation/title preamble between a generic brief `h1` and the first meaningful heading is removed for the same reason. A skipped subtree ends at the next heading of the same or a higher level.
+2. Split oversized sections at paragraph, sentence and Unicode-character boundaries under the model's hard input ceiling.
+3. Greedily combine adjacent small sections using `recommendedChunkTokens / 4` as a soft minimum, but never merge across an `h2` boundary or across different Zotero Child Notes.
+4. Store faithful evidence in `chunk_text`. The embedding-only input may add a deterministic `章节：...` breadcrumb; this artificial prefix is not shown as quoted evidence.
+5. Persist all represented paths as `sectionPaths: string[][]`, because one compact chunk may contain several adjacent subsections.
+
+The bibliographic paper title and the brief's “基本信息” section are not repeated in Note embeddings; stable item metadata already supplies that context. The selected strategy is versioned. If an existing model partition contains old chunks without the current strategy marker, ZotSeek keeps it searchable but pauses writes and background reconciliation until the user explicitly rebuilds the index.
+
 ### Truncation Detection (Max Chunks per Paper)
 
 Long papers can exceed `maxChunksPerPaper` (default 100). When that happens the chunker stops adding chunks at the ceiling — silently, in versions before this. The chunker now reports a `wasTruncated` flag alongside `pagesIndexed`/`pagesTotal`:
@@ -638,7 +652,7 @@ tokenizer's automatic behavior with a ZotSeek error.
 
 Currently, there is **no overlap** between chunks. Each paragraph belongs to exactly one chunk.
 
-The paper title is prepended to each chunk for embedding context, but this is for retrieval quality, not overlap.
+The paper title remains part of Summary/PDF embedding context where the existing chunker adds it. Child Note chunks instead use their own section breadcrumb and do not repeat the bibliographic title.
 
 **Why no overlap?**
 - Keeps index size predictable
@@ -975,7 +989,7 @@ Issue #42 adds a second `runtime` to `ModelConfig` alongside the in-process Chro
 ZotSeek stores embeddings in a separate SQLite database (`zotseek.sqlite`) attached to Zotero's main connection. The schema is normalized into three tables:
 
 - **`items`** — one row per indexed paper, keyed by an internal autoincrement `item_pk`, with its stable identity (`library_key`, `item_key`) and metadata (title, abstract).
-- **`chunks`** — one row per embedding chunk per model, referencing `item_pk`, with the chunk text, source label, base64-encoded Float32 embedding, and location metadata (page, paragraph, char offsets, bbox).
+- **`chunks`** — one row per embedding chunk per model, referencing `item_pk`, with faithful chunk text, optional Child Note `section_paths`, source label, base64-encoded Float32 embedding, and location metadata (page, paragraph, char offsets, bbox).
 - **`item_models`** — one row per (item, model), holding that pairing's indexing status: timestamp, content hash, and truncation/coverage fields (`was_truncated`, `pages_indexed`, `pages_total`).
 
 The indexing status lives on `item_models` rather than `items` because it is inherently per-model; see [Per-Model Embeddings (Schema v9)](#per-model-embeddings-schema-v9) below.
@@ -1004,6 +1018,10 @@ Schema v9 extends the database to hold embeddings from multiple models simultane
 The per-item status columns (`was_truncated`, `pages_indexed`, `pages_total`) that were on the `items` table in v7/v8 are now on `item_models` because they are inherently per-(item, model): a paper may be fully indexed under one model but truncated under another if the chunk count varies. The `items` table loses these columns; queries check `item_models` for the active model.
 
 **Migration v8 → v9:** existing `chunks` rows have `model_id` back-filled from the `items.model_id` column (which recorded the last model used to index that item). Rows from `items` that have per-item status columns are migrated into `item_models` for each item's recorded model. A backup is written to `zotseek.sqlite.v8.bak` before the migration starts.
+
+### Child Note Paths (Schema v11)
+
+Schema v11 adds nullable `chunks.section_paths`, encoded as JSON `string[][]`. Existing rows migrate in place with `NULL`; vectors are not silently rewritten. The independent `chunk_strategy_version:<modelId>` metadata marker determines whether a non-empty model partition may receive new writes. Missing or older markers pause incremental writes and prompt for a full rebuild, so chunks produced by different Note strategies are never mixed within one model partition.
 
 ---
 

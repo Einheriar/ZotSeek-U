@@ -20,7 +20,7 @@ import {
   getChunkOptionsFromPrefs,
   getIndexingMode
 } from '../utils/chunker';
-import { noteHTMLToText } from '../utils/note-text';
+import { noteHTMLToStructuredText, StructuredNoteText } from '../utils/note-text';
 import { TextSourceType } from './vector-store-sqlite';
 import { tokenizerService } from './tokenizer-service';
 import { getActiveModel } from './model-registry';
@@ -94,6 +94,7 @@ export class TextExtractor {
       maxTokens: policy.effectiveChunkTokens,
       maxChars: policy.maxChunkChars,
       tokenCounter,
+      noteSoftMinTokens: Math.floor(policy.recommendedChunkTokens / 4),
       modelIdSnapshot: model.id,
     };
   }
@@ -312,7 +313,7 @@ export class TextExtractor {
    * Read and normalize child notes in a stable order. Note IDs are local to a
    * Zotero profile, so item keys provide deterministic ordering across sessions.
    */
-  private async extractChildNoteTexts(item: ZoteroItem): Promise<string[]> {
+  private async extractChildNoteTexts(item: ZoteroItem): Promise<StructuredNoteText[]> {
     const noteIDs = item.getNotes?.() || [];
     if (noteIDs.length === 0) return [];
 
@@ -323,10 +324,10 @@ export class TextExtractor {
       )
       .sort((a: ZoteroItem, b: ZoteroItem) => a.key.localeCompare(b.key));
 
-    const texts: string[] = [];
+    const texts: StructuredNoteText[] = [];
     for (const note of notes) {
-      const text = noteHTMLToText(note.getNote?.() || '');
-      if (text.length >= 3) texts.push(text);
+      const text = noteHTMLToStructuredText(note.getNote?.() || '');
+      if (text.indexText.length >= 3) texts.push(text);
     }
     return texts;
   }

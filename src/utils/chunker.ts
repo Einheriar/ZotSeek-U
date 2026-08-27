@@ -10,11 +10,17 @@
  * - full: Title + Abstract + Tags + Child Notes + PDF sections
  */
 
+import type { NoteSection, StructuredNoteText } from './note-text';
+
 export type ChunkType = 'summary' | 'methods' | 'findings' | 'content' | 'note';
 
 export interface Chunk {
   index: number;
   text: string;
+  /** Optional structure-enriched input used only while generating embeddings. */
+  embedText?: string;
+  /** Every original Note heading path represented by this chunk. */
+  sectionPaths?: string[][];
   type: ChunkType;
   tokenCount?: number;
 
@@ -43,6 +49,7 @@ export interface ChunkOptions {
   maxChars?: number;       // Lossless per-chunk split threshold; inference does not truncate by chars
   totalPages?: number;     // Total pages from Zotero.Fulltext.getPages() for calibrated estimation
   tokenCounter?: TokenCounter; // Exact prefixed-input counter for supported multilingual models
+  noteSoftMinTokens?: number; // Model recommendation / 4; grouping target, never a hard minimum
   modelIdSnapshot?: string; // Internal batch snapshot; ignored by pure chunking logic
 }
 
@@ -59,6 +66,22 @@ export interface ChunkResult {
 
 // User-selectable indexing modes
 export type IndexingMode = 'abstract' | 'notes' | 'full';
+
+/** Bump whenever persisted chunk text, boundaries, or structure semantics change. */
+export const NOTE_CHUNK_STRATEGY_VERSION = 2;
+
+export type ChunkStrategyState = 'initialize' | 'current' | 'rebuild-required';
+
+/** Decide whether one model partition may accept writes under this strategy. */
+export function assessChunkStrategyState(
+  chunkCount: number,
+  storedVersion: number | undefined,
+): ChunkStrategyState {
+  if (chunkCount <= 0) return 'initialize';
+  return storedVersion === NOTE_CHUNK_STRATEGY_VERSION
+    ? 'current'
+    : 'rebuild-required';
+}
 
 // Defensive fallbacks only. Normal indexing passes a resolved model policy.
 const DEFAULT_OPTIONS: Required<Pick<ChunkOptions, 'maxTokens' | 'maxChunks' | 'maxChars'>> = {
@@ -871,86 +894,319 @@ function enforceInputLimitsEx(
   };
 }
 
-/**
- * Exact multilingual note splitting.
- *
- * Paragraph costs are cached by TokenizerService. We use their additive cost
- * for the common greedy path, then verify each emitted chunk with the real
- * tokenizer. Only an oversized final candidate takes the sentence/binary path.
- */
-function splitNoteTextWithExactCounter(
-  noteText: string,
-  titlePrefix: string,
-  maxTokens: number,
-  tokenCounter: TokenCounter
-): Chunk[] {
-  const countBody = (body: string) => tokenCounter(`${titlePrefix}\n\n${body}`);
-  const paragraphs = noteText
-    .split(/\n\s*\n+/u)
-    .map(paragraph => paragraph.trim())
-    .filter(Boolean);
-  if (paragraphs.length === 0) return [];
+export type NoteTextInput = string | StructuredNoteText;
 
-  const chunks: ExactTextPart[] = [];
-  const prefixTokens = countBody('');
-  // Leave a small boundary margin because SentencePiece token counts are not
-  // perfectly additive across paragraph joins. Final verification is exact.
-  const approximateBodyBudget = Math.max(1, maxTokens - prefixTokens - 8);
-  let currentParagraphs: string[] = [];
-  let approximateTokens = 0;
+type NoteFragment = {
+  path: string[];
+  pathLevels: number[];
+  h2Group?: number;
+  text: string;
+};
 
-  const appendVerified = (body: string) => {
-    const text = body.trim();
-    if (!text) return;
-    const tokenCount = countBody(text);
-    if (tokenCount <= maxTokens) {
-      chunks.push({ text, tokenCount });
-    } else {
-      chunks.push(...splitExactBodyBySentences(text, countBody, maxTokens));
-    }
-  };
+function uniqueNotePaths(fragments: NoteFragment[]): string[][] {
+  const paths: string[][] = [];
+  const seen = new Set<string>();
+  for (const fragment of fragments) {
+    if (fragment.path.length === 0) continue;
+    const key = JSON.stringify(fragment.path);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    paths.push([...fragment.path]);
+  }
+  return paths;
+}
 
-  const flush = () => {
-    if (currentParagraphs.length > 0) {
-      appendVerified(currentParagraphs.join('\n\n'));
-    }
-    currentParagraphs = [];
-    approximateTokens = 0;
-  };
+function commonNotePathPrefix(paths: string[][]): string[] {
+  if (paths.length === 0) return [];
+  let prefix = [...paths[0]];
+  for (const path of paths.slice(1)) {
+    let index = 0;
+    const limit = Math.min(prefix.length, path.length);
+    while (index < limit && prefix[index] === path[index]) index++;
+    prefix = prefix.slice(0, index);
+    if (prefix.length === 0) break;
+  }
+  return prefix;
+}
 
-  for (const paragraph of paragraphs) {
-    const paragraphTokens = countBody(paragraph);
-    const paragraphCost = Math.max(1, paragraphTokens - prefixTokens);
-
-    if (paragraphTokens > maxTokens) {
-      flush();
-      chunks.push(...splitExactBodyBySentences(paragraph, countBody, maxTokens));
-      continue;
-    }
-
-    if (
-      currentParagraphs.length > 0 &&
-      approximateTokens + paragraphCost > approximateBodyBudget
-    ) {
-      flush();
-    }
-
-    currentParagraphs.push(paragraph);
-    approximateTokens += paragraphCost;
+function renderStructuredNoteEmbed(fragments: NoteFragment[]): string {
+  const paths = uniqueNotePaths(fragments);
+  if (paths.length === 0) {
+    return fragments.map(fragment => fragment.text).join('\n\n').trim();
   }
 
-  flush();
+  const common = commonNotePathPrefix(paths);
+  const parts: string[] = [];
+  if (common.length > 0) parts.push(`章节：${common.join(' > ')}`);
 
-  return chunks.map((part, index) => ({
-    index,
-    text: `${titlePrefix}\n\n${part.text}`,
+  let previousPath = '';
+  for (const fragment of fragments) {
+    const pathKey = JSON.stringify(fragment.path);
+    const relative = common.length > 0
+      ? fragment.path.slice(common.length)
+      : fragment.path;
+    if (pathKey !== previousPath && relative.length > 0) {
+      parts.push(relative.join(' > '));
+    }
+    parts.push(fragment.text);
+    previousPath = pathKey;
+  }
+  return parts.filter(Boolean).join('\n\n').trim();
+}
+
+function renderStructuredNoteDisplay(fragments: NoteFragment[]): string {
+  const paths = uniqueNotePaths(fragments);
+  if (paths.length === 0) {
+    return fragments.map(fragment => fragment.text).join('\n\n').trim();
+  }
+
+  const common = commonNotePathPrefix(paths);
+  const parts: string[] = [...common];
+  let previousPath = '';
+  for (const fragment of fragments) {
+    const pathKey = JSON.stringify(fragment.path);
+    const relative = common.length > 0
+      ? fragment.path.slice(common.length)
+      : fragment.path;
+    if (pathKey !== previousPath) parts.push(...relative);
+    parts.push(fragment.text);
+    previousPath = pathKey;
+  }
+  return parts.filter(Boolean).join('\n\n').trim();
+}
+
+function buildStructuredNoteChunk(
+  fragments: NoteFragment[],
+  countTokens: TokenCounter,
+): Chunk {
+  const text = renderStructuredNoteDisplay(fragments);
+  const embedText = renderStructuredNoteEmbed(fragments);
+  return {
+    index: 0,
+    text,
+    embedText,
+    sectionPaths: uniqueNotePaths(fragments),
     type: 'note',
-    tokenCount: part.tokenCount,
+    tokenCount: countTokens(embedText),
     pageNumber: undefined,
     paragraphIndex: undefined,
     startChar: undefined,
     endChar: undefined,
-  }));
+  };
+}
+
+function splitNoteUnitByCharacters(
+  text: string,
+  fits: (value: string) => boolean,
+): string[] {
+  const characters = Array.from(text.trim());
+  const parts: string[] = [];
+  let offset = 0;
+  while (offset < characters.length) {
+    let low = 1;
+    let high = characters.length - offset;
+    let best = 0;
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2);
+      const candidate = characters.slice(offset, offset + middle).join('').trim();
+      if (candidate && fits(candidate)) {
+        best = middle;
+        low = middle + 1;
+      } else {
+        high = middle - 1;
+      }
+    }
+    if (best <= 0) best = 1;
+    const part = characters.slice(offset, offset + best).join('').trim();
+    if (part) parts.push(part);
+    offset += best;
+  }
+  return parts;
+}
+
+function splitOversizedNoteUnit(
+  text: string,
+  fits: (value: string) => boolean,
+): string[] {
+  const sentences = text.match(/[^.!?。！？]+[.!?。！？]+|[^.!?。！？]+$/gu) || [text];
+  const parts: string[] = [];
+  let current = '';
+  for (const sentence of sentences.map(value => value.trim()).filter(Boolean)) {
+    const candidate = current ? `${current}${sentence}` : sentence;
+    if (fits(candidate)) {
+      current = candidate;
+      continue;
+    }
+    if (current) parts.push(current);
+    current = '';
+    if (fits(sentence)) current = sentence;
+    else parts.push(...splitNoteUnitByCharacters(sentence, fits));
+  }
+  if (current) parts.push(current);
+  return parts;
+}
+
+function splitNoteSection(
+  section: NoteSection,
+  countTokens: TokenCounter,
+  maxTokens: number,
+  maxChars: number,
+): NoteFragment[] {
+  const makeFragment = (text: string): NoteFragment => ({
+    path: [...section.path],
+    pathLevels: [...section.pathLevels],
+    h2Group: section.h2Group,
+    text: text.trim(),
+  });
+  const fits = (text: string) => {
+    const chunk = buildStructuredNoteChunk([makeFragment(text)], countTokens);
+    return chunk.tokenCount! <= maxTokens &&
+      chunk.text.length <= maxChars && chunk.embedText!.length <= maxChars;
+  };
+
+  const output: NoteFragment[] = [];
+  let current: string[] = [];
+  for (const rawParagraph of section.paragraphs) {
+    const paragraph = rawParagraph.trim();
+    if (!paragraph) continue;
+    const candidate = [...current, paragraph].join('\n\n');
+    if (fits(candidate)) {
+      current.push(paragraph);
+      continue;
+    }
+    if (current.length > 0) output.push(makeFragment(current.join('\n\n')));
+    current = [];
+    if (fits(paragraph)) current = [paragraph];
+    else output.push(...splitOversizedNoteUnit(paragraph, fits).map(makeFragment));
+  }
+  if (current.length > 0) output.push(makeFragment(current.join('\n\n')));
+  return output;
+}
+
+function noteH2Group(fragment: NoteFragment): string {
+  if (fragment.h2Group !== undefined) return `h2-occurrence:${fragment.h2Group}`;
+  const h2Index = fragment.pathLevels.indexOf(2);
+  if (h2Index >= 0) return `h2:${fragment.path[h2Index]}`;
+  return fragment.path.length > 0 ? `fallback:${fragment.path[0]}` : 'plain';
+}
+
+function packStructuredNoteGroup(
+  fragments: NoteFragment[],
+  countTokens: TokenCounter,
+  maxTokens: number,
+  maxChars: number,
+  softMin: number,
+): NoteFragment[][] {
+  if (fragments.length === 0) return [];
+  const fits = (value: NoteFragment[]) => {
+    const chunk = buildStructuredNoteChunk(value, countTokens);
+    return chunk.tokenCount! <= maxTokens &&
+      chunk.text.length <= maxChars && chunk.embedText!.length <= maxChars;
+  };
+  if (softMin <= 0) return fragments.map(fragment => [fragment]);
+
+  const packed: NoteFragment[][] = [];
+  let current: NoteFragment[] = [];
+  for (const fragment of fragments) {
+    if (current.length === 0) {
+      current = [fragment];
+      continue;
+    }
+    const currentTokens = buildStructuredNoteChunk(current, countTokens).tokenCount!;
+    const candidate = [...current, fragment];
+    if (currentTokens < softMin && fits(candidate)) current = candidate;
+    else {
+      packed.push(current);
+      current = [fragment];
+    }
+  }
+  if (current.length > 0) packed.push(current);
+
+  if (packed.length >= 2) {
+    const last = packed[packed.length - 1];
+    const lastTokens = buildStructuredNoteChunk(last, countTokens).tokenCount!;
+    const merged = [...packed[packed.length - 2], ...last];
+    if (lastTokens < softMin && fits(merged)) packed.splice(packed.length - 2, 2, merged);
+  }
+  return packed;
+}
+
+function chunkStructuredNote(
+  note: StructuredNoteText,
+  countTokens: TokenCounter,
+  maxTokens: number,
+  maxChars: number,
+  softMin: number,
+): Chunk[] {
+  const fragments = note.sections.flatMap(section =>
+    splitNoteSection(section, countTokens, maxTokens, maxChars));
+  const groups: NoteFragment[][] = [];
+  let currentGroup: NoteFragment[] = [];
+  let currentKey: string | null = null;
+  for (const fragment of fragments) {
+    const key = noteH2Group(fragment);
+    if (currentGroup.length > 0 && key !== currentKey) {
+      groups.push(currentGroup);
+      currentGroup = [];
+    }
+    currentGroup.push(fragment);
+    currentKey = key;
+  }
+  if (currentGroup.length > 0) groups.push(currentGroup);
+
+  const packed = groups.flatMap(group =>
+    packStructuredNoteGroup(group, countTokens, maxTokens, maxChars, softMin)
+      .map(fragments => buildStructuredNoteChunk(fragments, countTokens)));
+  const verified: Chunk[] = [];
+  for (const chunk of packed) {
+    const finalInput = chunk.embedText ?? chunk.text;
+    if (countTokens(finalInput) <= maxTokens &&
+        finalInput.length <= maxChars && chunk.text.length <= maxChars) {
+      verified.push(chunk);
+      continue;
+    }
+
+    // A pathological heading can consume the whole input budget by itself.
+    // Fall back to lossless plain splitting for that one h2 group while still
+    // retaining its original paths as metadata.
+    const fallback = chunkPlainNote(chunk.text, countTokens, maxTokens, maxChars);
+    fallback.forEach(part => {
+      part.sectionPaths = chunk.sectionPaths?.map(path => [...path]);
+    });
+    verified.push(...fallback);
+  }
+  return verified;
+}
+
+function chunkPlainNote(
+  text: string,
+  countTokens: TokenCounter,
+  maxTokens: number,
+  maxChars: number,
+): Chunk[] {
+  const section: NoteSection = {
+    path: [],
+    pathLevels: [],
+    h2Group: undefined,
+    paragraphs: text.split(/\n\s*\n+/u).map(value => value.trim()).filter(Boolean),
+  };
+  const fragments = splitNoteSection(section, countTokens, maxTokens, maxChars);
+  const chunks: Chunk[] = [];
+  let current: NoteFragment[] = [];
+  for (const fragment of fragments) {
+    const candidate = [...current, fragment];
+    const built = buildStructuredNoteChunk(candidate, countTokens);
+    const fits = built.tokenCount! <= maxTokens &&
+      built.text.length <= maxChars && built.embedText!.length <= maxChars;
+    if (current.length > 0 && !fits) {
+      chunks.push(buildStructuredNoteChunk(current, countTokens));
+      current = [fragment];
+    } else {
+      current = candidate;
+    }
+  }
+  if (current.length > 0) chunks.push(buildStructuredNoteChunk(current, countTokens));
+  return chunks;
 }
 
 /**
@@ -958,19 +1214,22 @@ function splitNoteTextWithExactCounter(
  * bibliographic item. Note chunks intentionally carry no PDF location data.
  */
 export function chunkNoteTexts(
-  title: string,
-  noteTexts: string[],
+  _title: string,
+  noteTexts: NoteTextInput[],
   options: ChunkOptions = {},
   startIndex: number = 0
 ): { chunks: Chunk[]; wasTruncated: boolean } {
   const opts = { ...DEFAULT_OPTIONS, ...options };
   const availableSlots = Math.max(0, opts.maxChunks - startIndex);
-  const titlePrefix = title.length > 200 ? `${title.substring(0, 200)}...` : title;
+  const countTokens = opts.tokenCounter ?? estimateTokens;
   const rawChunks: Chunk[] = [];
   let wasTruncated = false;
 
   for (let noteIndex = 0; noteIndex < noteTexts.length; noteIndex++) {
-    const noteText = noteTexts[noteIndex]?.trim();
+    const noteInput = noteTexts[noteIndex];
+    const noteText = typeof noteInput === 'string'
+      ? noteInput.trim()
+      : noteInput.indexText.trim();
     if (!noteText) continue;
 
     if (rawChunks.length >= availableSlots) {
@@ -978,23 +1237,16 @@ export function chunkNoteTexts(
       break;
     }
 
-    const noteChunks = opts.tokenCounter
-      ? splitNoteTextWithExactCounter(
-          noteText,
-          titlePrefix,
+    const noteChunks = typeof noteInput !== 'string' &&
+      noteInput.meaningfulHeadingCount > 0 && !noteInput.onlyGenericRoot
+      ? chunkStructuredNote(
+          noteInput,
+          countTokens,
           opts.maxTokens,
-          opts.tokenCounter
+          opts.maxChars,
+          options.noteSoftMinTokens ?? Math.floor(opts.maxTokens / 4),
         )
-      : splitTextIntoChunks(
-          noteText,
-          titlePrefix,
-          opts.maxTokens,
-          'note',
-          0,
-          0,
-          undefined,
-          1
-        );
+      : chunkPlainNote(noteText, countTokens, opts.maxTokens, opts.maxChars);
 
     for (let chunkIndex = 0; chunkIndex < noteChunks.length; chunkIndex++) {
       if (rawChunks.length >= availableSlots) {
@@ -1015,12 +1267,9 @@ export function chunkNoteTexts(
     if (wasTruncated) break;
   }
 
-  const enforced = enforceInputLimitsEx(rawChunks, opts, availableSlots);
-  enforced.chunks.forEach((chunk, index) => {
+  rawChunks.forEach((chunk, index) => {
     chunk.index = startIndex + index;
-    if (opts.tokenCounter) {
-      chunk.tokenCount = opts.tokenCounter(chunk.text);
-    }
+    chunk.tokenCount = countTokens(chunk.embedText ?? chunk.text);
     chunk.pageNumber = undefined;
     chunk.paragraphIndex = undefined;
     chunk.startChar = undefined;
@@ -1028,8 +1277,8 @@ export function chunkNoteTexts(
   });
 
   return {
-    chunks: enforced.chunks,
-    wasTruncated: wasTruncated || enforced.truncatedByCharLimit,
+    chunks: rawChunks,
+    wasTruncated,
   };
 }
 
