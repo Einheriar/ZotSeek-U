@@ -778,7 +778,10 @@ class ZotSeekPlugin {
    * Existing vectors remain searchable; only writes and startup reconciliation
    * pause until the user explicitly clears/rebuilds the index.
    */
-  private async ensureChunkStrategyWritable(showNotice: boolean): Promise<boolean> {
+  private async ensureChunkStrategyWritable(
+    showNotice: boolean,
+    forceNotice = false,
+  ): Promise<boolean> {
     await this.ensureStoreReady();
     if (!this.vectorStore) return false;
 
@@ -801,7 +804,7 @@ class ZotSeekPlugin {
 
     const current = state === 'current';
     autoIndexManager.setChunkStrategyBlocked(!current);
-    if (!current && showNotice && !this.chunkStrategyNoticeShown) {
+    if (!current && showNotice && (forceNotice || !this.chunkStrategyNoticeShown)) {
       this.chunkStrategyNoticeShown = true;
       this.showAlert(getString('indexing-chunkStrategyRebuildRequired'));
     }
@@ -1493,6 +1496,17 @@ class ZotSeekPlugin {
    */
   private async indexItems(items: any[], scope?: BulkScope): Promise<void> {
     if (!this.ensureOperationalModel(true)) return;
+
+    // Explicit indexing actions must fail before opening a progress window and
+    // must always explain why, even if startup already displayed this notice.
+    try {
+      if (!await this.ensureChunkStrategyWritable(true, true)) return;
+    } catch (error: any) {
+      this.logger.error(`Indexing preflight failed: ${error}`);
+      this.showAlert(getString('indexing-failed', { error: error.message || error }));
+      return;
+    }
+
     this.indexing = true;
     const Z = getZotero();
     const indexingModelId = getActiveModelId();
@@ -1529,10 +1543,6 @@ class ZotSeekPlugin {
       // Ensure vector store is ready
       progressWindow.updateProgress(getString('indexing-initStorage'), null);
       await this.ensureStoreReady();
-      if (!await this.ensureChunkStrategyWritable(true)) {
-        progressWindow.close();
-        return;
-      }
 
       // Get indexing mode
       const indexingMode = getIndexingMode(Z);

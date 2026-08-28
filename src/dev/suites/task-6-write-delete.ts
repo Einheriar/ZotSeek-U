@@ -177,6 +177,26 @@ selfTest.register('task-6-write-delete', async () => {
       }
     }),
 
+    await scenario('metadata values round-trip through the public API', async () => {
+      const metadataKey = `selftest:task-6:${Date.now()}`;
+      try {
+        await vectorStoreSQLite.setMetadata(metadataKey, 3);
+        assertEq(await vectorStoreSQLite.getMetadata(metadataKey), 3);
+
+        const structuredValue = { strategy: 3, source: 'task-6' };
+        await vectorStoreSQLite.setMetadata(metadataKey, structuredValue);
+        assertEq(
+          JSON.stringify(await vectorStoreSQLite.getMetadata(metadataKey)),
+          JSON.stringify(structuredValue),
+        );
+      } finally {
+        await Zotero.DB.queryAsync(
+          `DELETE FROM ${DB}.metadata WHERE key = ?`,
+          [metadataKey],
+        );
+      }
+    }),
+
     await scenario('getOrCreateItemPk returns same pk for same identity', async () => {
       assertTrue(sample, 'no unindexed user-library item available');
       await vectorStoreSQLite.deleteItem('user', sample.key);

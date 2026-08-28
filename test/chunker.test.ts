@@ -11,6 +11,7 @@ import {
   countParagraphsUpTo,
   chunkNoteTexts,
   assessChunkStrategyState,
+  NOTE_CHUNK_STRATEGY_VERSION,
   getChunkOptionsFromPrefs,
   getIndexingMode,
 } from '../src/utils/chunker';
@@ -239,9 +240,12 @@ describe('persisted Note chunk strategy state', () => {
   });
 
   test('accepts only the current marker for a non-empty partition', () => {
-    assert.equal(assessChunkStrategyState(20, 2), 'current');
+    assert.equal(assessChunkStrategyState(20, NOTE_CHUNK_STRATEGY_VERSION), 'current');
     assert.equal(assessChunkStrategyState(20, undefined), 'rebuild-required');
-    assert.equal(assessChunkStrategyState(20, 1), 'rebuild-required');
+    assert.equal(
+      assessChunkStrategyState(20, NOTE_CHUNK_STRATEGY_VERSION - 1),
+      'rebuild-required',
+    );
   });
 });
 
@@ -321,6 +325,54 @@ describe('exact token-aware note chunking', () => {
       ['核心发现', '机制'],
       ['附记'],
     ]);
+  });
+
+  test('filters numbered and annotated reference headings found in generated briefs', () => {
+    const referenceOnlyHeadings = [
+      '6. 核心参考文献列表',
+      '核心参考文献简要说明',
+      '五、关键参考文献追踪线索',
+      '4. 核心参考文献列表 (Core References)',
+      '七、核心参考文献',
+      '关键参考文献与延伸阅读',
+      '参考文献（关键引用）',
+      '4. 核心参考文献列表',
+      '核心参考文献精要',
+      '8. 核心参考文献列表',
+      '关键参考文献',
+      '5. 核心参考文献列表 (Key Bibliography)',
+      '4. 关键参考文献导读 (Core References)',
+      '关键参考文献列表',
+      '7. 核心参考文献及其证据支撑',
+      '核心参考文献列表与证据说明',
+    ];
+
+    referenceOnlyHeadings.forEach((heading, index) => {
+      const note = noteHTMLToStructuredText([
+        '<h1>学术简报</h1>',
+        '<h2>核心发现</h2><p>保留正文。</p>',
+        `<h2>${heading}</h2><p>泄漏引用-${index}</p><h3>引用说明</h3><p>继续泄漏-${index}</p>`,
+        `<h2>附记</h2><p>恢复正文-${index}</p>`,
+      ].join(''));
+
+      assert.ok(!note.indexText.includes(`泄漏引用-${index}`), heading);
+      assert.ok(!note.indexText.includes(`继续泄漏-${index}`), heading);
+      assert.match(note.indexText, new RegExp(`恢复正文-${index}`), heading);
+    });
+  });
+
+  test('keeps a mixed terminology section but filters its reference child subtree', () => {
+    const note = noteHTMLToStructuredText([
+      '<h1>学术简报</h1>',
+      '<h2>关键术语与参考文献线索</h2>',
+      '<h3>核心术语</h3><p>保留术语定义。</p>',
+      '<h3>支撑关键证据的原始文献</h3><p>删除原始文献列表。</p>',
+      '<h2>附记</h2><p>保留后续正文。</p>',
+    ].join(''));
+
+    assert.match(note.indexText, /保留术语定义/u);
+    assert.ok(!note.indexText.includes('删除原始文献列表'));
+    assert.match(note.indexText, /保留后续正文/u);
   });
 
   test('uses heading paths for embeddings, keeps paths as metadata, and never crosses h2', () => {

@@ -80,6 +80,8 @@ const REFERENCE_HEADINGS = new Set([
   'key references',
 ]);
 
+const CHINESE_REFERENCE_HEADING = /^(?:(?:核心|关键|主要)?参考(?:文献|书目)|支撑关键证据的原始文献)(?:列表与证据说明|列表|简要说明|追踪线索|精要|导读|与延伸阅读|与延展阅读|及其证据支撑)?$/u;
+
 export interface NoteSection {
   path: string[];
   pathLevels: number[];
@@ -220,8 +222,22 @@ function isBasicInfoHeading(text: string): boolean {
   return BASIC_INFO_HEADINGS.has(normalizeHeading(text));
 }
 
+function normalizeReferenceHeading(text: string): string {
+  return normalizeHeading(text)
+    .replace(
+      /^(?:(?:[（(](?:\d+(?:\.\d+)*|[一二三四五六七八九十百]+|[ivxlcdm]+)[）)])|(?:(?:\d+(?:\.\d+)*|[一二三四五六七八九十百]+|[ivxlcdm]+)\s*[、.．:：-]))\s*/iu,
+      '',
+    )
+    .replace(
+      /\s*[（(](?:(?:core|key|selected)\s+(?:references?|bibliography)|references?|bibliography|关键引用)[）)]\s*$/iu,
+      '',
+    )
+    .trim();
+}
+
 function isReferenceHeading(text: string): boolean {
-  return REFERENCE_HEADINGS.has(normalizeHeading(text));
+  const heading = normalizeReferenceHeading(text);
+  return REFERENCE_HEADINGS.has(heading) || CHINESE_REFERENCE_HEADING.test(heading);
 }
 
 /**

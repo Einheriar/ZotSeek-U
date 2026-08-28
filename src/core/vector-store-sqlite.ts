@@ -3446,16 +3446,17 @@ export class VectorStoreSQLite {
   async getMetadata(key: string): Promise<any> {
     await this.ensureInit();
 
-    const rows = await Zotero.DB.queryAsync(`
+    const value = await Zotero.DB.valueQueryAsync(`
       SELECT value FROM ${DB_NAME}.metadata WHERE key = ?
     `, [key]);
 
-    if (!rows || rows.length === 0) return undefined;
+    if (value === null || value === undefined) return undefined;
+    if (typeof value !== 'string') return value;
 
     try {
-      return JSON.parse(rows[0].value);
+      return JSON.parse(value);
     } catch {
-      return rows[0].value;
+      return value;
     }
   }
 
