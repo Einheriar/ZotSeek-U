@@ -70,6 +70,8 @@ zotseek-pref-checkNowRunning = Incrementally syncing ZotSeek index
 zotseek-pref-checkNowRunningDesc = Comparing Zotero items and notes with the local index…
 zotseek-pref-checkNowComplete = Incremental sync complete
 zotseek-pref-checkNowResult = Checked { $checked } items; updated { $changed }; removed { $removed } stale entries.
+zotseek-pref-checkNowSkipped = Incremental sync not run
+zotseek-pref-checkNowSkippedDesc = The operation was skipped. Resolve the prompt that was just shown, or try again later.
 zotseek-pref-checkNowFailed = Index check failed
 zotseek-indexing-noteUpdate = Updating notes for { $count } item(s)…
 zotseek-indexing-noteUpdateComplete = Updated notes for { $count } item(s)
@@ -91,6 +93,36 @@ zotseek-pref-modelInputPolicy = Limit: { $limit } · Recommended: { $recommended
 zotseek-pref-modelInputUnknown = server managed
 zotseek-pref-modelInputPrefixRequired = required
 zotseek-pref-modelInputPrefixNone = none
+zotseek-pref-modelStatusBundled = Built-in
+zotseek-pref-modelStatusInstalled = Installed
+zotseek-pref-modelStatusDownload = Download required · about { $size } MB
+zotseek-pref-modelMultilingual = multilingual
+zotseek-modelDownloadChoiceTitle = Install embedding model
+zotseek-modelDownloadChoiceMessage = { $model } is not installed. Automatic download retrieves about { $size } MB once from huggingface.co and stores it on this computer. ZotSeek does not send your Zotero library to Hugging Face.
+zotseek-modelDownloadAutomatic = Automatic download (recommended)
+zotseek-modelDownloadManual = Manual download
+zotseek-modelDownloadCancel = Cancel
+zotseek-modelDownloadManualTitle = Manual model download
+zotseek-modelDownloadManualMessage = Download the required files from the official model page and save them under the installation location while preserving the listed subdirectories.
+
+    Model: { $model }
+    Official page: { $page }
+
+    Required files:
+    { $files }
+
+    Installation location:
+    { $path }
+zotseek-modelDownloadOpenPage = Open model page
+zotseek-modelDownloadOpenLocation = Open installation location
+zotseek-modelDownloadClose = Close
+zotseek-modelDownloadStarting = Downloading { $model }…
+zotseek-modelDownloadProgress = Downloading { $model }: file { $done } of { $total }
+zotseek-modelDownloadFailed = Model operation failed: { $error }
+zotseek-modelDownloadRevealFailedTitle = Could not open installation location
+zotseek-modelDownloadRevealFailedMessage = ZotSeek could not open the model installation location. You can copy this path and open it manually:
+
+    { $path }
 zotseek-pref-resetMaxTokens =
     .label = Use recommended
 zotseek-pref-serverConfigTitle = Advanced Server model
@@ -99,7 +131,7 @@ zotseek-pref-serverConfigPath = Template:
 zotseek-pref-serverConfigNotLoaded = The template has not been loaded yet. Restart Zotero.
 zotseek-pref-serverConfigLoaded = Server ({ $model }) is configured. Edit the file and restart Zotero to apply changes.
 zotseek-pref-serverConfigNone = Server (NONE): no server model is configured. Select Server in the model menu to see setup instructions.
-zotseek-pref-serverConfigErrors = Server (UNKNOWN): { $errors } configuration error(s). { $detail }
+zotseek-pref-serverConfigErrors = Server (UNKNOWN): { $errors } configuration error(s). Check the model ID, loopback service URL, vector dimensions, token budgets, and query/document prefixes in the template.
 zotseek-pref-serverModelIncomplete = Server model information is incomplete. Configure the JSON template and restart Zotero.
 zotseek-serverConfigRequiredTitle = Server model configuration required
 zotseek-serverConfigRequiredMessage = Server ({ $state }) is selected, but its model information is incomplete. ZotSeek will keep this selection but cannot index or run semantic searches yet.
@@ -108,8 +140,16 @@ zotseek-serverConfigRequiredMessage = Server ({ $state }) is selected, but its m
 
     Restart Zotero after saving the file.
 
-    { $errors }
+    { $guidance }
 zotseek-serverConfigMissingEntry = Set the template's "model" field to one complete server model object.
+zotseek-serverConfigInvalidEntry = The template has { $errors } configuration error(s). Use the example in the template to complete the model ID, loopback service URL, vector dimensions, token budgets, and query/document prefixes.
+zotseek-serverConfigOpenLocation = Open file location
+    .label = Open file location
+zotseek-serverConfigClose = Close
+zotseek-serverConfigRevealFailedTitle = Could not open file location
+zotseek-serverConfigRevealFailedMessage = ZotSeek could not open the configuration file location. You can copy this path and open it manually:
+
+    { $path }
 zotseek-pref-maxChunks = Max chunks per paper
 zotseek-pref-maxChunksDesc = Limit for long documents (1-200)
 zotseek-pref-excludeBooks =
@@ -291,7 +331,7 @@ zotseek-indexing-clearedMsg = Index cleared successfully.
 zotseek-indexing-rebuildTitle = Rebuild ZotSeek Index
 zotseek-indexing-rebuildConfirmTitle = Rebuild ZotSeek Index
 zotseek-indexing-rebuildConfirmMsg = This will delete all stored embeddings and rebuild the index with your current settings.
-zotseek-indexing-chunkStrategyRebuildRequired = ZotSeek detected that the current model's index uses an older chunking strategy. The existing index remains searchable, but background incremental updates are paused to avoid mixing old and new chunks. Use "Rebuild Index" in Settings to perform a full rebuild.
+zotseek-indexing-chunkStrategyRebuildRequired = ZotSeek detected that the current model's index uses an older chunking strategy. The existing index remains searchable, but background incremental updates are paused to avoid mixing old and new chunks. Use "Rebuild Index" in Settings to perform a full rebuild. Dismissing this notice does not start a rebuild or modify the existing index.
 
     This may take several minutes depending on library size.
 

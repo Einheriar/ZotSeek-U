@@ -57,6 +57,23 @@ function modelDir(model: ModelConfig, location: ModelLocation = 'profile'): stri
   return PathUtils.join(root, ...model.hfPath.split('/'));
 }
 
+/** Exact profile-side directory used by automatic and guided manual installation. */
+export function getModelInstallDir(model: ModelConfig): string {
+  return modelDir(model, 'profile');
+}
+
+/** Create the allowlisted model's target directory before revealing it to the user. */
+export async function ensureModelInstallDir(model: ModelConfig): Promise<string> {
+  if (!isAllowedHfPath(model.hfPath)) {
+    throw new Error(
+      `[ZotSeek] Refusing to create a directory for non-allowlisted model path: ${model.hfPath}`,
+    );
+  }
+  const dir = getModelInstallDir(model);
+  await IOUtils.makeDirectory(dir, { createAncestors: true, ignoreExisting: true });
+  return dir;
+}
+
 /**
  * Which location holds this model's weights, or null when neither does.
  *

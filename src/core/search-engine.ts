@@ -181,40 +181,12 @@ export class SearchEngine {
       paragraphIndex?: number;
     }>;
 
+    // Reuse the pre-normalized cache for both global and library-specific
+    // searches. The previous scoped path decoded and normalized every vector
+    // on every query before filtering, which scaled poorly with chunk count.
+    embeddings = await (store as VectorStoreSQLite).getAllCached();
     if (opts.libraryId !== undefined) {
-      // For library-specific search, we still need to use the non-cached method
-      // Convert to the cached format
-      const paperEmbeddings = await store.getByLibrary(opts.libraryId);
-      embeddings = paperEmbeddings.map(e => {
-        const float32Embedding = new Float32Array(e.embedding);
-        let norm = 0;
-        for (let i = 0; i < float32Embedding.length; i++) {
-          norm += float32Embedding[i] * float32Embedding[i];
-        }
-        norm = Math.sqrt(norm);
-        if (norm > 0) {
-          for (let i = 0; i < float32Embedding.length; i++) {
-            float32Embedding[i] /= norm;
-          }
-        }
-        return {
-          itemPk: e.itemPk!,
-          libraryKey: e.libraryKey,
-          itemKey: e.itemKey,
-          itemId: e.itemId,
-          libraryId: e.libraryId,
-          chunkIndex: e.chunkIndex,
-          title: e.title,
-          textSource: e.textSource,
-          modelId: e.modelId,
-          embedding: float32Embedding,
-          pageNumber: e.pageNumber,
-          paragraphIndex: e.paragraphIndex,
-        };
-      });
-    } else {
-      // Use cached embeddings for global search (SQLite with in-memory cache)
-      embeddings = await (store as VectorStoreSQLite).getAllCached();
+      embeddings = embeddings.filter(e => e.libraryId === opts.libraryId);
     }
 
     // Filter candidates to only those indexed by the currently active embedding model.
@@ -354,39 +326,9 @@ export class SearchEngine {
       paragraphIndex?: number;
     }>;
 
+    embeddings = await (store as VectorStoreSQLite).getAllCached();
     if (opts.libraryId !== undefined) {
-      // For library-specific search, convert to cached format
-      const paperEmbeddings = await store.getByLibrary(opts.libraryId);
-      embeddings = paperEmbeddings.map(e => {
-        const float32Embedding = new Float32Array(e.embedding);
-        let norm = 0;
-        for (let i = 0; i < float32Embedding.length; i++) {
-          norm += float32Embedding[i] * float32Embedding[i];
-        }
-        norm = Math.sqrt(norm);
-        if (norm > 0) {
-          for (let i = 0; i < float32Embedding.length; i++) {
-            float32Embedding[i] /= norm;
-          }
-        }
-        return {
-          itemPk: e.itemPk!,
-          libraryKey: e.libraryKey,
-          itemKey: e.itemKey,
-          itemId: e.itemId,
-          libraryId: e.libraryId,
-          chunkIndex: e.chunkIndex,
-          title: e.title,
-          textSource: e.textSource,
-          modelId: e.modelId,
-          embedding: float32Embedding,
-          pageNumber: e.pageNumber,
-          paragraphIndex: e.paragraphIndex,
-        };
-      });
-    } else {
-      // Use cached embeddings (SQLite with in-memory cache)
-      embeddings = await (store as VectorStoreSQLite).getAllCached();
+      embeddings = embeddings.filter(e => e.libraryId === opts.libraryId);
     }
 
     // Filter candidates to only those indexed by the currently active embedding model.

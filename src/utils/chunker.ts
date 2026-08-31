@@ -68,7 +68,7 @@ export interface ChunkResult {
 export type IndexingMode = 'abstract' | 'notes' | 'full';
 
 /** Bump whenever persisted chunk text, boundaries, or structure semantics change. */
-export const NOTE_CHUNK_STRATEGY_VERSION = 3;
+export const NOTE_CHUNK_STRATEGY_VERSION = 4;
 
 export type ChunkStrategyState = 'initialize' | 'current' | 'rebuild-required';
 

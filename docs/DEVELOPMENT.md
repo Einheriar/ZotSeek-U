@@ -510,6 +510,30 @@ Key concepts:
 - **Worker isolation** - Model inference runs outside the main Zotero thread
 - **wasmPaths configuration** - Critical for v3 to work in ChromeWorker (bypasses dynamic import)
 
+#### Local model discovery and installation
+
+The Settings model picker always lists the three curated local models. The
+bundled E5 entry is labelled **Built-in**; Nomic and BGE-M3 are labelled
+**Installed** when their primary ONNX file is present under
+`<Zotero profile>/zotseek-models/<hfPath>/`, otherwise they are labelled
+**Download required** with their approximate size.
+
+Selecting a missing model opens a three-button prompt:
+
+- **Automatic download (recommended)** downloads the allowlisted files from
+  `huggingface.co` into the profile-side model directory. Files use a `.part`
+  temporary name and are moved into place only after each download completes.
+  The active model is not changed until the complete download succeeds.
+- **Manual download** shows the official Hugging Face page, the exact registry
+  file list, and the target installation location. It does not download files
+  or change the active model.
+- **Cancel**, Escape, and the title-bar close button leave the current model
+  unchanged.
+
+After a successful installation, ZotSeek switches to the selected model and
+handles coverage/indexing as a separate confirmation. Existing embeddings for
+other models remain in their own `model_id` partitions.
+
 #### Server-backed model configuration
 
 Advanced users configure local OpenAI-compatible embedding services in
@@ -524,10 +548,14 @@ query/document prefixes; `apiKey` is optional and the UI label is derived.
 runtime cache. The menu persists the `server-slot` selection sentinel, while
 storage and embedding use only the ready model's real `server:` id. Do not add
 GUI-only defaults, infer missing model facts or fall back to a local model when
-Server is incomplete. Explicit embedding actions report the template error;
-startup/background work skips it without a modal. Runtime initialization checks
-both `GET /v1/models` and the embedding dimensions. Template edits require a
-Zotero restart.
+Server is incomplete. Explicit embedding actions show a localized summary and
+offer **Open file location**; the Settings path has the same action. Only that
+explicit button reveals the JSON in the OS file manager, while Close, Escape
+and the title-bar close path are inert. Raw validator details remain available
+to logs and MCP/REST callers rather than being spliced into localized UI text.
+Startup/background work skips incomplete Server work without a modal. Runtime
+initialization checks both `GET /v1/models` and the embedding dimensions.
+Template edits require a Zotero restart.
 
 ### 4. Search Engine (`src/core/search-engine.ts`)
 
@@ -892,19 +920,37 @@ For this semantic search plugin with ChromeWorker + Transformers.js, the custom 
 
 ## Testing in Zotero
 
-### Method 0: `npm run dev:install` (does Method 1 for you)
+### Method 0: `npm run dev:install` (recommended one-time setup)
+
+Normal local development and Zotero runtime acceptance do **not** require an
+XPI. Use the extension proxy once, then rebuild `build/` and restart Zotero for
+each iteration. Build or install an XPI only when testing packaging or preparing
+a distribution/release.
 
 ```bash
 npm run build
 # quit Zotero first: it can remove proxy files it did not create
 npm run dev:install
-open -a Zotero --args -purgecaches -jsconsole
+npm run dev:status
 ```
 
 `dev:install` locates the profile via `profiles.ini`, deletes any installed XPI
 with the same plugin ID, clears the extension caches, and writes the proxy file
 pointing at `build/`. Override the profile with the `ZOTERO_PROFILE` environment
 variable if you keep more than one.
+
+On PowerShell, explicitly targeting a Windows profile looks like this:
+
+```powershell
+$env:ZOTERO_PROFILE = "$env:APPDATA\Zotero\Zotero\Profiles\XXXXXXXX.default"
+npm run dev:install
+npm run dev:status
+& 'C:\Program Files\Zotero\zotero.exe' -purgecaches -ZoteroDebugText -jsconsole
+```
+
+On the first proxy startup, Zotero may retain a disabled state for the newly
+recognized unpacked add-on. If ZotSeek does not start, open **Tools → Plugins**
+and enable ZotSeek once. Do not change unrelated plugin states.
 
 ```bash
 npm run dev:status   # which one would Zotero load, and why
@@ -962,7 +1008,7 @@ Flags explained:
 - `-ZoteroDebugText` - Enable debug output
 - `-jsconsole` - Open the JavaScript console
 
-### Method 2: Build XPI for Distribution
+### Method 2: Build XPI for Distribution (not normal local development)
 
 Create an XPI (ZIP) file for sharing:
 
@@ -981,9 +1027,17 @@ Install in Zotero: Tools → Add-ons → Install Add-on From File
 
 1. **Make changes** to TypeScript files in `src/`
 
-2. **Build and restart** the plugin:
+2. **Build and restart** the plugin. Once Method 0 has installed the proxy,
+   do not run `dev:install` again during the normal edit loop:
    ```bash
+   # macOS
    npm run build && osascript -e 'quit app "Zotero"' 2>/dev/null; sleep 2 && open -a Zotero --args -purgecaches -jsconsole
+   ```
+
+   ```powershell
+   # Windows: quit Zotero completely before starting this command
+   npm run build
+   & 'C:\Program Files\Zotero\zotero.exe' -purgecaches -ZoteroDebugText -jsconsole
    ```
 
 3. **Check console** for errors (Help → Debug Output Logging → View Output)
@@ -991,6 +1045,10 @@ Install in Zotero: Tools → Add-ons → Install Add-on From File
 4. **Test** your changes
 
 5. **Repeat**
+
+`npm run watch` can rebuild continuously, but Zotero still needs a full restart
+to load the updated bundle. The current `npm run start:zotero` script is macOS-
+only; use the PowerShell command above on Windows.
 
 ### Quick Reload Script (Recommended)
 

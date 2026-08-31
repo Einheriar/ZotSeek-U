@@ -24,7 +24,9 @@ import {
 } from './utils/chunker';
 import { getZotero } from './utils/zotero-helper';
 import { autoIndexManager } from './core/auto-index-manager';
+import { indexFreshnessNotifier } from './core/index-freshness-notifier';
 import { getString } from './utils/locale';
+import { openDismissibleNotice } from './utils/prompt-notice';
 // Use stable progress window from toolkit to avoid crashes
 import { StableProgressWindow, showQuickNotification } from './utils/stable-progress';
 // UI components
@@ -34,6 +36,7 @@ import { similarDocumentsWrapper } from './ui/similar-documents-wrapper';
 import { toolbarButton } from './ui/toolbar-button';
 import { itemTreeIndexColumn } from './ui/item-tree-column';
 import { preferencesManager } from './ui/preferences';
+import { showServerModelConfigurationPromptIfNeeded } from './ui/server-model-prompt';
 import { identityFromItem, libraryKeyFromLocalID, localItemIDFromIdentity } from './core/identity-resolver';
 import {
   getActiveModelId,
@@ -45,10 +48,8 @@ import { registerModelsResourceSubstitution, verifyModelsResourceSubstitution } 
 import { tokenizerService } from './core/tokenizer-service';
 import { shouldClearLegacyDefaultChunkPreference } from './core/model-input-policy';
 import {
-  formatServerModelConfigErrors,
   getLastServerModelConfigLoadResult,
   getSelectedServerModelConfigurationIssue,
-  getServerModelConfigPath,
   loadServerModelConfig,
   serverModelConfigurationErrorMessage,
 } from './core/server-model-config';
@@ -62,6 +63,7 @@ import './dev/suites/task-8-reads';
 import './dev/suites/task-9-status-map';
 import './dev/suites/task-10-housekeeping';
 import './dev/suites/task-13-search';
+import './dev/suites/task-25-index-freshness';
 import './dev/suites/mcp-server';
 import './dev/suites/task-37a-model-registry';
 import './dev/suites/task-37b-schema-v9';
@@ -453,8 +455,8 @@ class ZotSeekPlugin {
     await toolbarButton.registerReaderContextMenu();
     this.logger.info('Reader context menu registered');
 
-    // Schedule one startup reconciliation pass. This registers no Zotero
-    // item/note observers and performs no work while the user is editing.
+    // Configure scoped/startup reconciliation and a lightweight notifier that
+    // only marks parent items dirty while the user edits Zotero data.
     this.initAutoIndexManager();
 
     // If a previous bulk indexing run was interrupted (cancel, crash, sleep,
@@ -479,6 +481,7 @@ class ZotSeekPlugin {
       if (this.vectorStore) {
         await itemTreeIndexColumn.register(this.vectorStore);
         this.logger.info('Item-tree index-status column registered');
+        await autoIndexManager.restoreIndexedFreshness();
       }
     } catch (e: any) {
       this.logger.warn(`Could not register item-tree column: ${e?.message || e}`);
@@ -710,7 +713,7 @@ class ZotSeekPlugin {
   /** Initialize the one-shot startup reconciliation manager. */
   private initAutoIndexManager(): void {
     autoIndexManager.setIndexCallback(async (items: any[]) => {
-      return this.indexItemsSilent(items);
+      return this.indexItemsSilent(items, true);
     });
     autoIndexManager.setNoteIndexCallback(async (items: any[]) => {
       return this.indexNoteChangesSilent(items);
@@ -734,6 +737,7 @@ class ZotSeekPlugin {
     if (this.vectorStore) {
       autoIndexManager.setVectorStore(this.vectorStore);
     }
+    indexFreshnessNotifier.start(() => autoIndexManager.restoreIndexedFreshness());
 
     this.logger.info('Startup index reconciliation initialized');
   }
@@ -806,7 +810,7 @@ class ZotSeekPlugin {
     autoIndexManager.setChunkStrategyBlocked(!current);
     if (!current && showNotice && (forceNotice || !this.chunkStrategyNoticeShown)) {
       this.chunkStrategyNoticeShown = true;
-      this.showAlert(getString('indexing-chunkStrategyRebuildRequired'));
+      this.showDismissibleNotice(getString('indexing-chunkStrategyRebuildRequired'));
     }
     return current;
   }
@@ -1051,14 +1055,14 @@ class ZotSeekPlugin {
     if (!this.ensureOperationalModel(true)) {
       return {
         checked: 0, indexedNew: 0, rebuilt: 0, notesUpdated: 0,
-        baselined: 0, removed: 0, unchanged: 0, skipped: true,
+        baselined: 0, removed: 0, unchanged: 0, outdated: 0, failed: 0, skipped: true,
       };
     }
     await this.ensureStoreReady();
     if (!await this.ensureChunkStrategyWritable(true)) {
       return {
         checked: 0, indexedNew: 0, rebuilt: 0, notesUpdated: 0,
-        baselined: 0, removed: 0, unchanged: 0, skipped: true,
+        baselined: 0, removed: 0, unchanged: 0, outdated: 0, failed: 0, skipped: true,
       };
     }
     if (this.vectorStore) autoIndexManager.setVectorStore(this.vectorStore);
@@ -1481,30 +1485,46 @@ class ZotSeekPlugin {
     }
   }
 
-  /**
-   * Index items for semantic search
-   * Uses the configurable indexing mode (abstract, fulltext, or hybrid)
-   *
-   * Implements checkpoint/incremental saving:
-   * - Skips already-indexed items (allows resuming after crash)
-   * - Saves embeddings in batches of ~10 items (prevents total loss on crash)
-   * - Memory efficient (only one batch in memory at a time)
-   *
-   * @param scope - Optional scope marker used to persist "this bulk run is in
-   *                progress" so the next startup can offer to resume it after
-   *                a crash or sleep. Pass undefined for one-off runs.
-   */
+  /** Assess freshness inside the caller's exact scope, then write only changes. */
   private async indexItems(items: any[], scope?: BulkScope): Promise<void> {
     if (!this.ensureOperationalModel(true)) return;
+    try {
+      if (!await this.ensureChunkStrategyWritable(true, true)) return;
+      await this.ensureStoreReady();
+      if (!this.vectorStore) return;
+      autoIndexManager.setVectorStore(this.vectorStore);
+      const result = await autoIndexManager.reconcileItems(items, {
+        fullIndexCallback: candidates => this.indexItemsCandidates(candidates, scope),
+        noteIndexCallback: candidates => this.indexNoteChangesSilent(candidates),
+      });
+      if (result.skipped) return;
+      const changed = result.indexedNew + result.rebuilt + result.notesUpdated;
+      showQuickNotification(
+        getString('pref-checkNowResult', {
+          checked: result.checked,
+          changed,
+          removed: 0,
+        }),
+        result.failed > 0 ? 'fail' : 'success',
+      );
+    } catch (error: any) {
+      this.logger.error(`Scoped reconciliation failed: ${error?.message || error}`);
+      this.showAlert(getString('indexing-failed', { error: error?.message || error }));
+    }
+  }
+
+  /** Index candidates already classified as new or needing a full rebuild. */
+  private async indexItemsCandidates(items: any[], scope?: BulkScope): Promise<number[]> {
+    if (!this.ensureOperationalModel(true)) return [];
 
     // Explicit indexing actions must fail before opening a progress window and
     // must always explain why, even if startup already displayed this notice.
     try {
-      if (!await this.ensureChunkStrategyWritable(true, true)) return;
+      if (!await this.ensureChunkStrategyWritable(true, true)) return [];
     } catch (error: any) {
       this.logger.error(`Indexing preflight failed: ${error}`);
       this.showAlert(getString('indexing-failed', { error: error.message || error }));
-      return;
+      return [];
     }
 
     this.indexing = true;
@@ -1529,6 +1549,7 @@ class ZotSeekPlugin {
     // Kept small (10) so a cancel or crash mid-batch loses at most ~10 items
     // of extraction/embedding work. Trade-off: more transaction overhead.
     const CHECKPOINT_BATCH_SIZE = 10;
+    const successfulItemIds: number[] = [];
 
     // Create stable progress window using toolkit
     const progressWindow = new StableProgressWindow({
@@ -1549,7 +1570,8 @@ class ZotSeekPlugin {
       this.logger.info(`Indexing mode: ${indexingMode}`);
       progressWindow.addLine(getString('indexing-mode', { mode: indexingMode }));
 
-      // === PHASE 1: Filter out excluded and already-indexed items ===
+      // === PHASE 1: Keep only valid candidates. Freshness was already
+      // assessed by AutoIndexManager, so existing items here need rebuilding. ===
       progressWindow.setHeadline(getString('indexing-checking'));
       const itemsToIndex: any[] = [];
       let skippedExcluded = 0;
@@ -1560,27 +1582,17 @@ class ZotSeekPlugin {
         }
         const identity = identityFromItem(item);
         if (!identity) continue;
-        const isIndexed = await this.vectorStore!.isIndexedByIdentity(identity.libraryKey, identity.itemKey);
-        if (!isIndexed) {
-          itemsToIndex.push(item);
-        }
+        itemsToIndex.push(item);
       }
       if (skippedExcluded > 0) {
         this.logger.info(`Skipped ${skippedExcluded} items with exclusion tag`);
         progressWindow.addLine(getString('indexing-skippedExcluded', { count: skippedExcluded }), 'chrome://zotero/skin/tick.png');
       }
-      const skippedAlreadyIndexed = items.length - itemsToIndex.length - skippedExcluded;
-      if (skippedAlreadyIndexed > 0) {
-        this.logger.info(`Skipped ${skippedAlreadyIndexed} already-indexed items`);
-        progressWindow.addLine(getString('indexing-skippedIndexed', { count: skippedAlreadyIndexed }), 'chrome://zotero/skin/tick.png');
-      }
-
-      // If all items are already indexed, we're done
       if (itemsToIndex.length === 0) {
         progressWindow.setHeadline(getString('indexing-allIndexed'));
         progressWindow.addLine(getString('indexing-allInIndex', { count: items.length }), 'chrome://zotero/skin/tick.png');
         progressWindow.complete(getString('indexing-nothingToIndex'), true);
-        return;
+        return [];
       }
 
       // Reset pipeline to ensure fresh initialization
@@ -1678,33 +1690,21 @@ class ZotSeekPlugin {
         progressWindow.setHeadline(getString('indexing-batchSaving', { current: batchNumber, total: totalBatches }));
 
         const batchEmbeddings: PaperEmbedding[] = [];
+        const batchSuccessfulIds: number[] = [];
         for (const extracted of extractedBatch) {
-          // Delete existing chunks for the active model only — other models' chunks are preserved
-          await this.vectorStore!.deleteItemChunks(extracted.itemId, indexingModelId);
-
-          if (extracted.wasTruncated) {
-            totalItemsTruncated++;
-            truncatedTitles.push(extracted.title);
-            const coverage = extracted.pagesTotal > 0
-              ? `${extracted.pagesIndexed}/${extracted.pagesTotal} pages`
-              : `${extracted.chunks.length} chunks`;
-            this.logger.warn(
-              `⚠ Truncated at chunk limit: "${extracted.title}" (${coverage}). ` +
-              `Increase Max Chunks per Paper or switch to Summary mode to capture full content.`
-            );
+          const libraryKey = libraryKeyFromLocalID(extracted.libraryId);
+          if (!libraryKey) {
+            this.logger.warn(`[bulk-index] Cannot resolve libraryKey for item ${extracted.itemId} (libraryId=${extracted.libraryId}); skipping item`);
+            totalItemsSkipped++;
+            continue;
           }
-
+          const itemEmbeddings: PaperEmbedding[] = [];
+          const indexedAt = new Date().toISOString();
           for (const chunk of extracted.chunks) {
             const embeddingKey = `${extracted.itemId}_${chunk.index}`;
             const embeddingResult = embeddingMap.get(embeddingKey);
-
             if (embeddingResult) {
-              const libraryKey = libraryKeyFromLocalID(extracted.libraryId);
-              if (!libraryKey) {
-                this.logger.warn(`[bulk-index] Cannot resolve libraryKey for item ${extracted.itemId} (libraryId=${extracted.libraryId}); skipping chunk`);
-                continue;
-              }
-              batchEmbeddings.push({
+              itemEmbeddings.push({
                 itemId: extracted.itemId,
                 chunkIndex: chunk.index,
                 libraryKey,
@@ -1717,7 +1717,7 @@ class ZotSeekPlugin {
                 textSource: chunk.type,
                 embedding: embeddingResult.embedding,
                 modelId: embeddingResult.modelId,
-                indexedAt: new Date().toISOString(),
+                indexedAt,
                 contentHash: extracted.contentHash,
                 pageNumber: chunk.pageNumber,
                 paragraphIndex: chunk.paragraphIndex,
@@ -1729,19 +1729,37 @@ class ZotSeekPlugin {
               });
             }
           }
+          if (itemEmbeddings.length !== extracted.chunks.length || itemEmbeddings.length === 0) {
+            // Never destroy a complete old index when even one replacement
+            // embedding is missing. The freshness tracker remains dirty.
+            totalItemsSkipped++;
+            continue;
+          }
+
+          await this.vectorStore!.replaceItemModelChunks(itemEmbeddings);
+          batchEmbeddings.push(...itemEmbeddings);
+          batchSuccessfulIds.push(extracted.itemId);
+          successfulItemIds.push(extracted.itemId);
+
+          if (extracted.wasTruncated) {
+            totalItemsTruncated++;
+            truncatedTitles.push(extracted.title);
+            const coverage = extracted.pagesTotal > 0
+              ? `${extracted.pagesIndexed}/${extracted.pagesTotal} pages`
+              : `${extracted.chunks.length} chunks`;
+            this.logger.warn(
+              `⚠ Truncated at chunk limit: "${extracted.title}" (${coverage}). ` +
+              `Increase Max Chunks per Paper or switch to Summary mode to capture full content.`
+            );
+          }
         }
 
-        // Save this batch to database
-        await this.vectorStore!.putBatch(batchEmbeddings);
-
-        // Refresh the index-status column for the items we just touched
-        itemTreeIndexColumn.invalidate(extractedBatch.map(e => e.itemId));
-
-        totalItemsIndexed += extractedBatch.length;
+        itemTreeIndexColumn.invalidate(batchSuccessfulIds);
+        totalItemsIndexed += batchSuccessfulIds.length;
         totalChunksIndexed += batchEmbeddings.length;
 
-        this.logger.info(`Checkpoint ${batchNumber}/${totalBatches}: Saved ${batchEmbeddings.length} chunks from ${extractedBatch.length} items`);
-        progressWindow.addCheckpointLine(getString('indexing-checkpoint', { current: batchNumber, total: totalBatches, items: extractedBatch.length, chunks: batchEmbeddings.length }));
+        this.logger.info(`Checkpoint ${batchNumber}/${totalBatches}: Saved ${batchEmbeddings.length} chunks from ${batchSuccessfulIds.length} items`);
+        progressWindow.addCheckpointLine(getString('indexing-checkpoint', { current: batchNumber, total: totalBatches, items: batchSuccessfulIds.length, chunks: batchEmbeddings.length }));
       }
 
       // Store the indexing mode in metadata so we know what mode was used to build the index
@@ -1764,9 +1782,6 @@ class ZotSeekPlugin {
       // Show completion
       progressWindow.setHeadline(getString('indexing-complete'));
       progressWindow.addLine(getString('indexing-completeMode', { mode: indexingMode }), 'chrome://zotero/skin/tick.png');
-      if (skippedAlreadyIndexed > 0) {
-        progressWindow.addLine(getString('indexing-completePrevious', { count: skippedAlreadyIndexed }), 'chrome://zotero/skin/tick.png');
-      }
       progressWindow.addLine(getString('indexing-completeNew', { count: totalItemsIndexed }), 'chrome://zotero/skin/tick.png');
       progressWindow.addLine(getString('indexing-completeChunks', { count: totalChunksIndexed }), 'chrome://zotero/skin/tick.png');
       progressWindow.addLine(getString('indexing-completeAvg', { avg: avgChunksPerItem }), 'chrome://zotero/skin/tick.png');
@@ -1791,9 +1806,12 @@ class ZotSeekPlugin {
 
       progressWindow.complete(getString('indexing-completeSuccess'), true);
 
-      // Successful completion — clear the resume marker so the next startup
-      // doesn't pester the user about a finished run.
-      try { Z?.Prefs.clear(PENDING_PREF, true); } catch { /* ignore */ }
+      // Clear the resume marker only when every classified candidate was
+      // atomically replaced. Missing embeddings must remain retryable.
+      if (successfulItemIds.length === itemsToIndex.length) {
+        try { Z?.Prefs.clear(PENDING_PREF, true); } catch { /* ignore */ }
+      }
+      return successfulItemIds;
 
     } catch (error: any) {
       if (progressWindow.isCancelled()) {
@@ -1810,6 +1828,7 @@ class ZotSeekPlugin {
         this.showAlert(getString('indexing-failed', { error: error.message || error }));
         // Leave PENDING_PREF set — user may want to retry on next startup.
       }
+      return successfulItemIds;
     } finally {
       this.indexing = false;
     }
@@ -1819,7 +1838,7 @@ class ZotSeekPlugin {
    * Index items silently (for auto-indexing)
    * Shows a progress indicator while running
    */
-  private async indexItemsSilent(items: any[]): Promise<number[]> {
+  private async indexItemsSilent(items: any[], force = false): Promise<number[]> {
     if (this.indexing) {
       this.logger.debug('Indexing already in progress, skipping auto-index');
       return [];
@@ -1852,6 +1871,7 @@ class ZotSeekPlugin {
       getString('indexing-progressItem', { title: displayText })
     );
     progressWin.show();
+    const successfulItemIds: number[] = [];
 
     try {
       // Ensure vector store is ready
@@ -1892,11 +1912,12 @@ class ZotSeekPlugin {
           libraryKey,
           extracted.itemKey
         );
-        const needsReindex = !indexedForActiveModel || await this.vectorStore!.needsReindexByIdentity(
-          libraryKey,
-          extracted.itemKey,
-          extracted.contentHash
-        );
+        const needsReindex = force || !indexedForActiveModel ||
+          await this.vectorStore!.needsReindexByIdentity(
+            libraryKey,
+            extracted.itemKey,
+            extracted.contentHash,
+          );
         if (needsReindex) {
           extractedItems.push(extracted);
         }
@@ -1944,32 +1965,22 @@ class ZotSeekPlugin {
       // Store embeddings with chunk metadata
       itemRow.setText(getString('indexing-saving'));
       const paperEmbeddings: PaperEmbedding[] = [];
-      const identitiesToReplace = new Map<string, { libraryKey: string; itemKey: string }>();
       let autoTruncatedCount = 0;
 
       for (const extracted of extractedItems) {
-        if (extracted.wasTruncated) {
-          autoTruncatedCount++;
-          const coverage = extracted.pagesTotal > 0
-            ? `${extracted.pagesIndexed}/${extracted.pagesTotal} pages`
-            : `${extracted.chunks.length} chunks`;
-          this.logger.warn(
-            `⚠ Auto-index truncated: "${extracted.title}" (${coverage}). ` +
-            `Increase Max Chunks per Paper to capture full content.`
-          );
-        }
-
         const libraryKey = libraryKeyFromLocalID(extracted.libraryId);
         if (!libraryKey) {
           this.logger.warn(`[auto-index] Cannot resolve libraryKey for item ${extracted.itemId} (libraryId=${extracted.libraryId}); skipping`);
           continue;
         }
+        const itemEmbeddings: PaperEmbedding[] = [];
+        const indexedAt = new Date().toISOString();
         for (const chunk of extracted.chunks) {
           const embeddingKey = `${extracted.itemId}_${chunk.index}`;
           const embeddingData = embeddingMap.get(embeddingKey);
           if (!embeddingData) continue;
 
-          paperEmbeddings.push({
+          itemEmbeddings.push({
             itemId: extracted.itemId,
             chunkIndex: chunk.index,
             libraryKey,
@@ -1982,7 +1993,7 @@ class ZotSeekPlugin {
             textSource: chunk.type,
             embedding: embeddingData.embedding,
             modelId: embeddingData.modelId,
-            indexedAt: new Date().toISOString(),
+            indexedAt,
             contentHash: extracted.contentHash,
             pageNumber: chunk.pageNumber,
             paragraphIndex: chunk.paragraphIndex,
@@ -1992,28 +2003,34 @@ class ZotSeekPlugin {
             pagesIndexed: extracted.pagesIndexed,
             pagesTotal: extracted.pagesTotal,
           });
-          identitiesToReplace.set(`${libraryKey}:${extracted.itemKey}`, {
-            libraryKey,
-            itemKey: extracted.itemKey,
-          });
+        }
+        if (itemEmbeddings.length !== extracted.chunks.length || itemEmbeddings.length === 0) {
+          continue;
+        }
+        await this.vectorStore!.replaceItemModelChunks(itemEmbeddings);
+        paperEmbeddings.push(...itemEmbeddings);
+        successfulItemIds.push(extracted.itemId);
+
+        if (extracted.wasTruncated) {
+          autoTruncatedCount++;
+          const coverage = extracted.pagesTotal > 0
+            ? `${extracted.pagesIndexed}/${extracted.pagesTotal} pages`
+            : `${extracted.chunks.length} chunks`;
+          this.logger.warn(
+            `⚠ Auto-index truncated: "${extracted.title}" (${coverage}). ` +
+            `Increase Max Chunks per Paper to capture full content.`,
+          );
         }
       }
 
-      // Replace only items for which at least one new embedding succeeded. This
-      // removes stale note chunks when a note shrinks or is deleted.
-      for (const { libraryKey, itemKey } of identitiesToReplace.values()) {
-        await this.vectorStore!.deleteChunksForItem(libraryKey, itemKey, indexingModelId);
-      }
-      await this.vectorStore!.putBatch(paperEmbeddings);
-
       // Refresh column status for the items we just indexed
-      itemTreeIndexColumn.invalidate(extractedItems.map(e => e.itemId));
+      itemTreeIndexColumn.invalidate(successfulItemIds);
 
       if (failedChunks > 0) {
         const itemList = Array.from(failedItems).join(', ');
         this.logger.warn(`Auto-index: ${failedChunks} chunks failed in: ${itemList}`);
       }
-      this.logger.info(`Auto-indexed ${extractedItems.length} items (${paperEmbeddings.length} chunks, ${failedChunks} failed)`);
+      this.logger.info(`Auto-indexed ${successfulItemIds.length} items (${paperEmbeddings.length} chunks, ${failedChunks} failed)`);
 
       // Show success - use try-catch for setIcon as it may not exist in all Zotero versions
       try { itemRow.setIcon('chrome://zotero/skin/tick.png'); } catch { /* ignore */ }
@@ -2035,13 +2052,7 @@ class ZotSeekPlugin {
         progressWin.startCloseTimer(3000);
       }
 
-      const replaced = new Set(identitiesToReplace.keys());
-      return extractedItems
-        .filter(item => {
-          const libraryKey = libraryKeyFromLocalID(item.libraryId);
-          return !!libraryKey && replaced.has(`${libraryKey}:${item.itemKey}`);
-        })
-        .map(item => item.itemId);
+      return successfulItemIds;
 
     } catch (error: any) {
       this.logger.error(`Auto-indexing failed: ${error?.message || error}`);
@@ -2050,7 +2061,7 @@ class ZotSeekPlugin {
       try { itemRow.setIcon('chrome://zotero/skin/cross.png'); } catch { /* ignore */ }
       itemRow.setText(`✗ Error: ${errMsg}`);
       progressWin.startCloseTimer(4000);
-      return [];
+      return successfulItemIds;
     } finally {
       this.indexing = false;
     }
@@ -2074,6 +2085,7 @@ class ZotSeekPlugin {
       getString('indexing-noteUpdate', { count: items.length })
     );
     progressWin.show();
+    const successful: number[] = [];
 
     try {
       await this.ensureStoreReady();
@@ -2087,7 +2099,8 @@ class ZotSeekPlugin {
       const plans: Array<{
         extracted: ExtractedChunks;
         libraryKey: string;
-        preserved: PaperEmbedding[];
+        preservedSummary: PaperEmbedding[];
+        preservedPDF: PaperEmbedding[];
         noteChunks: ExtractedChunks['chunks'];
       }> = [];
       const textsForEmbedding: ChunkForEmbedding[] = [];
@@ -2107,17 +2120,31 @@ class ZotSeekPlugin {
           continue;
         }
 
-        const hasPDF = preserved.some(chunk =>
+        const preservedSummary = preserved.filter(chunk =>
+          ['summary', 'abstract', 'title_only'].includes(chunk.textSource));
+        const allPDF = preserved.filter(chunk =>
           !['summary', 'abstract', 'title_only'].includes(chunk.textSource));
-        const summaryCount = preserved.filter(chunk =>
-          ['summary', 'abstract', 'title_only'].includes(chunk.textSource)).length;
-        const available = Math.max(0, maxChunks - summaryCount);
-        const noteLimit = hasPDF ? Math.ceil(available / 2) : available;
-        const noteChunks = extracted.chunks
-          .filter(chunk => chunk.type === 'note')
-          .slice(0, noteLimit);
+        const allNotes = extracted.chunks.filter(chunk => chunk.type === 'note');
+        const remainingSlots = Math.max(0, maxChunks - preservedSummary.length);
+        let noteCount = 0;
+        let pdfCount = 0;
+        if (allNotes.length > 0 && allPDF.length > 0) {
+          noteCount = Math.min(Math.ceil(remainingSlots / 2), allNotes.length);
+          pdfCount = Math.min(remainingSlots - noteCount, allPDF.length);
+          let unused = remainingSlots - noteCount - pdfCount;
+          const extraNotes = Math.min(unused, allNotes.length - noteCount);
+          noteCount += extraNotes;
+          unused -= extraNotes;
+          pdfCount += Math.min(unused, allPDF.length - pdfCount);
+        } else if (allNotes.length > 0) {
+          noteCount = Math.min(remainingSlots, allNotes.length);
+        } else {
+          pdfCount = Math.min(remainingSlots, allPDF.length);
+        }
+        const noteChunks = allNotes.slice(0, noteCount);
+        const preservedPDF = allPDF.slice(0, pdfCount);
 
-        plans.push({ extracted, libraryKey, preserved, noteChunks });
+        plans.push({ extracted, libraryKey, preservedSummary, preservedPDF, noteChunks });
         noteChunks.forEach((chunk, index) => {
           textsForEmbedding.push({
             id: `startup-note:${extracted.itemId}:${index}`,
@@ -2141,9 +2168,8 @@ class ZotSeekPlugin {
         embeddingMap = embedded.embeddings;
       }
 
-      const successful: number[] = [];
       for (const plan of plans) {
-        const { extracted, libraryKey, preserved, noteChunks } = plan;
+        const { extracted, libraryKey, preservedSummary, preservedPDF, noteChunks } = plan;
         const newNotes: PaperEmbedding[] = [];
         let complete = true;
         for (let index = 0; index < noteChunks.length; index++) {
@@ -2172,7 +2198,7 @@ class ZotSeekPlugin {
         if (!complete) continue;
 
         const now = new Date().toISOString();
-        const combined = [...preserved, ...newNotes];
+        const combined = [...preservedSummary, ...newNotes, ...preservedPDF];
         const contentHash = hashChunkContent(combined.map(chunk => chunk.chunkText || ''));
         const status = statusMap.get(extracted.itemId);
         const normalized = combined.map((chunk, chunkIndex): PaperEmbedding => ({
@@ -2206,7 +2232,7 @@ class ZotSeekPlugin {
       try { itemRow.setIcon('chrome://zotero/skin/cross.png'); } catch { /* ignore */ }
       itemRow.setText(`✗ Error: ${error?.message || 'Unknown error'}`);
       progressWin.startCloseTimer(4000);
-      return [];
+      return successful;
     } finally {
       this.indexing = false;
     }
@@ -2340,19 +2366,13 @@ class ZotSeekPlugin {
       return true;
     }
 
-    const path = result?.path || getServerModelConfigPath();
-    const state = result?.kind === 'unknown' ? 'UNKNOWN' : 'NONE';
-    const errors = result?.errors.length
-      ? formatServerModelConfigErrors(result.errors)
-      : getString('serverConfigMissingEntry');
+    const issue = getSelectedServerModelConfigurationIssue();
     if (userInitiated) {
-      this.showAlert(
-        getString('serverConfigRequiredMessage', { state, path, errors }),
-        getString('serverConfigRequiredTitle'),
-      );
+      showServerModelConfigurationPromptIfNeeded();
     } else if (!this.serverBackgroundSkipLogged) {
       this.logger.info(
-        `Background embedding work skipped: Server (${state}) is selected; edit ${path}`,
+        `Background embedding work skipped: Server (${issue?.state || 'NONE'}) is selected; ` +
+        `edit ${issue?.path || 'the profile template'}`,
       );
       this.serverBackgroundSkipLogged = true;
     }
@@ -2379,11 +2399,29 @@ class ZotSeekPlugin {
     }
   }
 
+  /**
+   * Show an informational prompt that may be dismissed through any standard
+   * close path. `alert()` requires an explicit OK acknowledgement in Zotero 9,
+   * so its title-bar close button does not dismiss the old-index notice.
+   */
+  private showDismissibleNotice(message: string, title = 'ZotSeek'): void {
+    const Z = getZotero();
+    const win = Z?.getMainWindow();
+    if (!win) return;
+
+    try {
+      openDismissibleNotice(Services.prompt, win, title, message);
+    } catch (error) {
+      this.logger.error('Failed to show dismissible notice:', error);
+    }
+  }
+
   async onShutdown(): Promise<void> {
     this.logger.info('Shutting down plugin');
 
     // Cancel a scheduled/running startup reconciliation pass.
     autoIndexManager.stop();
+    indexFreshnessNotifier.stop();
 
     // Release the main-thread tokenizer and its bounded text-count cache.
     tokenizerService.reset();

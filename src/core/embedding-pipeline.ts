@@ -94,8 +94,8 @@ export class EmbeddingPipeline {
       } else {
         // Downloaded models resolve over resource://zotseek-models/. If the
         // files are absent, Transformers.js fails with its own wording naming
-        // that URL. Check first so the error can point to an installed model or
-        // manual file placement now that Settings no longer downloads models.
+        // that URL. Check first so the error can point to the automatic and
+        // guided manual installation actions in Settings.
         if (requiresLocalFiles(this.model)) {
           // Files first: absent weights are both the likelier problem and the
           // one with clear advice. Only if they ARE present does an unusable

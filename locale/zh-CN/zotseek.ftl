@@ -70,6 +70,8 @@ zotseek-pref-checkNowRunning = 正在增量同步 ZotSeek 索引
 zotseek-pref-checkNowRunningDesc = 正在比较 Zotero 条目、笔记与本地索引……
 zotseek-pref-checkNowComplete = 增量同步完成
 zotseek-pref-checkNowResult = 已检查 { $checked } 个条目；更新 { $changed } 个；清理 { $removed } 个失效条目。
+zotseek-pref-checkNowSkipped = 增量同步未执行
+zotseek-pref-checkNowSkippedDesc = 当前操作已跳过。请先处理刚刚显示的提示，或稍后重试。
 zotseek-pref-checkNowFailed = 索引检查失败
 zotseek-indexing-noteUpdate = 正在更新 { $count } 个条目的笔记……
 zotseek-indexing-noteUpdateComplete = 已更新 { $count } 个条目的笔记
@@ -91,6 +93,36 @@ zotseek-pref-modelInputPolicy = 硬上限：{ $limit } · 推荐值：{ $recomme
 zotseek-pref-modelInputUnknown = 由服务器管理
 zotseek-pref-modelInputPrefixRequired = 需要
 zotseek-pref-modelInputPrefixNone = 不需要
+zotseek-pref-modelStatusBundled = 内置
+zotseek-pref-modelStatusInstalled = 已安装
+zotseek-pref-modelStatusDownload = 需要下载 · 约 { $size } MB
+zotseek-pref-modelMultilingual = 多语言
+zotseek-modelDownloadChoiceTitle = 安装 Embedding 模型
+zotseek-modelDownloadChoiceMessage = { $model } 尚未安装。自动下载会从 huggingface.co 获取约 { $size } MB 的模型文件并保存在这台电脑上。ZotSeek 不会把您的 Zotero 文献库发送到 Hugging Face。
+zotseek-modelDownloadAutomatic = 自动下载（推荐）
+zotseek-modelDownloadManual = 手动下载
+zotseek-modelDownloadCancel = 取消
+zotseek-modelDownloadManualTitle = 手动下载模型
+zotseek-modelDownloadManualMessage = 请从官方模型页面下载下列文件，并在保留所列子目录的情况下保存到安装位置。
+
+    模型：{ $model }
+    官方页面：{ $page }
+
+    所需文件：
+    { $files }
+
+    安装位置：
+    { $path }
+zotseek-modelDownloadOpenPage = 打开模型网页
+zotseek-modelDownloadOpenLocation = 打开安装位置
+zotseek-modelDownloadClose = 关闭
+zotseek-modelDownloadStarting = 正在下载 { $model }……
+zotseek-modelDownloadProgress = 正在下载 { $model }：文件 { $done}/{ $total }
+zotseek-modelDownloadFailed = 模型操作失败：{ $error }
+zotseek-modelDownloadRevealFailedTitle = 无法打开安装位置
+zotseek-modelDownloadRevealFailedMessage = ZotSeek 无法打开模型安装位置。您可以复制以下路径并手动打开：
+
+    { $path }
 zotseek-pref-resetMaxTokens =
     .label = 恢复推荐值
 zotseek-pref-serverConfigTitle = 高级 Server 模型
@@ -99,7 +131,7 @@ zotseek-pref-serverConfigPath = 模板：
 zotseek-pref-serverConfigNotLoaded = 模板尚未加载，请重启 Zotero。
 zotseek-pref-serverConfigLoaded = Server（{ $model }）已配置。编辑文件后请重启 Zotero 使其生效。
 zotseek-pref-serverConfigNone = Server（NONE）：尚未配置 Server 模型。请在模型菜单中选择 Server 查看配置提示。
-zotseek-pref-serverConfigErrors = Server（UNKNOWN）：发现 { $errors } 个配置错误。{ $detail }
+zotseek-pref-serverConfigErrors = Server（UNKNOWN）：发现 { $errors } 个配置错误。请检查模板中的模型 ID、本机服务地址、向量维度、token 配额和查询/文档前缀。
 zotseek-pref-serverModelIncomplete = Server 模型信息不完整。请填写 JSON 模板并重启 Zotero。
 zotseek-serverConfigRequiredTitle = 需要补全 Server 模型配置
 zotseek-serverConfigRequiredMessage = 当前选择了 Server（{ $state }），但模型信息不完整。ZotSeek 会保留这一选择，但暂时不能建立索引或执行语义搜索。
@@ -108,8 +140,16 @@ zotseek-serverConfigRequiredMessage = 当前选择了 Server（{ $state }），�
 
     保存文件后请重启 Zotero。
 
-    { $errors }
+    { $guidance }
 zotseek-serverConfigMissingEntry = 请把模板中的“model”字段填写为一个完整的 Server 模型对象。
+zotseek-serverConfigInvalidEntry = 模板中有 { $errors } 个配置错误。请根据模板示例补全模型 ID、本机服务地址、向量维度、token 配额及查询/文档前缀。
+zotseek-serverConfigOpenLocation = 打开文件所在位置
+    .label = 打开文件所在位置
+zotseek-serverConfigClose = 关闭
+zotseek-serverConfigRevealFailedTitle = 无法打开文件所在位置
+zotseek-serverConfigRevealFailedMessage = ZotSeek 无法打开配置文件所在位置。你可以复制下面的路径并手动打开：
+
+    { $path }
 zotseek-pref-maxChunks = 每篇文献最大分块数
 zotseek-pref-maxChunksDesc = 长文档限制（1-200）
 zotseek-pref-excludeBooks =
@@ -291,7 +331,7 @@ zotseek-indexing-clearedMsg = 索引已成功清除。
 zotseek-indexing-rebuildTitle = 重建 ZotSeek 索引
 zotseek-indexing-rebuildConfirmTitle = 重建 ZotSeek 索引
 zotseek-indexing-rebuildConfirmMsg = 这将删除所有存储的嵌入向量并使用当前设置重建索引。
-zotseek-indexing-chunkStrategyRebuildRequired = ZotSeek 检测到当前模型的索引使用旧版分块策略。旧索引仍可搜索，但后台增量更新已暂停，以避免新旧分块混合。请在设置中使用“重建索引”完成全量重建。
+zotseek-indexing-chunkStrategyRebuildRequired = ZotSeek 检测到当前模型的索引使用旧版分块策略。旧索引仍可搜索，但后台增量更新已暂停，以避免新旧分块混合。请在设置中使用“重建索引”完成全量重建。关闭此提示不会启动重建或修改现有索引。
 
     根据文献库大小，这可能需要几分钟。
 

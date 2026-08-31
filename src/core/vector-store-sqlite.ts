@@ -162,6 +162,7 @@ export class VectorStoreSQLite {
       libraryKey: string;
       itemKey: string;
       itemId?: number;
+      libraryId?: number;
       chunkIndex: number;
       title: string;
       textSource: TextSourceType;
@@ -2508,6 +2509,8 @@ export class VectorStoreSQLite {
     itemKey: string;
     /** @deprecated Compatibility field: current local Zotero ID, or -1 for orphans. */
     itemId?: number;
+    /** Current local Zotero library ID, resolved from the stable library key. */
+    libraryId?: number;
     chunkIndex: number;
     title: string;
     textSource: TextSourceType;
@@ -2552,6 +2555,7 @@ export class VectorStoreSQLite {
         libraryKey: e.libraryKey,
         itemKey: e.itemKey,
         itemId: e.itemId ?? -1,
+        libraryId: e.libraryId,
         chunkIndex: e.chunkIndex,
         title: e.title,
         textSource: e.textSource,

@@ -10,22 +10,26 @@
  * - Status is computed from an in-memory cache keyed by item_id, hydrated
  *   in batches when getCellText() is called for unknown ids.
  * - Cache is invalidated whenever indexing writes happen (see invalidate()).
- * - "Outdated" detection is cheap: compares item.dateModified to indexed_at.
+ * - "Outdated" combines persisted verification with the process-local dirty tracker.
  */
 
 import { Logger } from '../utils/logger';
 import { IVectorStore, ItemIndexStatus } from '../core/storage-factory';
-import { identityFromItem, StableIdentity } from '../core/identity-resolver';
+import {
+  identityFromItem,
+  localItemIDFromIdentity,
+  StableIdentity,
+} from '../core/identity-resolver';
 import { isModifiedAfterVerification } from '../utils/timestamp';
+import {
+  indexFreshnessTracker,
+  resolveFreshnessDisplayState,
+  type FreshnessDisplayState,
+} from '../core/index-freshness';
 
 declare const Zotero: any;
 
-export type IndexState =
-  | 'not-indexed'
-  | 'indexed'
-  | 'partial'   // wasTruncated === true
-  | 'outdated'  // item.dateModified > indexed_at
-  | 'excluded'; // tag-based exclusion
+export type IndexState = FreshnessDisplayState;
 
 interface CacheEntry {
   state: IndexState;
@@ -38,7 +42,6 @@ interface CacheEntry {
 const CACHE_TTL_MS = 60 * 1000;        // Status cache stays warm for 1 minute
 const BATCH_HYDRATE_SIZE = 200;        // Max ids to hit the DB with at once
 const COLUMN_DATA_KEY = 'zotseek-index-status';
-const EXCLUDE_TAG = 'zotseek:exclude'; // Must match hasExcludeTag() in index.ts
 
 // Single-character status glyphs — kept ASCII-only so the column stays
 // readable in all themes and is safe across Zotero versions.
@@ -57,6 +60,7 @@ export class ItemTreeIndexColumn {
   private registeredKey: string | null = null;
   private vectorStore: IVectorStore | null = null;
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private unsubscribeFreshness: (() => void) | null = null;
 
   /**
    * Register the column with Zotero's ItemTreeManager.
@@ -117,6 +121,10 @@ export class ItemTreeIndexColumn {
         this.logger.debug(`first-run column reveal skipped: ${e?.message || e}`);
       }
       this.logger.info(`Registered item-tree column "${COLUMN_DATA_KEY}"`);
+      this.unsubscribeFreshness = indexFreshnessTracker.onChange(identity => {
+        const localID = localItemIDFromIdentity(identity);
+        this.invalidate(localID === null ? undefined : [localID]);
+      });
     } catch (e: any) {
       this.logger.error(`Failed to register column: ${e?.message || e}`);
     }
@@ -126,16 +134,19 @@ export class ItemTreeIndexColumn {
    * Unregister on plugin shutdown.
    */
   async unregister(): Promise<void> {
-    if (!this.registeredKey) return;
-    try {
-      const itm = Zotero?.ItemTreeManager;
-      if (itm && typeof itm.unregisterColumns === 'function') {
-        await itm.unregisterColumns(this.registeredKey);
+    if (this.registeredKey) {
+      try {
+        const itm = Zotero?.ItemTreeManager;
+        if (itm && typeof itm.unregisterColumns === 'function') {
+          await itm.unregisterColumns(this.registeredKey);
+        }
+      } catch (e: any) {
+        this.logger.warn(`Failed to unregister column: ${e?.message || e}`);
       }
-    } catch (e: any) {
-      this.logger.warn(`Failed to unregister column: ${e?.message || e}`);
     }
     this.registeredKey = null;
+    this.unsubscribeFreshness?.();
+    this.unsubscribeFreshness = null;
     this.cache.clear();
     this.pending.clear();
     if (this.refreshTimer) {
@@ -300,22 +311,26 @@ export class ItemTreeIndexColumn {
  * with item-side info (exclusion tag, dateModified vs last verification).
    */
   private renderState(baseState: IndexState, item: any, status: ItemIndexStatus | null): string {
-    // Exclusion overrides everything — the user explicitly opted this item out
-    if (hasZotseekExcludeTag(item)) return GLYPHS['excluded'];
-
-    if (baseState === 'not-indexed') return GLYPHS['not-indexed'];
-
-    // A startup reconciliation may validate unchanged content without
-    // regenerating embeddings. Compare parsed UTC times against the newest
-    // successful verification instead of comparing unlike date strings.
-    if (status && status.indexedAt) {
+    // Fingerprint-backed rows use the shared dirty assessment. Keep the broad
+    // parent timestamp only as a conservative fallback for legacy rows that
+    // have not completed their first fingerprint baseline yet.
+    let timestampOutdated = false;
+    if (status && status.indexedAt && !status.checkedAt) {
       const dateModified: string | undefined = item.dateModified;
-      if (isModifiedAfterVerification(dateModified, status.indexedAt, status.checkedAt)) {
-        return GLYPHS['outdated'];
-      }
+      timestampOutdated = isModifiedAfterVerification(
+        dateModified,
+        status.indexedAt,
+      );
     }
-
-    return GLYPHS[baseState];
+    const identity = identityFromItem(item);
+    const state = resolveFreshnessDisplayState({
+      excluded: hasZotseekExcludeTag(item),
+      covered: baseState !== 'not-indexed',
+      dirty: !!identity && indexFreshnessTracker.isDirty(identity),
+      timestampOutdated,
+      truncated: baseState === 'partial',
+    });
+    return GLYPHS[state];
   }
 
   /**
@@ -356,9 +371,11 @@ export class ItemTreeIndexColumn {
 function hasZotseekExcludeTag(item: any): boolean {
   try {
     if (typeof item.getTags !== 'function') return false;
+    const excludeTag = String(Zotero.Prefs.get('zotseek.excludeTag', true) || '').trim();
+    if (!excludeTag) return false;
     const tags = item.getTags() as Array<{ tag: string }>;
     for (const t of tags) {
-      if (t.tag === EXCLUDE_TAG) return true;
+      if (t.tag === excludeTag) return true;
     }
   } catch {
     // ignore

@@ -96,6 +96,18 @@ Notes on the shape:
 - Child Note keyword fallbacks return a query-centred excerpt capped at 1200 Unicode characters, never the complete long Note. When the stored index has the matching chunk, its faithful chunk text and `sectionPaths` take precedence.
 - `score` is a relevance score (RRF score for `search`, cosine similarity for `find_similar`), rounded to three decimals. RRF scores are small by construction (typically 0.005-0.03) and only meaningful for ranking within a single result set; don't read them as percentages. Cosine scores (semantic mode, `find_similar`) range 0-1.
 
+### Recommended workflow for AI agents
+
+An agent should treat ZotSeek as a retrieval interface, not as a complete-document reader:
+
+1. Call `index_status` before a retrieval session. If `ready` is false, `coverage.covered` is lower than `coverage.total`, or `configurationError` is present, report the limitation instead of presenting the result set as complete.
+2. For literature discovery, start with `search` using `mode: "hybrid"`, `granularity: "papers"`, and multiple results (normally 10). Do not answer a completeness-sensitive question from the first result alone.
+3. For comparisons or questions that require several papers, split the information need into focused retrieval queries, run one paper-level search per concept or claim, then merge and deduplicate results by `libraryKey + itemKey`. Putting several weakly related concepts into one long embedding query can reduce recall.
+4. Use `granularity: "passages"` only for targeted evidence gathering. Passage results may contain several chunks from the same paper, so they should not replace paper-level discovery when document diversity matters.
+5. Synthesize only from evidence actually returned, and say when one side of a comparison remains unsupported. Broaden or rephrase the focused query before concluding that the library contains no relevant paper.
+
+`matchedChunk.snippet` is one bounded matching chunk or excerpt, **not the complete Child Note or PDF**. The current MCP API does not expose a `get_note` or per-item `get_document_chunks` operation. Prompt instructions can improve query decomposition, retries, and evidence aggregation, but they cannot make a single `search` result return context that the tool does not expose. A paper-specific passage query may help retrieve additional evidence, but it does not guarantee that results are restricted to that paper.
+
 ### Deep links
 
 Each result carries `zotero://` deep links so an agent can cite a paper with a link that opens it directly in Zotero:

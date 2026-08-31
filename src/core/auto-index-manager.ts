@@ -20,6 +20,18 @@ import { modelInputPolicyFingerprint, resolveModelInputPolicy } from './model-in
 import { textExtractor } from './text-extractor';
 import { isModifiedAfterVerification } from '../utils/timestamp';
 import type { StartupFingerprint, TextSourceType } from './vector-store-sqlite';
+import {
+  assessChangedNoteContent,
+  assessQuickFreshness,
+  assessStoredSourceTexts,
+  freshnessIdentityKey,
+  hashFreshnessText,
+  indexFreshnessTracker,
+  metadataFingerprint,
+  noteContentFingerprint,
+  noteStateFingerprint,
+  type FreshnessIndexingMode,
+} from './index-freshness';
 
 declare const Zotero: any;
 
@@ -47,33 +59,21 @@ export type StartupCheckResult = {
   baselined: number;
   removed: number;
   unchanged: number;
+  outdated: number;
+  failed: number;
   skipped: boolean;
+};
+
+export type ScopedReconciliationOptions = {
+  allowWrites?: boolean;
+  purgeMissingOutsideScope?: boolean;
+  fullIndexCallback?: IndexCallback;
+  noteIndexCallback?: IndexCallback;
 };
 
 const STARTUP_DELAY_MS = 10_000;
 const YIELD_EVERY_ITEMS = 50;
 const SUMMARY_SOURCES: TextSourceType[] = ['summary', 'abstract', 'title_only'];
-
-function hashText(value: string): string {
-  // Two independent 32-bit accumulators give a compact deterministic
-  // fingerprint without requiring asynchronous crypto APIs.
-  let h1 = 0xdeadbeef ^ value.length;
-  let h2 = 0x41c6ce57 ^ value.length;
-  for (let i = 0; i < value.length; i++) {
-    const ch = value.charCodeAt(i);
-    h1 = Math.imul(h1 ^ ch, 2654435761);
-    h2 = Math.imul(h2 ^ ch, 1597334677);
-  }
-  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^
-    Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^
-    Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-  return `${(h2 >>> 0).toString(16).padStart(8, '0')}${(h1 >>> 0).toString(16).padStart(8, '0')}`;
-}
-
-function arraysEqual(a: string[], b: string[]): boolean {
-  return a.length === b.length && a.every((value, index) => value === b[index]);
-}
 
 export class AutoIndexManager {
   private static instance: AutoIndexManager | null = null;
@@ -190,18 +190,19 @@ export class AutoIndexManager {
       baselined: 0,
       removed: 0,
       unchanged: 0,
+      outdated: 0,
+      failed: 0,
       skipped,
     };
   }
 
-  private getConfigFingerprint(): string {
-    const mode = getIndexingMode(Zotero);
+  private getConfigFingerprint(mode: FreshnessIndexingMode): string {
     const maxChunks = Zotero.Prefs.get('zotseek.maxChunksPerPaper', true) ?? 100;
     const policy = resolveModelInputPolicy(
       getActiveModel(),
       Zotero.Prefs.get('zotseek.maxTokens', true),
     );
-    return hashText(JSON.stringify({
+    return hashFreshnessText(JSON.stringify({
       version: 3,
       mode,
       maxChunks,
@@ -212,6 +213,7 @@ export class AutoIndexManager {
 
   private shouldProcess(item: any): boolean {
     if (!item || item.deleted || item.parentID) return false;
+    if (typeof item.isRegularItem === 'function' && !item.isRegularItem()) return false;
     if (item.isNote?.() || item.isAttachment?.()) return false;
     const title = String(item.getField?.('title') || '').trim();
     if (!title) return false;
@@ -223,53 +225,48 @@ export class AutoIndexManager {
     return true;
   }
 
-  private metadataFingerprint(item: any): string {
-    const tags = (item.getTags?.() || [])
-      .map((tag: any) => String(tag?.tag || '').trim())
-      .filter(Boolean)
-      .sort((a: string, b: string) => a.localeCompare(b));
-    return hashText(JSON.stringify({
-      title: String(item.getField?.('title') || ''),
-      abstract: String(item.getField?.('abstractNote') || ''),
-      tags,
-    }));
-  }
-
-  private async quickSnapshot(item: any): Promise<QuickSnapshot> {
-    const noteIDs: number[] = getIndexingMode(Zotero) === 'abstract'
+  private async quickSnapshot(
+    item: any,
+    mode: FreshnessIndexingMode,
+  ): Promise<QuickSnapshot> {
+    const noteIDs: number[] = mode === 'abstract'
       ? []
       : (item.getNotes?.() || []);
     const loaded = noteIDs.length > 0 ? await Zotero.Items.getAsync(noteIDs) : [];
     const notes = (Array.isArray(loaded) ? loaded : [loaded])
       .filter((note: any) => note?.isNote?.() && !note.deleted)
       .sort((a: any, b: any) => String(a.key).localeCompare(String(b.key)));
-    const state = notes.map((note: any) => [
-      String(note.key || ''),
-      String(note.version ?? ''),
-      String(note.dateModified || note.getField?.('dateModified') || ''),
-    ].join('\u0000')).join('\u0001');
+    const parentIdentity = identityFromItem(item);
+    if (parentIdentity) {
+      notes.forEach((note: any) => indexFreshnessTracker.rememberChildNote(
+        note,
+        parentIdentity,
+        identityFromItem(note),
+      ));
+    }
     return {
-      metadataFingerprint: this.metadataFingerprint(item),
-      noteStateFingerprint: hashText(state),
+      metadataFingerprint: metadataFingerprint(item),
+      noteStateFingerprint: noteStateFingerprint(notes, mode),
       notes,
     };
   }
 
-  private async contentSnapshot(item: any, quick: QuickSnapshot): Promise<ContentSnapshot> {
+  private async contentSnapshot(
+    item: any,
+    quick: QuickSnapshot,
+    mode: FreshnessIndexingMode,
+  ): Promise<ContentSnapshot> {
     const normalizedNotes = quick.notes.map((note: any) => ({
       key: String(note.key || ''),
       text: noteHTMLToIndexText(note.getNote?.() || ''),
     }));
-    const noteContentFingerprint = hashText(normalizedNotes
-      .map(note => `${note.key}\u0000${note.text}`)
-      .join('\u0001'));
 
     // Notes mode produces the same metadata/note text used by both Notes and
     // Full modes, without touching Zotero's PDF full-text APIs.
-    const snapshotMode = getIndexingMode(Zotero) === 'abstract' ? 'abstract' : 'notes';
+    const snapshotMode = mode === 'abstract' ? 'abstract' : 'notes';
     const extracted = await textExtractor.extractChunksFromItem(item, snapshotMode);
     return {
-      noteContentFingerprint,
+      noteContentFingerprint: noteContentFingerprint(normalizedNotes, mode),
       summaryChunkTexts: (extracted?.chunks || [])
         .filter(chunk => SUMMARY_SOURCES.includes(chunk.type as TextSourceType))
         .map(chunk => chunk.text),
@@ -294,14 +291,15 @@ export class AutoIndexManager {
     item: any,
     quick: QuickSnapshot,
     content: ContentSnapshot,
-    configFingerprint: string
+    configFingerprint: string,
+    modelId: string,
   ): Promise<void> {
     const identity = identityFromItem(item);
     if (!identity) return;
     const fingerprint: StartupFingerprint = {
       libraryKey: identity.libraryKey,
       itemKey: identity.itemKey,
-      modelId: getActiveModelId(),
+      modelId,
       configFingerprint,
       metadataFingerprint: quick.metadataFingerprint,
       noteStateFingerprint: quick.noteStateFingerprint,
@@ -315,21 +313,53 @@ export class AutoIndexManager {
     items: any[],
     successfulIds: number[],
     configFingerprint: string,
-    snapshots: Map<number, { quick: QuickSnapshot; content: ContentSnapshot }>
-  ): Promise<number> {
+    snapshots: Map<number, { quick: QuickSnapshot; content?: ContentSnapshot }>,
+    mode: FreshnessIndexingMode,
+    modelId: string,
+  ): Promise<Set<number>> {
     const successful = new Set(successfulIds);
-    let count = 0;
+    const persisted = new Set<number>();
+    const configurationChanged =
+      getActiveModelId() !== modelId ||
+      getIndexingMode(Zotero) !== mode ||
+      this.getConfigFingerprint(mode) !== configFingerprint;
+    if (configurationChanged) {
+      for (const item of items) {
+        if (!successful.has(item.id)) continue;
+        const identity = identityFromItem(item);
+        if (identity) indexFreshnessTracker.markDirty(identity);
+      }
+      this.logger.warn('Index configuration changed during reconciliation; freshness remains outdated');
+      return persisted;
+    }
     for (const item of items) {
       if (!successful.has(item.id)) continue;
-      let snapshot = snapshots.get(item.id);
-      if (!snapshot) {
-        const quick = await this.quickSnapshot(item);
-        snapshot = { quick, content: await this.contentSnapshot(item, quick) };
+      const identity = identityFromItem(item);
+      if (!identity) continue;
+      try {
+        const before = snapshots.get(item.id);
+        const quick = await this.quickSnapshot(item, mode);
+        const content = await this.contentSnapshot(item, quick, mode);
+        if (before && (
+          before.quick.metadataFingerprint !== quick.metadataFingerprint ||
+          before.quick.noteStateFingerprint !== quick.noteStateFingerprint ||
+          (before.content &&
+            before.content.noteContentFingerprint !== content.noteContentFingerprint)
+        )) {
+          // The write completed, but Zotero changed again while extraction or
+          // embedding was running. Keep the parent dirty for the next pass.
+          indexFreshnessTracker.markDirty(identity);
+          continue;
+        }
+        await this.persistFingerprint(item, quick, content, configFingerprint, modelId);
+        indexFreshnessTracker.clearDirty(identity);
+        persisted.add(item.id);
+      } catch (error: any) {
+        indexFreshnessTracker.markDirty(identity);
+        this.logger.warn(`Could not persist freshness for ${identity.libraryKey}/${identity.itemKey}: ${error?.message || error}`);
       }
-      await this.persistFingerprint(item, snapshot.quick, snapshot.content, configFingerprint);
-      count++;
     }
-    return count;
+    return persisted;
   }
 
   private async purgeMissingIndexedItems(
@@ -346,32 +376,102 @@ export class AutoIndexManager {
     return removed;
   }
 
-  private async runCheck(): Promise<StartupCheckResult> {
-    if (this.checking || !this.itemProvider || !this.vectorStore ||
-        !this.fullIndexCallback || !this.noteIndexCallback) {
+  /** Reconcile only the explicit items supplied by a manual command. */
+  public async reconcileItems(
+    items: any[],
+    options: ScopedReconciliationOptions = {},
+  ): Promise<StartupCheckResult> {
+    return this.reconcileProvidedItems(items, {
+      ...options,
+      allowWrites: options.allowWrites !== false,
+      purgeMissingOutsideScope: false,
+    });
+  }
+
+  /**
+   * Restore status after restart without adding items or invoking embedding.
+   * Only identities already covered by the active model are inspected.
+   */
+  public async restoreIndexedFreshness(): Promise<StartupCheckResult> {
+    if (!this.vectorStore) return this.emptyResult(true);
+    try {
+      const identities = await this.vectorStore.getIndexedIdentities(getActiveModelId());
+      const items: any[] = [];
+      for (const identity of identities) {
+        const localID = localItemIDFromIdentity(identity);
+        if (localID === null) continue;
+        const item = Zotero.Items.get(localID);
+        if (item) items.push(item);
+      }
+      return this.reconcileProvidedItems(items, {
+        allowWrites: false,
+        purgeMissingOutsideScope: false,
+      });
+    } catch (error: any) {
+      this.logger.error(`Freshness restore failed: ${error?.message || error}`);
       return this.emptyResult(true);
     }
-    if (this.chunkStrategyBlocked) {
-      this.logger.info('Startup reconciliation paused until the old chunk strategy is rebuilt');
+  }
+
+  private async runCheck(): Promise<StartupCheckResult> {
+    if (!this.itemProvider) return this.emptyResult(true);
+    try {
+      const items = await this.itemProvider();
+      return this.reconcileProvidedItems(items, {
+        allowWrites: true,
+        purgeMissingOutsideScope: true,
+      });
+    } catch (error: any) {
+      this.logger.error(`Startup item collection failed: ${error?.message || error}`);
+      return this.emptyResult(true);
+    }
+  }
+
+  private async reconcileProvidedItems(
+    suppliedItems: any[],
+    options: ScopedReconciliationOptions,
+  ): Promise<StartupCheckResult> {
+    const allowWrites = options.allowWrites !== false;
+    const fullIndexCallback = options.fullIndexCallback || this.fullIndexCallback;
+    const noteIndexCallback = options.noteIndexCallback || this.noteIndexCallback;
+    if (this.checking || !this.vectorStore ||
+        (allowWrites && (!fullIndexCallback || !noteIndexCallback))) {
+      return this.emptyResult(true);
+    }
+    if (allowWrites && this.chunkStrategyBlocked) {
+      this.logger.info('Reconciliation paused until the old chunk strategy is rebuilt');
       return this.emptyResult(true);
     }
     if (getActiveModelSelectionId() === SERVER_SLOT_SELECTION_ID &&
         getActiveModelId() === SERVER_SLOT_SELECTION_ID) {
-      this.logger.info('Startup reconciliation skipped: the selected Server model is incomplete');
+      this.logger.info('Reconciliation skipped: the selected Server model is incomplete');
       return this.emptyResult(true);
     }
 
     this.checking = true;
     const result = this.emptyResult();
-    const configFingerprint = this.getConfigFingerprint();
+    const mode = getIndexingMode(Zotero) as FreshnessIndexingMode;
+    const configFingerprint = this.getConfigFingerprint(mode);
     const modelId = getActiveModelId();
-    const snapshots = new Map<number, { quick: QuickSnapshot; content: ContentSnapshot }>();
+    const snapshots = new Map<number, { quick: QuickSnapshot; content?: ContentSnapshot }>();
 
     try {
-      const items = (await this.itemProvider()).filter(item => this.shouldProcess(item));
+      const seen = new Set<string>();
+      const items = suppliedItems.filter(item => {
+        if (!this.shouldProcess(item)) return false;
+        const identity = identityFromItem(item);
+        if (!identity) return false;
+        const key = `${identity.libraryKey}\u0000${identity.itemKey}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
       result.checked = items.length;
+
       const indexedIdentities = await this.vectorStore.getIndexedIdentities(modelId);
-      result.removed = await this.purgeMissingIndexedItems(indexedIdentities);
+      if (options.purgeMissingOutsideScope) {
+        result.removed = await this.purgeMissingIndexedItems(indexedIdentities);
+      }
       const indexed = new Set(indexedIdentities.map((identity: any) =>
         `${identity.libraryKey}\u0000${identity.itemKey}`));
 
@@ -381,63 +481,78 @@ export class AutoIndexManager {
 
       for (let index = 0; index < items.length; index++) {
         const item = items[index];
-        const identity = identityFromItem(item);
-        if (!identity) continue;
+        const identity = identityFromItem(item)!;
         const identityKey = `${identity.libraryKey}\u0000${identity.itemKey}`;
 
         if (!indexed.has(identityKey)) {
+          const quick = await this.quickSnapshot(item, mode);
+          snapshots.set(item.id, { quick });
           newItems.push(item);
           continue;
         }
 
-        const quick = await this.quickSnapshot(item);
+        const quick = await this.quickSnapshot(item, mode);
+        snapshots.set(item.id, { quick });
         const storedFingerprint = await this.vectorStore.getStartupFingerprint(
           identity.libraryKey,
           identity.itemKey,
-          modelId
+          modelId,
         );
+        const quickAssessment = assessQuickFreshness({
+          indexed: true,
+          mode,
+          configFingerprint,
+          metadataFingerprint: quick.metadataFingerprint,
+          noteStateFingerprint: quick.noteStateFingerprint,
+          storedFingerprint,
+        });
 
-        if (storedFingerprint) {
-          if (storedFingerprint.configFingerprint !== configFingerprint ||
-              storedFingerprint.metadataFingerprint !== quick.metadataFingerprint) {
-            rebuildItems.push(item);
-          } else if (storedFingerprint.noteStateFingerprint === quick.noteStateFingerprint) {
-            // The lightweight fingerprints prove indexed content is still
-            // current. Advance checkedAt only when Zotero's parent item has
-            // changed since the previous verification, avoiding thousands of
-            // unnecessary writes on every otherwise-idle startup.
-            if (isModifiedAfterVerification(item.dateModified, storedFingerprint.checkedAt)) {
-              await this.vectorStore.setStartupFingerprint({
-                ...storedFingerprint,
-                checkedAt: new Date().toISOString(),
-              });
-            }
-            result.unchanged++;
+        if (quickAssessment === 'current') {
+          // Advance checkedAt only when the parent changed since verification,
+          // avoiding writes for every unchanged item on every startup.
+          if (storedFingerprint &&
+              isModifiedAfterVerification(item.dateModified, storedFingerprint.checkedAt)) {
+            await this.vectorStore.setStartupFingerprint({
+              ...storedFingerprint,
+              checkedAt: new Date().toISOString(),
+            });
+          }
+          indexFreshnessTracker.clearDirty(identity);
+          result.unchanged++;
+        } else if (quickAssessment === 'config-changed' ||
+                   quickAssessment === 'metadata-changed') {
+          indexFreshnessTracker.markDirty(identity);
+          rebuildItems.push(item);
+        } else if (quickAssessment === 'note-state-changed' && storedFingerprint) {
+          const content = await this.contentSnapshot(item, quick, mode);
+          snapshots.set(item.id, { quick, content });
+          if (assessChangedNoteContent(storedFingerprint, content.noteContentFingerprint) === 'current') {
+            await this.persistFingerprint(item, quick, content, configFingerprint, modelId);
+            indexFreshnessTracker.clearDirty(identity);
+            result.baselined++;
           } else {
-            const content = await this.contentSnapshot(item, quick);
-            snapshots.set(item.id, { quick, content });
-            if (storedFingerprint.noteContentFingerprint === content.noteContentFingerprint) {
-              await this.persistFingerprint(item, quick, content, configFingerprint);
-              result.baselined++;
-            } else {
-              noteItems.push(item);
-            }
+            indexFreshnessTracker.markDirty(identity);
+            noteItems.push(item);
           }
         } else {
-          // First v10 startup: verify current text against the chunks that were
-          // actually embedded. Never bless an unknown database blindly.
-          const content = await this.contentSnapshot(item, quick);
+          // Fingerprint-less indexes must be compared with the source text that
+          // was actually embedded before a baseline can be trusted.
+          const content = await this.contentSnapshot(item, quick, mode);
           snapshots.set(item.id, { quick, content });
           const stored = await this.storedSourceTexts(identity);
-          const metadataMatches = arraysEqual(stored.summary, content.summaryChunkTexts);
-          const notesMatch = arraysEqual(stored.notes, content.noteChunkTexts);
-
-          if (!metadataMatches) {
+          const assessment = assessStoredSourceTexts(stored, {
+            summary: content.summaryChunkTexts,
+            notes: content.noteChunkTexts,
+          });
+          if (assessment === 'metadata-changed') {
+            indexFreshnessTracker.markDirty(identity);
             rebuildItems.push(item);
-          } else if (!notesMatch) {
+          } else if (assessment === 'notes-changed') {
+            indexFreshnessTracker.markDirty(identity);
             noteItems.push(item);
           } else {
-            await this.persistFingerprint(item, quick, content, configFingerprint);
+            await this.persistFingerprint(item, quick, content, configFingerprint, modelId);
+            indexFreshnessTracker.clearDirty(identity);
             result.baselined++;
           }
         }
@@ -447,30 +562,82 @@ export class AutoIndexManager {
         }
       }
 
-      if (newItems.length > 0) {
-        const successful = await this.fullIndexCallback(newItems);
-        result.indexedNew = await this.persistSuccessful(
-          newItems, successful, configFingerprint, snapshots);
-      }
-      if (rebuildItems.length > 0) {
-        const successful = await this.fullIndexCallback(rebuildItems);
-        result.rebuilt = await this.persistSuccessful(
-          rebuildItems, successful, configFingerprint, snapshots);
-      }
-      if (noteItems.length > 0) {
-        const successful = await this.noteIndexCallback(noteItems);
-        result.notesUpdated = await this.persistSuccessful(
-          noteItems, successful, configFingerprint, snapshots);
+      const fullItems = [...newItems, ...rebuildItems];
+      if (!allowWrites) {
+        result.outdated = fullItems.length + noteItems.length;
+      } else {
+        const configurationChanged =
+          getActiveModelId() !== modelId ||
+          getIndexingMode(Zotero) !== mode ||
+          this.getConfigFingerprint(mode) !== configFingerprint;
+        if (configurationChanged) {
+          for (const item of items) {
+            const identity = identityFromItem(item);
+            if (identity && indexed.has(freshnessIdentityKey(identity))) {
+              indexFreshnessTracker.markDirty(identity);
+            }
+          }
+          result.outdated = items.filter(item => {
+            const identity = identityFromItem(item);
+            return !!identity && indexed.has(freshnessIdentityKey(identity));
+          }).length;
+          result.failed = fullItems.length + noteItems.length;
+          result.skipped = true;
+          this.logger.warn('Index configuration changed during freshness assessment; write callbacks skipped');
+          return result;
+        }
+        if (fullItems.length > 0 && fullIndexCallback) {
+          let successful: number[] = [];
+          try {
+            successful = await fullIndexCallback(fullItems);
+          } catch (error: any) {
+            this.logger.error(`Full-item reconciliation failed: ${error?.message || error}`);
+          }
+          const persisted = await this.persistSuccessful(
+            fullItems,
+            successful,
+            configFingerprint,
+            snapshots,
+            mode,
+            modelId,
+          );
+          const newIDs = new Set(newItems.map(item => item.id));
+          for (const id of persisted) {
+            if (newIDs.has(id)) result.indexedNew++;
+            else result.rebuilt++;
+          }
+          result.failed += fullItems.length - persisted.size;
+        }
+        if (noteItems.length > 0 && noteIndexCallback) {
+          let successful: number[] = [];
+          try {
+            successful = await noteIndexCallback(noteItems);
+          } catch (error: any) {
+            this.logger.error(`Note reconciliation failed: ${error?.message || error}`);
+          }
+          const persisted = await this.persistSuccessful(
+            noteItems,
+            successful,
+            configFingerprint,
+            snapshots,
+            mode,
+            modelId,
+          );
+          result.notesUpdated = persisted.size;
+          result.failed += noteItems.length - persisted.size;
+        }
+        result.outdated = result.failed;
       }
 
       this.logger.info(
-        `Startup reconciliation complete: checked=${result.checked}, new=${result.indexedNew}, ` +
+        `Reconciliation complete: checked=${result.checked}, new=${result.indexedNew}, ` +
         `rebuilt=${result.rebuilt}, notes=${result.notesUpdated}, baseline=${result.baselined}, ` +
-        `removed=${result.removed}, unchanged=${result.unchanged}`
+        `removed=${result.removed}, unchanged=${result.unchanged}, outdated=${result.outdated}, ` +
+        `failed=${result.failed}`,
       );
       return result;
     } catch (error: any) {
-      this.logger.error(`Startup reconciliation failed: ${error?.message || error}`);
+      this.logger.error(`Reconciliation failed: ${error?.message || error}`);
       result.skipped = true;
       return result;
     } finally {
@@ -479,7 +646,7 @@ export class AutoIndexManager {
         try {
           await this.completionCallback(result);
         } catch (error: any) {
-          this.logger.warn(`Startup completion callback failed: ${error?.message || error}`);
+          this.logger.warn(`Reconciliation completion callback failed: ${error?.message || error}`);
         }
       }
     }

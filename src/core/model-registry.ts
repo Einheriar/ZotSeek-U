@@ -172,15 +172,14 @@ export function requiresLocalFiles(model: ModelConfig): boolean {
  *
  * Without this the user sees Transformers.js's own wording, which names a
  * `resource://` URL and mentions `local_files_only`. That is accurate and
- * completely unactionable: it does not say which model is missing or how to
- * recover now that Settings no longer starts network downloads.
+ * completely unactionable: it does not say which model is missing or where
+ * the automatic and guided manual installation actions live.
  */
 export function missingModelMessage(model: ModelConfig): string {
   return (
     `The "${model.label}" embedding model is selected but its files are not on this computer. ` +
-    `Switch to the built-in model or another model that is already installed. ` +
-    `To use this model, place its configured files in ZotSeek's model directory manually ` +
-    `(about ${model.approxSizeMB} MB).`
+    `Open ZotSeek Settings and select it to download automatically or view the manual download instructions ` +
+    `(about ${model.approxSizeMB} MB). Until installation succeeds, ZotSeek keeps the current model.`
   );
 }
 

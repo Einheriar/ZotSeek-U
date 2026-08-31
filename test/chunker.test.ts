@@ -328,8 +328,19 @@ describe('exact token-aware note chunking', () => {
   });
 
   test('filters numbered and annotated reference headings found in generated briefs', () => {
-    const referenceOnlyHeadings = [
+    const generatedReferenceStarts = ['', '核心', '关键', '主要', '精选', '推荐']
+      .flatMap(modifier => ['参考文献', '参考书目']
+        .flatMap(subject => ['', '列表', '目录', '及其贡献', '列表与点评']
+          .map(tail => `${modifier}${subject}${tail}`)));
+    const generatedEvidenceSources = ['', '核心', '关键', '主要']
+      .flatMap(evidence => ['', '原始', '核心', '关键']
+        .flatMap(source => ['文献', '参考文献']
+          .map(subject => `用于支撑${evidence}证据的${source}${subject}清单`)));
+    const referenceOnlyHeadings = [...new Set([
       '6. 核心参考文献列表',
+      '4.2 支撑关键证据的原始文献',
+      '4.2. 支撑关键证据的原始文献',
+      '（四）支撑主要证据的关键文献清单',
       '核心参考文献简要说明',
       '五、关键参考文献追踪线索',
       '4. 核心参考文献列表 (Core References)',
@@ -345,7 +356,20 @@ describe('exact token-aware note chunking', () => {
       '关键参考文献列表',
       '7. 核心参考文献及其证据支撑',
       '核心参考文献列表与证据说明',
-    ];
+      '核心参考文献及其贡献',
+      '核心参考文献列表与点评',
+      '参考文献线索',
+      '关键参考文献（按图索骥）',
+      '引用的关键文献',
+      '本章引用的主要文献目录',
+      '必读关联文献',
+      '推荐阅读的关键文献导读',
+      'IX. Selected References',
+      'Recommended Bibliography Guide',
+      'Further Reading',
+      ...generatedReferenceStarts,
+      ...generatedEvidenceSources,
+    ])];
 
     referenceOnlyHeadings.forEach((heading, index) => {
       const note = noteHTMLToStructuredText([
@@ -361,12 +385,38 @@ describe('exact token-aware note chunking', () => {
     });
   });
 
+  test('keeps analytical and mixed headings that merely mention literature or citations', () => {
+    const analyticalHeadings = [
+      '文献筛选与数据来源',
+      '当前文献的主要局限',
+      '核心定义与关键文献',
+      '关键术语与参考文献线索',
+      '关键证据与引用',
+      '五、讨论部分的关键证据与文献支撑',
+      '6. 学术定位与延伸文献',
+      '参考文献在研究设计中的作用',
+      '主要参考文献的局限',
+      'References in the current literature review',
+      'Reference about G*Power',
+    ];
+    const note = noteHTMLToStructuredText([
+      '<h1>学术简报</h1>',
+      ...analyticalHeadings.map((heading, index) =>
+        `<h2>${heading}</h2><p>必须保留的分析正文-${index}</p>`),
+    ].join(''));
+
+    analyticalHeadings.forEach((heading, index) => {
+      assert.match(note.indexText, new RegExp(`必须保留的分析正文-${index}`), heading);
+    });
+    assert.deepEqual(note.sections.map(section => section.path[0]), analyticalHeadings);
+  });
+
   test('keeps a mixed terminology section but filters its reference child subtree', () => {
     const note = noteHTMLToStructuredText([
       '<h1>学术简报</h1>',
       '<h2>关键术语与参考文献线索</h2>',
       '<h3>核心术语</h3><p>保留术语定义。</p>',
-      '<h3>支撑关键证据的原始文献</h3><p>删除原始文献列表。</p>',
+      '<h3>4.2 支撑关键证据的原始文献</h3><p>删除原始文献列表。</p>',
       '<h2>附记</h2><p>保留后续正文。</p>',
     ].join(''));
 

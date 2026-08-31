@@ -14,15 +14,32 @@ import {
   SERVER_SLOT_SELECTION_ID,
   setActiveModelId,
 } from '../core/model-registry';
-import { isModelOnDisk, removeModelFiles } from '../core/model-download';
+import {
+  ensureModelDownloaded,
+  ensureModelInstallDir,
+  getModelInstallDir,
+  isModelOnDisk,
+  removeModelFiles,
+} from '../core/model-download';
 import { vectorStoreSQLite } from '../core/vector-store-sqlite';
 import { embeddingPipeline } from '../core/embedding-pipeline';
 import { resolveModelInputPolicy } from '../core/model-input-policy';
+import { getManualIndexCheckPresentation } from '../utils/index-check-presentation';
 import {
   getLastServerModelConfigLoadResult,
   getServerModelConfigPath,
 } from '../core/server-model-config';
-import { showServerModelConfigurationPromptIfNeeded } from './server-model-prompt';
+import {
+  revealFileLocation,
+  revealServerModelConfigLocation,
+  showServerModelConfigurationPromptIfNeeded,
+} from './server-model-prompt';
+import {
+  getLocalModelMenuState,
+  getModelDownloadPageUrl,
+  openManualModelDownloadGuide,
+  openModelDownloadChoicePrompt,
+} from './model-download-prompt';
 
 declare const Services: any;
 declare const Zotero: any;
@@ -70,11 +87,18 @@ async function populateModelMenu(doc: any): Promise<void> {
   for (const m of getAllModels()) {
     if (m.runtime === 'server') continue;
     const onDisk = m.bundled || await isModelOnDisk(m);
-    if (!onDisk) continue;
-    const status = m.bundled ? 'Bundled' : 'Installed';
+    const state = getLocalModelMenuState(m, onDisk);
+    const status = state === 'bundled'
+      ? getString('pref-modelStatusBundled')
+      : state === 'installed'
+        ? getString('pref-modelStatusInstalled')
+        : getString('pref-modelStatusDownload', { size: m.approxSizeMB });
     const mi = doc.createXULElement('menuitem');
     mi.setAttribute('value', m.id);
-    mi.setAttribute('label', `${m.label} · ${m.dimensions}d${m.multilingual ? ' · multilingual' : ''} · ${status}`);
+    mi.setAttribute(
+      'label',
+      `${m.label} · ${m.dimensions}d${m.multilingual ? ` · ${getString('pref-modelMultilingual')}` : ''} · ${status}`,
+    );
     popup.appendChild(mi);
   }
   const serverConfig = getLastServerModelConfigLoadResult();
@@ -91,6 +115,46 @@ async function populateModelMenu(doc: any): Promise<void> {
   for (let i = 0; i < items.length; i++) {
     if (items[i].getAttribute('value') === active) { menu.selectedIndex = i; break; }
   }
+}
+
+async function showManualDownloadGuide(doc: any, model: NonNullable<ReturnType<typeof getModel>>): Promise<void> {
+  const installDir = getModelInstallDir(model);
+  const pageUrl = getModelDownloadPageUrl(model);
+  const files = model.files.map((file) => `• ${file}`).join('\n');
+  openManualModelDownloadGuide(
+    Services.prompt,
+    doc.defaultView || null,
+    getString('modelDownloadManualTitle'),
+    getString('modelDownloadManualMessage', {
+      model: model.label,
+      page: pageUrl,
+      files,
+      path: installDir,
+    }),
+    getString('modelDownloadOpenPage'),
+    getString('modelDownloadOpenLocation'),
+    getString('modelDownloadClose'),
+    () => Zotero.launchURL(pageUrl),
+    () => {
+      void ensureModelInstallDir(model).then((path) => {
+        if (!revealFileLocation(path)) {
+          Services.prompt.alert(
+            doc.defaultView || null,
+            getString('modelDownloadRevealFailedTitle'),
+            getString('modelDownloadRevealFailedMessage', { path }),
+          );
+        }
+      }).catch((error: any) => {
+        Services.prompt.alert(
+          doc.defaultView || null,
+          getString('modelDownloadRevealFailedTitle'),
+          getString('modelDownloadRevealFailedMessage', {
+            path: `${installDir}\n${error?.message || error}`,
+          }),
+        );
+      });
+    },
+  );
 }
 
 function refreshModelInputPolicy(doc: any): void {
@@ -244,7 +308,6 @@ function renderServerTemplateStatus(doc: any): void {
   } else if (result.kind === 'unknown') {
     statusEl.textContent = getString('pref-serverConfigErrors', {
       errors: result.errors.length,
-      detail: result.errors.slice(0, 2).join(' '),
     });
   } else if (result.kind === 'none') {
     statusEl.textContent = getString('pref-serverConfigNone');
@@ -512,7 +575,7 @@ class PreferencesManager {
       });
     }
 
-    // Embedding model change: only bundled, installed or server models appear.
+    // Embedding model change: missing curated models offer automatic or manual installation.
     const modelMenu = doc.getElementById('zotseek-pref-embeddingModel') as any;
     if (modelMenu) {
       modelMenu.addEventListener('command', async () => {
@@ -548,6 +611,41 @@ class PreferencesManager {
           }
           const model = getModel(id);
           if (!model) return;
+          if (!model.bundled && !(await isModelOnDisk(model))) {
+            const choice = openModelDownloadChoicePrompt(
+              Services.prompt,
+              doc.defaultView || null,
+              getString('modelDownloadChoiceTitle'),
+              getString('modelDownloadChoiceMessage', {
+                model: model.label,
+                size: model.approxSizeMB,
+              }),
+              getString('modelDownloadAutomatic'),
+              getString('modelDownloadManual'),
+              getString('modelDownloadCancel'),
+            );
+            if (choice === 'cancel') {
+              if (docAlive(doc)) await populateModelMenu(doc);
+              return;
+            }
+            if (choice === 'manual') {
+              await showManualDownloadGuide(doc, model);
+              if (docAlive(doc)) await populateModelMenu(doc);
+              return;
+            }
+            if (docAlive(doc) && statusEl) {
+              statusEl.textContent = getString('modelDownloadStarting', { model: model.label });
+            }
+            await ensureModelDownloaded(model, (done, total) => {
+              if (docAlive(doc) && statusEl) {
+                statusEl.textContent = getString('modelDownloadProgress', {
+                  model: model.label,
+                  done,
+                  total,
+                });
+              }
+            });
+          }
           await embeddingPipeline.setModel(id);   // persists the pref + reloads the worker
           const strategyWritable = typeof zs?.api?.refreshChunkStrategyState === 'function'
             ? await zs.api.refreshChunkStrategyState(true)
@@ -565,13 +663,25 @@ class PreferencesManager {
         } catch (e: any) {
           // Guard: statusEl may throw if the prefs window was closed during a long await
           try {
-            if (docAlive(doc) && statusEl) statusEl.textContent = `Failed: ${e?.message || e}`;
+            if (docAlive(doc) && statusEl) {
+              statusEl.textContent = getString('modelDownloadFailed', { error: e?.message || e });
+              await populateModelMenu(doc);
+            }
           } catch { /* prefs window gone, nothing to update */ }
         } finally {
           modelSwitchInProgress = false;
         }
       });
     }
+
+    const openServerConfigButton = doc.getElementById('zotseek-server-config-open-location');
+    openServerConfigButton?.addEventListener('command', () => {
+      const result = getLastServerModelConfigLoadResult();
+      revealServerModelConfigLocation(
+        result?.path || getServerModelConfigPath(),
+        this.window,
+      );
+    });
 
     // Number inputs
     const numberInputs = [
@@ -923,17 +1033,34 @@ class PreferencesManager {
   private async checkForUpdatesNow(): Promise<void> {
     const Z = getZotero();
     if (!Z?.ZotSeek?.checkForIndexUpdates) return;
+
+    // Reject an incomplete Server selection before creating a progress window.
+    // The shared modal already explains the actionable reason and offers the file path.
+    if (showServerModelConfigurationPromptIfNeeded()) return;
+
     const pw = new Z.ProgressWindow({ closeOnClick: true });
     pw.changeHeadline(getString('pref-checkNowRunning'));
     pw.addDescription(getString('pref-checkNowRunningDesc'));
     pw.show();
     try {
       const result = await Z.ZotSeek.checkForIndexUpdates();
+      const presentation = getManualIndexCheckPresentation(result);
+      if (presentation.kind === 'skipped') {
+        // Avoid retaining the stale "comparing" description in the skipped notice.
+        if (typeof pw.close === 'function') pw.close();
+        else pw.startCloseTimer(1);
+        const skippedWindow = new Z.ProgressWindow({ closeOnClick: true });
+        skippedWindow.changeHeadline(getString('pref-checkNowSkipped'));
+        skippedWindow.addDescription(getString('pref-checkNowSkippedDesc'));
+        skippedWindow.show();
+        skippedWindow.startCloseTimer(5000);
+        return;
+      }
       pw.changeHeadline(getString('pref-checkNowComplete'));
       pw.addDescription(getString('pref-checkNowResult', {
-        checked: result.checked,
-        changed: result.indexedNew + result.rebuilt + result.notesUpdated,
-        removed: result.removed,
+        checked: presentation.checked,
+        changed: presentation.changed,
+        removed: presentation.removed,
       }));
       pw.startCloseTimer(5000);
       await this.loadStatsAndCheckMismatch();

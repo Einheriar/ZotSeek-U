@@ -67,20 +67,15 @@ const BASIC_INFO_HEADINGS = new Set([
   'basic information',
 ]);
 
-const REFERENCE_HEADINGS = new Set([
-  '参考文献',
-  '参考文献列表',
-  '核心参考文献',
-  '核心参考文献列表',
-  '主要参考文献',
-  '参考书目',
-  'references',
-  'bibliography',
-  'selected references',
-  'key references',
-]);
-
-const CHINESE_REFERENCE_HEADING = /^(?:(?:核心|关键|主要)?参考(?:文献|书目)|支撑关键证据的原始文献)(?:列表与证据说明|列表|简要说明|追踪线索|精要|导读|与延伸阅读|与延展阅读|及其证据支撑)?$/u;
+// Prefer false negatives to false positives: only reference-first grammatical
+// families are filtered, while explicitly analytical tails remain indexable.
+const CHINESE_REFERENCE_START = /^(?:(?:核心|关键|主要|精选|推荐)\s*)?参考(?:文献|书目)/u;
+const CHINESE_REFERENCE_ANALYTICAL_TAIL = /^(?:在.+(?:作用|角色|意义|价值|应用|影响)(?:与(?:局限|问题))?|的(?:局限|偏差|问题)(?:与.+)?)$/u;
+const CHINESE_DIRECTED_READING_HEADING = /^(?:(?:本(?:章|节)\s*)?引用(?:的)?|(?:推荐|必读)(?:阅读)?(?:的)?)(?:(?:核心|关键|主要|精选|关联|延伸)\s*)*(?:参考)?(?:文献|书目)(?:列表|清单|目录|导读)?$/u;
+const CHINESE_EVIDENCE_SOURCES_HEADING = /^(?:用于)?支撑(?:核心|关键|主要)?证据的(?:(?:原始|核心|关键|主要)\s*)*(?:参考)?文献(?:列表|清单|目录)?$/u;
+const ENGLISH_REFERENCE_START = /^(?:(?:core|key|selected|recommended)\s+)?(?:references?|bibliography)\b/u;
+const ENGLISH_REFERENCE_ANALYTICAL_TAIL = /^(?:about|in|within)\b/u;
+const ENGLISH_READING_HEADING = /^(?:(?:recommended|further|essential)\s+reading)(?:\s+list)?$/u;
 
 export interface NoteSection {
   path: string[];
@@ -225,7 +220,7 @@ function isBasicInfoHeading(text: string): boolean {
 function normalizeReferenceHeading(text: string): string {
   return normalizeHeading(text)
     .replace(
-      /^(?:(?:[（(](?:\d+(?:\.\d+)*|[一二三四五六七八九十百]+|[ivxlcdm]+)[）)])|(?:(?:\d+(?:\.\d+)*|[一二三四五六七八九十百]+|[ivxlcdm]+)\s*[、.．:：-]))\s*/iu,
+      /^(?:[（(](?:\d+(?:[.．]\d+)*|[一二三四五六七八九十百]+|[ivxlcdm]+)[）)]\s*|(?:\d+(?:[.．]\d+)*|[一二三四五六七八九十百]+|[ivxlcdm]+)(?:\s*[、.．:：-]\s*|\s+))/iu,
       '',
     )
     .replace(
@@ -237,7 +232,25 @@ function normalizeReferenceHeading(text: string): string {
 
 function isReferenceHeading(text: string): boolean {
   const heading = normalizeReferenceHeading(text);
-  return REFERENCE_HEADINGS.has(heading) || CHINESE_REFERENCE_HEADING.test(heading);
+  const chineseReferenceStart = heading.match(CHINESE_REFERENCE_START)?.[0];
+  if (chineseReferenceStart) {
+    const tail = heading.slice(chineseReferenceStart.length)
+      .replace(/^[：:；;、,，\-—_\s]+/u, '')
+      .trim();
+    return !CHINESE_REFERENCE_ANALYTICAL_TAIL.test(tail);
+  }
+
+  const englishReferenceStart = heading.match(ENGLISH_REFERENCE_START)?.[0];
+  if (englishReferenceStart) {
+    const tail = heading.slice(englishReferenceStart.length)
+      .replace(/^[：:;,.\-—_\s]+/u, '')
+      .trim();
+    return !ENGLISH_REFERENCE_ANALYTICAL_TAIL.test(tail);
+  }
+
+  return CHINESE_DIRECTED_READING_HEADING.test(heading) ||
+    CHINESE_EVIDENCE_SOURCES_HEADING.test(heading) ||
+    ENGLISH_READING_HEADING.test(heading);
 }
 
 /**

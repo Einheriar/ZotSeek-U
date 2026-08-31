@@ -226,9 +226,12 @@
           style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 0 0 6px 0;">
     Configure the fixed Server model slot in the profile JSON template. ZotSeek validates the template at startup; edit it and restart Zotero to apply changes.
   </html:p>
-  <html:div style="font-size: 11px;">
+  <html:div style="font-size: 11px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
     <html:span data-l10n-id="zotseek-pref-serverConfigPath">Template:</html:span>
-    <html:code id="zotseek-server-config-path" style="user-select: all;"></html:code>
+    <html:code id="zotseek-server-config-path" style="user-select: all; overflow-wrap: anywhere;"></html:code>
+    <button id="zotseek-server-config-open-location"
+            data-l10n-id="zotseek-serverConfigOpenLocation"
+            label="Open file location"/>
   </html:div>
   <html:p id="zotseek-server-config-status"
           style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 5px 0 0 0;"></html:p>

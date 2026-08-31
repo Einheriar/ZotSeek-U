@@ -257,13 +257,13 @@ describe('models that need their weights on disk', () => {
     assert.equal(requiresLocalFiles({ runtime: 'server', bundled: false } as any), false);
   });
 
-  test('the message names the model without pointing at the removed download UI', () => {
+  test('the message names the model and points at the restored download UI', () => {
     const model = MODELS.find((m) => !m.bundled)!;
     const msg = missingModelMessage(model);
     assert.ok(msg.includes(model.label), 'names the model the user chose');
-    assert.match(msg, /built-in model/i, 'offers an immediately available fallback');
-    assert.match(msg, /manually/i, 'explains how advanced users can install files');
-    assert.doesNotMatch(msg, /Settings/i, 'does not point at the removed download UI');
+    assert.match(msg, /Settings/i, 'points at the model selector');
+    assert.match(msg, /download automatically/i, 'mentions the automatic path');
+    assert.match(msg, /manual download instructions/i, 'mentions the manual path');
     assert.ok(!msg.includes('resource://'), 'does not leak the internal URL scheme');
     assert.ok(!/local_files_only/.test(msg), 'does not leak the Transformers.js wording');
   });
