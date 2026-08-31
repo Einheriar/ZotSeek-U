@@ -55,6 +55,7 @@ import {
 } from './core/server-model-config';
 // Self-test harness (mounted only when extensions.zotseek.devMode = true)
 import { selfTest as zotseekSelfTest } from './dev/self-test';
+import { exportPdfWorkerCollection } from './dev/pdf-benchmark-export';
 // Task suites: imported for registration side effects only.
 import './dev/suites/task-1-identity-resolver';
 import './dev/suites/task-6-write-delete';
@@ -501,6 +502,7 @@ class ZotSeekPlugin {
       if (devMode) {
         Z.ZotSeek = Z.ZotSeek || {};
         Z.ZotSeek._selfTest = zotseekSelfTest;
+        Z.ZotSeek._pdfBenchmark = { exportPdfWorkerCollection };
 
         // Turn on debug capture too. Zotero.debug() output is discarded unless
         // both of these are set, so without it the harness runs but its logs --
