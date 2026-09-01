@@ -2,4 +2,4 @@ zotseek-menuTools-search =
     .label = ZotSeek
 
 zotseek-menuCollection-index =
-    .label = 为 ZotSeek 索引当前分类
+    .label = 检查并更新当前合集

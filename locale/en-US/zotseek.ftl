@@ -6,9 +6,9 @@
 
 zotseek-menu-findSimilar = Find Similar Documents
 zotseek-menu-openZotSeek = Open ZotSeek...
-zotseek-menu-indexSelected = Index Selected for ZotSeek
-zotseek-menu-indexCollection = Index Current Collection
-zotseek-menu-updateLibrary = Update Library Index
+zotseek-menu-indexSelected = Check and Update Selected Items
+zotseek-menu-indexCollection = Check and Update Current Collection
+zotseek-menu-updateLibrary = Check and Update Index
 zotseek-menu-removeFromIndex = Remove from ZotSeek Index
 zotseek-menu-findRelated = Find Related Documents
 
@@ -60,19 +60,11 @@ zotseek-pref-mcpServerLabel =
 zotseek-pref-mcpServerDesc = Lets MCP clients such as Claude Code run read-only semantic searches over your library. Everything stays on this computer (localhost only).
 zotseek-pref-mcpServerUrl = Connect with:
 zotseek-pref-mcpServerWarning = Zotero's local HTTP server is disabled. Enable "Allow other applications on this computer to communicate with Zotero" in Settings → Advanced.
-zotseek-pref-autoIndexing = Startup Incremental Sync
+zotseek-pref-autoIndexing = Automatic Maintenance
 zotseek-pref-autoIndexLabel =
-    .label = Sync index changes once when Zotero starts
-zotseek-pref-autoIndexDesc = Finds added, changed, and deleted items, and only processes changed content. It remains idle afterwards and does not monitor notes while you edit.
-zotseek-pref-checkNow =
-    .label = Run Incremental Sync Now
-zotseek-pref-checkNowRunning = Incrementally syncing ZotSeek index
-zotseek-pref-checkNowRunningDesc = Comparing Zotero items and notes with the local index…
-zotseek-pref-checkNowComplete = Incremental sync complete
-zotseek-pref-checkNowResult = Checked { $checked } items; updated { $changed }; removed { $removed } stale entries.
-zotseek-pref-checkNowSkipped = Incremental sync not run
-zotseek-pref-checkNowSkippedDesc = The operation was skipped. Resolve the prompt that was just shown, or try again later.
-zotseek-pref-checkNowFailed = Index check failed
+    .label = Check and update the index when Zotero starts
+zotseek-pref-autoIndexDesc = Checks the selected library scope at startup, updates added or changed items, removes records for items deleted from Zotero, and shows progress in the lower-right corner.
+zotseek-pref-checkNowResult = Checked { $checked } items; updated { $changed }; removed { $removed } records for items deleted from Zotero.
 zotseek-indexing-noteUpdate = Updating notes for { $count } item(s)…
 zotseek-indexing-noteUpdateComplete = Updated notes for { $count } item(s)
 zotseek-pref-indexScope = Index scope
@@ -80,7 +72,7 @@ zotseek-pref-indexScopeUser =
  .label = My Library
 zotseek-pref-indexScopeAll =
  .label = All libraries
-zotseek-pref-indexScopeDesc = Choose which libraries are included in startup and manual incremental sync.
+zotseek-pref-indexScopeDesc = This scope applies to the manual “Check and Update Index” action and automatic maintenance at startup.
 zotseek-pref-searchSettings = Search Settings
 zotseek-pref-resultsToShow = Results to show
 zotseek-pref-resultsToShowDesc = How many matches to display (5-100)
@@ -158,15 +150,17 @@ zotseek-pref-excludeBooksDesc = Books lack paper sections and are too long to in
 zotseek-pref-excludeTag = Exclude tag
 zotseek-pref-excludeTagDesc = Items with this tag will be skipped during indexing. Leave empty to disable.
 zotseek-pref-actions = Actions
+zotseek-pref-maintenanceRepair = Maintenance and Repair
 zotseek-pref-updateIndex =
-    .label = Index Unindexed Items
+    .label = Check and Update Index
 zotseek-pref-recommended = ✓ Recommended
-zotseek-pref-updateIndexDesc = Generate vectors only for items not yet indexed in the selected libraries. Use for first-time indexing or resuming an interrupted run; existing indexed content is not checked for changes.
+zotseek-pref-updateIndexDesc = Add missing items, update items whose metadata, notes, or indexing settings changed, skip unchanged items, and remove records for items deleted from Zotero. Changes to indexing settings may recompute existing items.
 zotseek-pref-rebuildIndex =
     .label = Rebuild Index
-zotseek-pref-rebuildIndexDesc = Clear and re-index all items with current settings. Use after changing indexing mode.
+zotseek-pref-rebuildIndexDesc = Clear and re-index all items with current settings. Use after changing indexing mode or chunking strategy, or when a full re-index is required.
 zotseek-pref-clearIndex =
     .label = Clear Index
+zotseek-pref-dangerZone = Danger Zone
 zotseek-pref-destructive = ⚠ Destructive
 zotseek-pref-clearIndexDesc = Remove all embeddings from the database. You will need to re-index afterwards.
 zotseek-pref-about = About
@@ -347,24 +341,24 @@ zotseek-indexing-selectCollection = Please select a collection first.
     (Click on a collection in the left sidebar)
 zotseek-indexing-emptyCollection = Collection "{ $name }" has no items to index.
 zotseek-indexing-emptyCollections = The { $count } selected collections have no items to index.
-zotseek-indexing-updateTitle = ZotSeek - Update Library Index
-zotseek-indexing-updateConfirmMsg = This will index all unindexed items in { $scope } for semantic search.
+zotseek-indexing-updateTitle = ZotSeek - Check and Update Index
+zotseek-indexing-updateConfirmMsg = Check and update the index for { $scope }? ZotSeek will add missing items, update items whose metadata, notes, or indexing settings changed, skip unchanged items, and remove records for items deleted from Zotero. Changes to indexing settings may recompute existing items using the current settings.
 zotseek-indexing-scopeUser = your personal library
 zotseek-indexing-scopeAll = all your libraries (personal + groups)
 
+zotseek-indexing-configChangeTitle = ZotSeek - Index Settings Changed
+zotseek-indexing-configChangeMessage = The indexing settings changed for { $affected } already indexed item(s) in { $scope }. Before you choose, ZotSeek will not delete records, update fingerprints, or write embeddings. How should this startup check proceed?
+zotseek-indexing-configChangeUpdate = Check and Update Index
+zotseek-indexing-configChangeRebuild = Rebuild Index
+zotseek-indexing-configChangeCancel = Cancel
+
 # Auto-resume prompt shown at startup when a previous bulk-index run was interrupted.
 zotseek-resume-title = ZotSeek - Resume Indexing
-zotseek-resume-message = A previous indexing run was interrupted. { $count } item(s) in { $scope } are still pending. Resume now?
+zotseek-resume-message = A previous indexing run was interrupted. ZotSeek will recheck all { $count } item(s) in { $scope } and resume unfinished or failed updates. Items that are already current will be skipped. If you cancel, automatic index maintenance will also be skipped for this startup. Resume now?
 zotseek-resume-scopeLibrary = your libraries
 zotseek-resume-scopeUserLibrary = your personal library
 zotseek-resume-scopeCollection = the "{ $name }" collection
 zotseek-resume-scopeCollections = { $count } selected collections
-
-    Items that are already indexed will be skipped.
-
-    This may take several minutes depending on the number of new items.
-
-    Continue?
 zotseek-indexing-noItemsSelected = No items selected
 zotseek-indexing-removedItems = Removed { $count } item(s) from index
 zotseek-indexing-notInIndex = Selected items were not in the index

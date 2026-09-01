@@ -204,4 +204,164 @@ describe('scoped index reconciliation', () => {
       indexFreshnessTracker.clearAll();
     }
   });
+
+  test('purges missing Zotero identities only when the explicit scope enables it', async () => {
+    const zotero = installZoteroStub({
+      'zotseek.indexScope': 'user',
+      'zotseek.indexingMode': 'abstract',
+      'zotseek.embeddingModel': 'multilingual-e5-base',
+      'zotseek.maxChunksPerPaper': 100,
+      'zotseek.excludeBooks': false,
+      'zotseek.excludeTag': '',
+    });
+    zotero.Libraries = {
+      userLibraryID: 1,
+      get: (libraryID: number) => libraryID === 1
+        ? { libraryID: 1, libraryType: 'user' }
+        : null,
+    };
+    zotero.Items = {
+      get: () => null,
+      getAsync: async () => [],
+      getIDFromLibraryAndKey: () => false,
+    };
+
+    let deleted = 0;
+    const store = {
+      getIndexedIdentities: async () => [{ libraryKey: 'user', itemKey: 'DELETED1' }],
+      deleteItem: async () => { deleted++; },
+    };
+    autoIndexManager.setVectorStore(store);
+
+    try {
+      const scoped = await autoIndexManager.reconcileItems([], {
+        fullIndexCallback: async () => [],
+        noteIndexCallback: async () => [],
+      });
+      assert.equal(scoped.removed, 0);
+      assert.equal(deleted, 0);
+
+      const library = await autoIndexManager.reconcileItems([], {
+        purgeMissingScope: 'user',
+        fullIndexCallback: async () => [],
+        noteIndexCallback: async () => [],
+      });
+      assert.equal(library.removed, 1);
+      assert.equal(deleted, 1);
+    } finally {
+      autoIndexManager.setVectorStore(null);
+    }
+  });
+
+  test('startup config cancel and rebuild decisions happen before every write', async () => {
+    const zotero = installZoteroStub({
+      'zotseek.indexScope': 'user',
+      'zotseek.indexingMode': 'abstract',
+      'zotseek.embeddingModel': 'multilingual-e5-base',
+      'zotseek.maxChunksPerPaper': 150,
+      'zotseek.excludeBooks': false,
+      'zotseek.excludeTag': '',
+    });
+    const paper = createPaper(1);
+    zotero.Libraries = {
+      userLibraryID: 1,
+      get: (libraryID: number) => libraryID === 1
+        ? { libraryID: 1, libraryType: 'user' }
+        : null,
+    };
+    zotero.Items = {
+      get: () => paper,
+      getAsync: async () => [],
+      getIDFromLibraryAndKey: () => paper.id,
+    };
+
+    let writes = 0;
+    let rebuilds = 0;
+    let hasStoredFingerprint = true;
+    let storedIndexingMode = 'abstract';
+    const store = {
+      getIndexedIdentities: async () => [{ libraryKey: 'user', itemKey: paper.key }],
+      getMetadata: async () => storedIndexingMode,
+      getStartupFingerprint: async () => hasStoredFingerprint
+        ? ({
+            libraryKey: 'user',
+            itemKey: paper.key,
+            modelId: 'multilingual-e5-base',
+            configFingerprint: 'old-config',
+            metadataFingerprint: 'old-metadata',
+            noteStateFingerprint: 'abstract',
+            noteContentFingerprint: 'abstract',
+            checkedAt: '2026-08-30T00:00:00.000Z',
+          })
+        : null,
+      deleteItem: async () => { writes++; },
+      setStartupFingerprint: async () => { writes++; },
+    };
+    autoIndexManager.setVectorStore(store);
+    autoIndexManager.setItemProvider(async () => [paper]);
+    autoIndexManager.setStartupRebuildCallback(async () => { rebuilds++; });
+    autoIndexManager.setIndexCallback(async items => items.map(item => item.id));
+    autoIndexManager.setNoteIndexCallback(async () => []);
+
+    const originalExtract = textExtractor.extractChunksFromItem;
+    (textExtractor as any).extractChunksFromItem = async () => ({
+      chunks: [{ type: 'summary', text: 'Summary 1' }],
+      wasTruncated: false,
+    });
+
+    try {
+      const restored = await autoIndexManager.restoreIndexedFreshness();
+      assert.equal(restored.outdated, 1);
+      assert.equal(writes, 0);
+
+      autoIndexManager.setStartupConfigChangeCallback(() => 'cancel');
+      const cancelled = await autoIndexManager.runNow({ promptForConfigChanges: true });
+      assert.equal(cancelled.skipped, true);
+      assert.equal(cancelled.checked, 1);
+      assert.equal(cancelled.outdated, 1);
+      assert.equal(writes, 0);
+      assert.equal(rebuilds, 0);
+
+      autoIndexManager.setStartupConfigChangeCallback(() => 'rebuild');
+      const rebuilt = await autoIndexManager.runNow({ promptForConfigChanges: true });
+      assert.equal(rebuilt.skipped, true);
+      assert.equal(rebuilt.outdated, 1);
+      assert.equal(writes, 0);
+      assert.equal(rebuilds, 1);
+
+      autoIndexManager.setStartupConfigChangeCallback(() => 'update');
+      const updated = await autoIndexManager.runNow({ promptForConfigChanges: true });
+      assert.equal(updated.skipped, false);
+      assert.equal(updated.rebuilt, 1);
+      assert.equal(updated.failed, 0);
+      assert.equal(writes, 1);
+      assert.equal(rebuilds, 1);
+
+      // A legacy index without per-item fingerprints can still prove that its
+      // persisted indexing mode differs. It must prompt and rebuild, not adopt
+      // the current mode by silently writing a baseline.
+      writes = 0;
+      hasStoredFingerprint = false;
+      storedIndexingMode = 'full';
+      autoIndexManager.setStartupConfigChangeCallback(() => 'cancel');
+      const legacyCancelled = await autoIndexManager.runNow({ promptForConfigChanges: true });
+      assert.equal(legacyCancelled.outdated, 1);
+      assert.equal(legacyCancelled.skipped, true);
+      assert.equal(writes, 0);
+
+      autoIndexManager.setStartupConfigChangeCallback(() => 'update');
+      const legacyUpdated = await autoIndexManager.runNow({ promptForConfigChanges: true });
+      assert.equal(legacyUpdated.rebuilt, 1);
+      assert.equal(legacyUpdated.failed, 0);
+      assert.equal(writes, 1);
+    } finally {
+      (textExtractor as any).extractChunksFromItem = originalExtract;
+      autoIndexManager.setStartupConfigChangeCallback(null);
+      autoIndexManager.setStartupRebuildCallback(null);
+      autoIndexManager.setIndexCallback(null);
+      autoIndexManager.setNoteIndexCallback(null);
+      autoIndexManager.setItemProvider(null);
+      autoIndexManager.setVectorStore(null);
+    }
+  });
 });

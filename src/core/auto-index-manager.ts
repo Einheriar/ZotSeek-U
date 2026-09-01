@@ -19,6 +19,7 @@ import {
 import { modelInputPolicyFingerprint, resolveModelInputPolicy } from './model-input-policy';
 import { textExtractor } from './text-extractor';
 import { isModifiedAfterVerification } from '../utils/timestamp';
+import { normalizeStoredIndexingMode } from '../utils/indexing-mode';
 import type { StartupFingerprint, TextSourceType } from './vector-store-sqlite';
 import {
   assessChangedNoteContent,
@@ -38,6 +39,10 @@ declare const Zotero: any;
 type IndexCallback = (items: any[]) => Promise<number[]>;
 type ItemProvider = () => Promise<any[]>;
 type CompletionCallback = (result: StartupCheckResult) => void | Promise<void>;
+type StartupConfigChangeCallback = (
+  context: StartupConfigChangeContext,
+) => StartupConfigChangeChoice | Promise<StartupConfigChangeChoice>;
+type StartupRebuildCallback = () => void | Promise<void>;
 
 type QuickSnapshot = {
   metadataFingerprint: string;
@@ -64,9 +69,17 @@ export type StartupCheckResult = {
   skipped: boolean;
 };
 
+export type StartupConfigChangeChoice = 'update' | 'rebuild' | 'cancel';
+
+export type StartupConfigChangeContext = {
+  affected: number;
+  checked: number;
+};
+
 export type ScopedReconciliationOptions = {
   allowWrites?: boolean;
-  purgeMissingOutsideScope?: boolean;
+  persistFreshness?: boolean;
+  purgeMissingScope?: 'user' | 'all' | false;
   fullIndexCallback?: IndexCallback;
   noteIndexCallback?: IndexCallback;
 };
@@ -89,6 +102,8 @@ export class AutoIndexManager {
   private noteIndexCallback: IndexCallback | null = null;
   private itemProvider: ItemProvider | null = null;
   private completionCallback: CompletionCallback | null = null;
+  private startupConfigChangeCallback: StartupConfigChangeCallback | null = null;
+  private startupRebuildCallback: StartupRebuildCallback | null = null;
   private vectorStore: any = null;
 
   private constructor() {}
@@ -100,20 +115,28 @@ export class AutoIndexManager {
     return AutoIndexManager.instance;
   }
 
-  public setIndexCallback(callback: IndexCallback): void {
+  public setIndexCallback(callback: IndexCallback | null): void {
     this.fullIndexCallback = callback;
   }
 
-  public setNoteIndexCallback(callback: IndexCallback): void {
+  public setNoteIndexCallback(callback: IndexCallback | null): void {
     this.noteIndexCallback = callback;
   }
 
-  public setItemProvider(provider: ItemProvider): void {
+  public setItemProvider(provider: ItemProvider | null): void {
     this.itemProvider = provider;
   }
 
-  public setCompletionCallback(callback: CompletionCallback): void {
+  public setCompletionCallback(callback: CompletionCallback | null): void {
     this.completionCallback = callback;
+  }
+
+  public setStartupConfigChangeCallback(callback: StartupConfigChangeCallback | null): void {
+    this.startupConfigChangeCallback = callback;
+  }
+
+  public setStartupRebuildCallback(callback: StartupRebuildCallback | null): void {
+    this.startupRebuildCallback = callback;
   }
 
   public setVectorStore(store: any): void {
@@ -148,7 +171,7 @@ export class AutoIndexManager {
     this.startupTimer = setTimeout(() => {
       this.startupTimer = null;
       if (!this.running || generation !== this.generation) return;
-      void this.runCheck();
+      void this.runCheck(true);
     }, STARTUP_DELAY_MS);
     this.logger.info('Startup index check scheduled; no realtime observers registered');
   }
@@ -172,13 +195,13 @@ export class AutoIndexManager {
   }
 
   /** Manual entry point; runs the same one-shot reconciliation immediately. */
-  public async runNow(): Promise<StartupCheckResult> {
+  public async runNow(options: { promptForConfigChanges?: boolean } = {}): Promise<StartupCheckResult> {
     if (this.startupTimer) {
       clearTimeout(this.startupTimer);
       this.startupTimer = null;
     }
     this.running = true;
-    return this.runCheck();
+    return this.runCheck(options.promptForConfigChanges === true);
   }
 
   private emptyResult(skipped = false): StartupCheckResult {
@@ -363,9 +386,9 @@ export class AutoIndexManager {
   }
 
   private async purgeMissingIndexedItems(
-    indexed: Array<{ libraryKey: string; itemKey: string }>
+    indexed: Array<{ libraryKey: string; itemKey: string }>,
+    scope: 'user' | 'all',
   ): Promise<number> {
-    const scope = Zotero.Prefs.get('zotseek.indexScope', true) === 'all' ? 'all' : 'user';
     let removed = 0;
     for (const identity of indexed) {
       if (scope === 'user' && identity.libraryKey !== 'user') continue;
@@ -384,7 +407,7 @@ export class AutoIndexManager {
     return this.reconcileProvidedItems(items, {
       ...options,
       allowWrites: options.allowWrites !== false,
-      purgeMissingOutsideScope: false,
+      purgeMissingScope: options.purgeMissingScope || false,
     });
   }
 
@@ -403,9 +426,14 @@ export class AutoIndexManager {
         const item = Zotero.Items.get(localID);
         if (item) items.push(item);
       }
+      // A later startup prompt must remain a true zero-write decision point.
+      // If any indexed item proves that configuration changed, restore only
+      // in-memory status and defer every fingerprint write until that choice.
+      const configChanges = await this.inspectStartupConfigChanges(items);
       return this.reconcileProvidedItems(items, {
         allowWrites: false,
-        purgeMissingOutsideScope: false,
+        persistFreshness: configChanges.affected === 0,
+        purgeMissingScope: false,
       });
     } catch (error: any) {
       this.logger.error(`Freshness restore failed: ${error?.message || error}`);
@@ -413,13 +441,87 @@ export class AutoIndexManager {
     }
   }
 
-  private async runCheck(): Promise<StartupCheckResult> {
+  private async inspectStartupConfigChanges(
+    suppliedItems: any[],
+  ): Promise<StartupConfigChangeContext> {
+    if (!this.vectorStore) return { affected: 0, checked: 0 };
+
+    const mode = getIndexingMode(Zotero) as FreshnessIndexingMode;
+    const configFingerprint = this.getConfigFingerprint(mode);
+    const modelId = getActiveModelId();
+    const storedMode = typeof this.vectorStore.getMetadata === 'function'
+      ? normalizeStoredIndexingMode(await this.vectorStore.getMetadata('indexingMode'))
+      : undefined;
+    const storedModeChanged = storedMode !== undefined && storedMode !== mode;
+    const indexedIdentities = await this.vectorStore.getIndexedIdentities(modelId);
+    const indexed = new Set(indexedIdentities.map((identity: any) =>
+      `${identity.libraryKey}\u0000${identity.itemKey}`));
+    const seen = new Set<string>();
+    let affected = 0;
+    let checked = 0;
+
+    for (const item of suppliedItems) {
+      if (!this.shouldProcess(item)) continue;
+      const identity = identityFromItem(item);
+      if (!identity) continue;
+      const key = freshnessIdentityKey(identity);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      checked++;
+      if (!indexed.has(key)) continue;
+      const stored = await this.vectorStore.getStartupFingerprint(
+        identity.libraryKey,
+        identity.itemKey,
+        modelId,
+      );
+      if ((stored && stored.configFingerprint !== configFingerprint) ||
+          (!stored && storedModeChanged)) {
+        affected++;
+      }
+    }
+
+    return { affected, checked };
+  }
+
+  private async runCheck(promptForConfigChanges = false): Promise<StartupCheckResult> {
     if (!this.itemProvider) return this.emptyResult(true);
     try {
+      const purgeMissingScope: 'user' | 'all' =
+        Zotero.Prefs.get('zotseek.indexScope', true) === 'all' ? 'all' : 'user';
       const items = await this.itemProvider();
+      if (promptForConfigChanges && this.startupConfigChangeCallback) {
+        const context = await this.inspectStartupConfigChanges(items);
+        if (context.affected > 0) {
+          let choice: StartupConfigChangeChoice = 'cancel';
+          try {
+            choice = await this.startupConfigChangeCallback(context);
+          } catch (error: any) {
+            this.logger.warn(`Startup configuration decision failed: ${error?.message || error}`);
+          }
+          if (choice === 'rebuild') {
+            if (this.startupRebuildCallback) {
+              try {
+                await this.startupRebuildCallback();
+              } catch (error: any) {
+                this.logger.error(`Startup rebuild failed: ${error?.message || error}`);
+              }
+            }
+            const result = this.emptyResult(true);
+            result.checked = context.checked;
+            result.outdated = context.affected;
+            return result;
+          }
+          if (choice !== 'update') {
+            const result = this.emptyResult(true);
+            result.checked = context.checked;
+            result.outdated = context.affected;
+            return result;
+          }
+        }
+      }
       return this.reconcileProvidedItems(items, {
         allowWrites: true,
-        purgeMissingOutsideScope: true,
+        purgeMissingScope,
       });
     } catch (error: any) {
       this.logger.error(`Startup item collection failed: ${error?.message || error}`);
@@ -432,6 +534,7 @@ export class AutoIndexManager {
     options: ScopedReconciliationOptions,
   ): Promise<StartupCheckResult> {
     const allowWrites = options.allowWrites !== false;
+    const persistFreshness = options.persistFreshness !== false;
     const fullIndexCallback = options.fullIndexCallback || this.fullIndexCallback;
     const noteIndexCallback = options.noteIndexCallback || this.noteIndexCallback;
     if (this.checking || !this.vectorStore ||
@@ -453,6 +556,10 @@ export class AutoIndexManager {
     const mode = getIndexingMode(Zotero) as FreshnessIndexingMode;
     const configFingerprint = this.getConfigFingerprint(mode);
     const modelId = getActiveModelId();
+    const storedMode = typeof this.vectorStore.getMetadata === 'function'
+      ? normalizeStoredIndexingMode(await this.vectorStore.getMetadata('indexingMode'))
+      : undefined;
+    const storedModeChanged = storedMode !== undefined && storedMode !== mode;
     const snapshots = new Map<number, { quick: QuickSnapshot; content?: ContentSnapshot }>();
 
     try {
@@ -469,8 +576,11 @@ export class AutoIndexManager {
       result.checked = items.length;
 
       const indexedIdentities = await this.vectorStore.getIndexedIdentities(modelId);
-      if (options.purgeMissingOutsideScope) {
-        result.removed = await this.purgeMissingIndexedItems(indexedIdentities);
+      if (options.purgeMissingScope) {
+        result.removed = await this.purgeMissingIndexedItems(
+          indexedIdentities,
+          options.purgeMissingScope,
+        );
       }
       const indexed = new Set(indexedIdentities.map((identity: any) =>
         `${identity.libraryKey}\u0000${identity.itemKey}`));
@@ -498,6 +608,11 @@ export class AutoIndexManager {
           identity.itemKey,
           modelId,
         );
+        if (!storedFingerprint && storedModeChanged) {
+          indexFreshnessTracker.markDirty(identity);
+          rebuildItems.push(item);
+          continue;
+        }
         const quickAssessment = assessQuickFreshness({
           indexed: true,
           mode,
@@ -510,7 +625,7 @@ export class AutoIndexManager {
         if (quickAssessment === 'current') {
           // Advance checkedAt only when the parent changed since verification,
           // avoiding writes for every unchanged item on every startup.
-          if (storedFingerprint &&
+          if (persistFreshness && storedFingerprint &&
               isModifiedAfterVerification(item.dateModified, storedFingerprint.checkedAt)) {
             await this.vectorStore.setStartupFingerprint({
               ...storedFingerprint,
@@ -527,9 +642,12 @@ export class AutoIndexManager {
           const content = await this.contentSnapshot(item, quick, mode);
           snapshots.set(item.id, { quick, content });
           if (assessChangedNoteContent(storedFingerprint, content.noteContentFingerprint) === 'current') {
-            await this.persistFingerprint(item, quick, content, configFingerprint, modelId);
+            if (persistFreshness) {
+              await this.persistFingerprint(item, quick, content, configFingerprint, modelId);
+            }
             indexFreshnessTracker.clearDirty(identity);
-            result.baselined++;
+            if (persistFreshness) result.baselined++;
+            else result.unchanged++;
           } else {
             indexFreshnessTracker.markDirty(identity);
             noteItems.push(item);
@@ -551,9 +669,12 @@ export class AutoIndexManager {
             indexFreshnessTracker.markDirty(identity);
             noteItems.push(item);
           } else {
-            await this.persistFingerprint(item, quick, content, configFingerprint, modelId);
+            if (persistFreshness) {
+              await this.persistFingerprint(item, quick, content, configFingerprint, modelId);
+            }
             indexFreshnessTracker.clearDirty(identity);
-            result.baselined++;
+            if (persistFreshness) result.baselined++;
+            else result.unchanged++;
           }
         }
 

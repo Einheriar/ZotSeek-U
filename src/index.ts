@@ -40,6 +40,7 @@ import { similarDocumentsWrapper } from './ui/similar-documents-wrapper';
 import { toolbarButton } from './ui/toolbar-button';
 import { itemTreeIndexColumn } from './ui/item-tree-column';
 import { preferencesManager } from './ui/preferences';
+import { openIndexConfigChangePrompt } from './ui/index-config-change-prompt';
 import { showServerModelConfigurationPromptIfNeeded } from './ui/server-model-prompt';
 import { identityFromItem, libraryKeyFromLocalID, localItemIDFromIdentity } from './core/identity-resolver';
 import {
@@ -80,6 +81,11 @@ import './dev/suites/task-42b-server-registry';
 import './dev/suites/task-42c-server-client';
 import './dev/suites/task-47-z10-db-hooks';
 import { collectCollectionItems } from './utils/collection-items';
+import {
+  BULK_INDEX_PENDING_PREF,
+  shouldClearBulkIndexScope,
+  shouldRecordBulkIndexScope,
+} from './utils/bulk-index-resume';
 
 /**
  * Don't bother compacting zotseek.sqlite on idle below this much reclaimable
@@ -96,6 +102,21 @@ type BulkScope =
   | { type: 'all-libraries' }
   | { type: 'collection'; libraryId: number; collectionId: number }
   | { type: 'collections'; collections: Array<{ libraryId: number; collectionId: number }> };
+
+function isBulkScope(value: unknown): value is BulkScope {
+  if (!value || typeof value !== 'object') return false;
+  const scope = value as any;
+  if (scope.type === 'all-libraries') return true;
+  if (scope.type === 'library') return Number.isFinite(scope.libraryId);
+  if (scope.type === 'collection') {
+    return Number.isFinite(scope.libraryId) && Number.isFinite(scope.collectionId);
+  }
+  if (scope.type === 'collections' && Array.isArray(scope.collections)) {
+    return scope.collections.every((entry: any) =>
+      Number.isFinite(entry?.libraryId) && Number.isFinite(entry?.collectionId));
+  }
+  return false;
+}
 
 interface PluginInfo {
   id: string;
@@ -464,13 +485,6 @@ class ZotSeekPlugin {
     // only marks parent items dirty while the user edits Zotero data.
     this.initAutoIndexManager();
 
-    // If a previous bulk indexing run was interrupted (cancel, crash, sleep,
-    // plugin reload), offer to resume. Runs after auto-index manager so its
-    // state is settled. Non-blocking — failure here doesn't fail startup.
-    this.checkAndOfferResume().catch((e: any) => {
-      this.logger.debug(`checkAndOfferResume failed: ${e?.message || e}`);
-    });
-
     // Piggyback on Zotero's idle database maintenance to compact our own
     // attached database (Zotero 10+; no-op on older versions).
     this.registerIdleCompaction();
@@ -492,9 +506,21 @@ class ZotSeekPlugin {
       this.logger.warn(`Could not register item-tree column: ${e?.message || e}`);
     }
 
+    let resumePromptHandled = false;
+    try {
+      // Resolve interrupted explicit work before scheduling automatic
+      // maintenance. Otherwise the 10-second startup timer can race the
+      // resume prompt and update a scope the user has just declined.
+      resumePromptHandled = await this.checkAndOfferResume();
+    } catch (e: any) {
+      this.logger.debug(`checkAndOfferResume failed: ${e?.message || e}`);
+    }
+
     try {
       const strategyWritable = await this.ensureChunkStrategyWritable(true);
-      if (strategyWritable && this.ensureOperationalModel(false)) autoIndexManager.start();
+      if (!resumePromptHandled && strategyWritable && this.ensureOperationalModel(false)) {
+        autoIndexManager.start();
+      }
     } catch (e: any) {
       this.logger.warn(`Could not verify chunk strategy version: ${e?.message || e}`);
       autoIndexManager.setChunkStrategyBlocked(true);
@@ -620,30 +646,31 @@ class ZotSeekPlugin {
   /**
    * If a previous bulk-indexing run was interrupted, offer the user a chance
    * to resume it. The intent (library or collection) was persisted by
-   * `indexItems` when the run started; we only ask if there are still
-   * un-indexed items in that scope.
+   * `indexItems` when the run started. The whole exact scope is reconciled so
+   * completed items can be skipped and stale or failed items can be retried.
    */
-  private async checkAndOfferResume(): Promise<void> {
-    if (!this.ensureOperationalModel(false)) return;
+  private async checkAndOfferResume(): Promise<boolean> {
+    if (!this.ensureOperationalModel(false)) return false;
     const Z = getZotero();
-    if (!Z) return;
+    if (!Z) return false;
 
-    const PENDING_PREF = 'zotseek.bulkIndex.pendingScope';
     let raw: string | undefined;
     try {
-      raw = Z.Prefs.get(PENDING_PREF, true) as string | undefined;
+      raw = Z.Prefs.get(BULK_INDEX_PENDING_PREF, true) as string | undefined;
     } catch {
-      return;
+      return false;
     }
-    if (!raw) return;
+    if (!raw) return false;
 
     let scope: BulkScope | null = null;
     try {
-      scope = JSON.parse(raw) as BulkScope;
+      const parsed = JSON.parse(raw);
+      if (!isBulkScope(parsed)) throw new Error('Invalid bulk scope');
+      scope = parsed;
     } catch {
       // Corrupt pref — clear it and move on
-      try { Z.Prefs.clear(PENDING_PREF, true); } catch { /* ignore */ }
-      return;
+      try { Z.Prefs.clear(BULK_INDEX_PENDING_PREF, true); } catch { /* ignore */ }
+      return false;
     }
 
     // Rebuild the candidate item list for the recorded scope, then ask the
@@ -673,47 +700,42 @@ class ZotSeekPlugin {
       }
     } catch (e: any) {
       this.logger.debug(`checkAndOfferResume: could not rebuild scope: ${e?.message || e}`);
-      try { Z.Prefs.clear(PENDING_PREF, true); } catch { /* ignore */ }
-      return;
+      // A transient Zotero collection/library read failure is retryable. Keep
+      // the marker and skip automatic maintenance for this launch so it cannot
+      // race or silently expand the interrupted explicit scope.
+      return true;
     }
 
-    // Filter out items that are already indexed — they're done, so no
-    // resume work is needed for them.
+    // Reconcile the complete recorded scope again. Existing coverage alone
+    // cannot prove that Metadata, Notes, or configuration are still current.
     await this.ensureStoreReady();
-    if (!this.vectorStore) return;
+    if (!this.vectorStore) return false;
 
-    const pending: any[] = [];
-    for (const item of items) {
-      if (!item?.isRegularItem?.()) continue;
-      if (hasExcludeTag(item)) continue;
-      const identity = identityFromItem(item);
-      if (!identity) continue;
-      const indexed = await this.vectorStore.isIndexedByIdentity(identity.libraryKey, identity.itemKey);
-      if (!indexed) pending.push(item);
+    const eligible = items.filter(item => item?.isRegularItem?.() && !hasExcludeTag(item));
+    if (eligible.length === 0) {
+      try { Z.Prefs.clear(BULK_INDEX_PENDING_PREF, true); } catch { /* ignore */ }
+      this.logger.info('Resume marker found but the recorded scope is now empty — clearing');
+      return false;
     }
-
-    if (pending.length === 0) {
-      // Nothing left to do — clear the marker silently.
-      try { Z.Prefs.clear(PENDING_PREF, true); } catch { /* ignore */ }
-      this.logger.info('Resume marker found but no pending items — clearing');
-      return;
-    }
-
     const win = Z.getMainWindow();
     const proceed = Services.prompt.confirm(
       win,
       getString('resume-title'),
-      getString('resume-message', { count: pending.length, scope: label })
+      getString('resume-message', { count: eligible.length, scope: label })
     );
 
     if (!proceed) {
-      try { Z.Prefs.clear(PENDING_PREF, true); } catch { /* ignore */ }
+      try { Z.Prefs.clear(BULK_INDEX_PENDING_PREF, true); } catch { /* ignore */ }
       this.logger.info('User declined resume — clearing marker');
-      return;
+      return true;
     }
 
-    this.logger.info(`Resuming bulk index for ${pending.length} items (${label})`);
-    await this.indexItems(pending, scope);
+    this.logger.info(`Resuming bulk index reconciliation for ${eligible.length} items (${label})`);
+    const result = await this.indexItems(eligible, scope);
+    if (result && shouldClearBulkIndexScope(result)) {
+      try { Z.Prefs.clear(BULK_INDEX_PENDING_PREF, true); } catch { /* ignore */ }
+    }
+    return true;
   }
 
   /** Initialize the one-shot startup reconciliation manager. */
@@ -731,11 +753,31 @@ class ZotSeekPlugin {
         ? this.zoteroAPI.getAllLibraryItems()
         : this.zoteroAPI.getLibraryItems(Z.Libraries.userLibraryID);
     });
+    autoIndexManager.setStartupConfigChangeCallback(({ affected }) => {
+      const Z = getZotero();
+      const scopeLabel = this.getIndexScope() === 'all'
+        ? getString('indexing-scopeAll')
+        : getString('indexing-scopeUser');
+      return openIndexConfigChangePrompt(
+        Services?.prompt,
+        Z?.getMainWindow(),
+        getString('indexing-configChangeTitle'),
+        getString('indexing-configChangeMessage', { affected, scope: scopeLabel }),
+        getString('indexing-configChangeUpdate'),
+        getString('indexing-configChangeRebuild'),
+        getString('indexing-configChangeCancel'),
+      );
+    });
+    autoIndexManager.setStartupRebuildCallback(async () => {
+      // The startup three-choice prompt already confirmed the destructive
+      // action, so reuse the rebuild body without opening a second prompt.
+      await this.performRebuild(false);
+    });
     autoIndexManager.setCompletionCallback(() => {
       // Baseline-only and unchanged validations do not write embeddings, but
       // they can still make an old-looking status current. Drop the entire
-      // UI cache so checked_at is visible immediately after either startup or
-      // a manual "Check for Updates Now" run.
+      // UI cache so checked_at is visible immediately after startup or an
+      // explicit scoped reconciliation.
       itemTreeIndexColumn.invalidate();
     });
 
@@ -1052,8 +1094,8 @@ class ZotSeekPlugin {
   /**
    * Public method to index all libraries (called from preferences pane)
    */
-  public indexLibrary(): void {
-    this.onIndexLibrary();
+  public indexLibrary(): Promise<void> {
+    return this.onIndexLibrary();
   }
 
   /** Run the same one-shot reconciliation used after startup. */
@@ -1095,6 +1137,13 @@ class ZotSeekPlugin {
 
     if (!confirmed) return;
 
+    await this.performRebuild(true);
+  }
+
+  /** Clear and rebuild, optionally retaining the existing scope confirmation. */
+  private async performRebuild(confirmIndexScope: boolean): Promise<void> {
+    if (!this.ensureOperationalModel(true)) return;
+
     // First clear the index
     const progressWindow = new StableProgressWindow({
       title: getString('indexing-rebuildingTitle'),
@@ -1115,7 +1164,7 @@ class ZotSeekPlugin {
         progressWindow.close();
 
         // Now trigger re-indexing of the entire library
-        await this.onIndexLibrary();
+        await this.onIndexLibrary(!confirmIndexScope);
       }
     } catch (error: any) {
       this.logger.error(`Failed to rebuild index: ${error}`);
@@ -1418,7 +1467,7 @@ class ZotSeekPlugin {
    * Index all libraries (user + groups)
    */
 
-  private async onIndexLibrary(): Promise<void> {
+  private async onIndexLibrary(skipConfirmation = false): Promise<void> {
     if (this.indexing) {
       this.showAlert(getString('indexing-alreadyInProgress'));
       return;
@@ -1447,13 +1496,15 @@ class ZotSeekPlugin {
     }
     this.logger.info(`Found ${items.length} items to index`);
 
-    const confirmed = Services.prompt.confirm(
-      Z.getMainWindow(),
-      getString('indexing-updateTitle'),
-      getString('indexing-updateConfirmMsg', { scope: scopeLabel })
-    );
+    if (!skipConfirmation) {
+      const confirmed = Services.prompt.confirm(
+        Z.getMainWindow(),
+        getString('indexing-updateTitle'),
+        getString('indexing-updateConfirmMsg', { scope: scopeLabel })
+      );
 
-    if (!confirmed) return;
+      if (!confirmed) return;
+    }
 
     await this.indexItems(items, bulkScope);
   }
@@ -1497,30 +1548,53 @@ class ZotSeekPlugin {
   }
 
   /** Assess freshness inside the caller's exact scope, then write only changes. */
-  private async indexItems(items: any[], scope?: BulkScope): Promise<void> {
-    if (!this.ensureOperationalModel(true)) return;
+  private async indexItems(
+    items: any[],
+    scope?: BulkScope,
+  ): Promise<import('./core/auto-index-manager').StartupCheckResult | null> {
+    if (!this.ensureOperationalModel(true)) return null;
     try {
-      if (!await this.ensureChunkStrategyWritable(true, true)) return;
+      if (!await this.ensureChunkStrategyWritable(true, true)) return null;
       await this.ensureStoreReady();
-      if (!this.vectorStore) return;
+      if (!this.vectorStore) return null;
       autoIndexManager.setVectorStore(this.vectorStore);
+      let pendingScopeRecorded = false;
+      if (shouldRecordBulkIndexScope(scope, items.length)) {
+        try {
+          getZotero()?.Prefs.set(BULK_INDEX_PENDING_PREF, JSON.stringify(scope), true);
+          pendingScopeRecorded = true;
+        } catch (e: any) {
+          this.logger.debug(`Could not persist resume scope: ${e?.message || e}`);
+        }
+      }
+      const purgeMissingScope = scope?.type === 'all-libraries'
+        ? 'all' as const
+        : scope?.type === 'library'
+          ? 'user' as const
+          : false;
       const result = await autoIndexManager.reconcileItems(items, {
+        purgeMissingScope,
         fullIndexCallback: candidates => this.indexItemsCandidates(candidates, scope),
         noteIndexCallback: candidates => this.indexNoteChangesSilent(candidates),
       });
-      if (result.skipped) return;
+      if (pendingScopeRecorded && shouldClearBulkIndexScope(result)) {
+        try { getZotero()?.Prefs.clear(BULK_INDEX_PENDING_PREF, true); } catch { /* ignore */ }
+      }
+      if (result.skipped) return result;
       const changed = result.indexedNew + result.rebuilt + result.notesUpdated;
       showQuickNotification(
         getString('pref-checkNowResult', {
           checked: result.checked,
           changed,
-          removed: 0,
+          removed: result.removed,
         }),
         result.failed > 0 ? 'fail' : 'success',
       );
+      return result;
     } catch (error: any) {
       this.logger.error(`Scoped reconciliation failed: ${error?.message || error}`);
       this.showAlert(getString('indexing-failed', { error: error?.message || error }));
+      return null;
     }
   }
 
@@ -1542,18 +1616,6 @@ class ZotSeekPlugin {
     const Z = getZotero();
     const indexingModelId = getActiveModelId();
 
-    // Persist intent for auto-resume after crash/sleep. Only bother for runs
-    // big enough that resuming saves real time — single-item indexing doesn't
-    // need to survive a restart.
-    const PENDING_PREF = 'zotseek.bulkIndex.pendingScope';
-    const RESUME_THRESHOLD = 25;
-    if (scope && items.length >= RESUME_THRESHOLD) {
-      try {
-        Z?.Prefs.set(PENDING_PREF, JSON.stringify(scope), true);
-      } catch (e: any) {
-        this.logger.debug(`Could not persist resume scope: ${e?.message || e}`);
-      }
-    }
     const indexStartTime = Date.now(); // Track total indexing time
 
     // Checkpoint batch size - save every N items to prevent data loss.
@@ -1773,9 +1835,18 @@ class ZotSeekPlugin {
         progressWindow.addCheckpointLine(getString('indexing-checkpoint', { current: batchNumber, total: totalBatches, items: batchSuccessfulIds.length, chunks: batchEmbeddings.length }));
       }
 
-      // Store the indexing mode in metadata so we know what mode was used to build the index
-      await this.vectorStore!.setMetadata('indexingMode', indexingMode);
-      this.logger.info(`Stored indexing mode '${indexingMode}' in metadata`);
+      // Global legacy metadata is only safe to advance when every candidate
+      // completed. Per-item fingerprints preserve mixed progress, but an old
+      // fingerprint-less item still relies on this value after a restart.
+      if (successfulItemIds.length === itemsToIndex.length) {
+        await this.vectorStore!.setMetadata('indexingMode', indexingMode);
+        this.logger.info(`Stored indexing mode '${indexingMode}' in metadata`);
+      } else {
+        this.logger.warn(
+          `Indexing mode metadata remains unchanged because only ` +
+          `${successfulItemIds.length}/${itemsToIndex.length} candidates completed`,
+        );
+      }
 
       // Calculate and store indexing duration
       const indexDurationMs = Date.now() - indexStartTime;
@@ -1817,11 +1888,6 @@ class ZotSeekPlugin {
 
       progressWindow.complete(getString('indexing-completeSuccess'), true);
 
-      // Clear the resume marker only when every classified candidate was
-      // atomically replaced. Missing embeddings must remain retryable.
-      if (successfulItemIds.length === itemsToIndex.length) {
-        try { Z?.Prefs.clear(PENDING_PREF, true); } catch { /* ignore */ }
-      }
       return successfulItemIds;
 
     } catch (error: any) {
@@ -1830,7 +1896,9 @@ class ZotSeekPlugin {
         showQuickNotification(getString('indexing-cancelled'), 'default', 3000);
         // Explicit cancel = user's choice. Don't prompt them to resume on
         // next startup; they can re-trigger Index Library themselves.
-        try { Z?.Prefs.clear(PENDING_PREF, true); } catch { /* ignore */ }
+        if (scope) {
+          try { Z?.Prefs.clear(BULK_INDEX_PENDING_PREF, true); } catch { /* ignore */ }
+        }
       } else {
         this.logger.error(`Indexing failed: ${error}`);
         progressWindow.error(getString('indexing-failed', { error: error.message || error }), false);

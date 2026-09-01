@@ -168,19 +168,39 @@
 <groupbox>
   <label><html:h2 data-l10n-id="zotseek-pref-actions">Actions</html:h2></label>
 
-  <!-- Index unindexed items - Primary action -->
+  <!-- Index scope used by both the manual action and startup maintenance -->
+  <html:div style="margin-bottom: 8px; display: flex; align-items: center; gap: 8px;">
+    <html:label data-l10n-id="zotseek-pref-indexScope" for="zotseek-pref-indexScope" style="color: var(--zotseek-text-primary); font-size: 12px;">Index scope:</html:label>
+    <menulist id="zotseek-pref-indexScope" native="true">
+      <menupopup>
+        <menuitem label="My Library" value="user" data-l10n-id="zotseek-pref-indexScopeUser" />
+        <menuitem label="All libraries" value="all" data-l10n-id="zotseek-pref-indexScopeAll" />
+      </menupopup>
+    </menulist>
+  </html:div>
+  <html:p data-l10n-id="zotseek-pref-indexScopeDesc" style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 0 0 8px 0;">
+    This scope applies to the manual check-and-update action and automatic maintenance at startup.
+  </html:p>
+
+  <!-- Check and update index - Primary action -->
   <vbox class="zotseek-action-primary" style="border-radius: 6px; padding: 12px; margin-bottom: 8px; border-width: 1px; border-style: solid;">
     <hbox align="center">
       <button id="zotseek-update-index"
-              label="Index Unindexed Items"
+              label="Check and Update Index"
               data-l10n-id="zotseek-pref-updateIndex"
               style="font-weight: 600;" />
       <html:span data-l10n-id="zotseek-pref-recommended" style="margin-left: 8px; color: var(--zotseek-green); font-size: 11px; font-weight: 500;">✓ Recommended</html:span>
     </hbox>
     <html:p data-l10n-id="zotseek-pref-updateIndexDesc" style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 6px 0 0 0;">
-      Generate vectors only for items that have not been indexed. Existing indexed content is not checked for changes.
+      Add missing items, update items whose metadata, notes, or indexing settings changed, skip unchanged items, and remove records for items deleted from Zotero. Changes to indexing settings may recompute existing items.
     </html:p>
   </vbox>
+
+</groupbox>
+
+<!-- Maintenance and repair -->
+<groupbox>
+  <label><html:h2 data-l10n-id="zotseek-pref-maintenanceRepair">Maintenance and Repair</html:h2></label>
 
   <!-- Rebuild Index -->
   <vbox class="zotseek-action-secondary" style="border-radius: 6px; padding: 12px; margin-bottom: 8px; border-width: 1px; border-style: solid;">
@@ -319,37 +339,17 @@
 
 </groupbox>
 
-<!-- Startup incremental index reconciliation -->
+<!-- Startup automatic index maintenance -->
 <groupbox>
-  <label><html:h2 data-l10n-id="zotseek-pref-autoIndexing">Startup Incremental Sync</html:h2></label>
+  <label><html:h2 data-l10n-id="zotseek-pref-autoIndexing">Automatic Maintenance</html:h2></label>
 
   <checkbox id="zotseek-pref-autoIndex"
-            label="Sync index changes once when Zotero starts"
+            label="Check and update the index when Zotero starts"
             data-l10n-id="zotseek-pref-autoIndexLabel"
             native="true"
             checked="false" />
   <html:p style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 4px 0 0 24px;">
-    <html:span data-l10n-id="zotseek-pref-autoIndexDesc">Finds added, changed, and deleted items, then remains idle. ZotSeek does not monitor notes while you edit.</html:span>
-  </html:p>
-
-  <html:p style="margin: 8px 0 0 24px;">
-    <button id="zotseek-pref-check-now"
-            label="Run Incremental Sync Now"
-            data-l10n-id="zotseek-pref-checkNow"
-            native="true" />
-  </html:p>
-
-  <html:div style="margin: 12px 0 0 24px; display: flex; align-items: center; gap: 8px;">
-    <html:label data-l10n-id="zotseek-pref-indexScope" for="zotseek-pref-indexScope" style="color: var(--zotseek-text-primary); font-size: 12px;">Index scope:</html:label>
-    <menulist id="zotseek-pref-indexScope" native="true">
-      <menupopup>
-        <menuitem label="My Library" value="user" data-l10n-id="zotseek-pref-indexScopeUser" />
-        <menuitem label="All libraries" value="all" data-l10n-id="zotseek-pref-indexScopeAll" />
-      </menupopup>
-    </menulist>
-  </html:div>
-  <html:p style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 4px 0 0 24px;">
-    <html:span data-l10n-id="zotseek-pref-indexScopeDesc">Choose which libraries are included in startup and manual incremental sync.</html:span>
+    <html:span data-l10n-id="zotseek-pref-autoIndexDesc">Checks the selected library scope at startup, updates added or changed items, removes records for items deleted from Zotero, and shows progress in the lower-right corner.</html:span>
   </html:p>
 </groupbox>
 
@@ -476,6 +476,7 @@
 
 <!-- Clear Index (Danger) -->
 <groupbox>
+  <label><html:h2 data-l10n-id="zotseek-pref-dangerZone">Danger Zone</html:h2></label>
   <!-- Clear Index - Danger -->
   <vbox class="zotseek-action-danger" style="border-radius: 6px; padding: 12px; border-width: 1px; border-style: solid;">
     <hbox align="center">

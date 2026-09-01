@@ -29,7 +29,6 @@ import {
 import { vectorStoreSQLite } from '../core/vector-store-sqlite';
 import { embeddingPipeline } from '../core/embedding-pipeline';
 import { resolveModelInputPolicy } from '../core/model-input-policy';
-import { getManualIndexCheckPresentation } from '../utils/index-check-presentation';
 import {
   getLastServerModelConfigLoadResult,
   getServerModelConfigPath,
@@ -759,7 +758,7 @@ class PreferencesManager {
         const checked = autoIndexCheckbox.checked;
         Z.Prefs.set('zotseek.autoIndex', checked, true);
         this.logger.info(`Auto-index changed to: ${checked}`);
-        // Apply the one-shot startup synchronization preference.
+        // Apply the one-shot startup maintenance preference.
         autoIndexManager.reload();
       });
     }
@@ -815,11 +814,6 @@ class PreferencesManager {
     const updateBtn = doc.getElementById('zotseek-update-index');
     if (updateBtn) {
       updateBtn.addEventListener('command', () => this.updateIndex());
-    }
-
-    const checkNowBtn = doc.getElementById('zotseek-pref-check-now');
-    if (checkNowBtn) {
-      checkNowBtn.addEventListener('command', () => { void this.checkForUpdatesNow(); });
     }
 
     const compactBtn = doc.getElementById('zotseek-compact-db');
@@ -1041,47 +1035,6 @@ class PreferencesManager {
     if (Z?.ZotSeek) {
       Z.ZotSeek.indexLibrary();
       // Stats will be refreshed after indexing completes
-    }
-  }
-
-  private async checkForUpdatesNow(): Promise<void> {
-    const Z = getZotero();
-    if (!Z?.ZotSeek?.checkForIndexUpdates) return;
-
-    // Reject an incomplete Server selection before creating a progress window.
-    // The shared modal already explains the actionable reason and offers the file path.
-    if (showServerModelConfigurationPromptIfNeeded()) return;
-
-    const pw = new Z.ProgressWindow({ closeOnClick: true });
-    pw.changeHeadline(getString('pref-checkNowRunning'));
-    pw.addDescription(getString('pref-checkNowRunningDesc'));
-    pw.show();
-    try {
-      const result = await Z.ZotSeek.checkForIndexUpdates();
-      const presentation = getManualIndexCheckPresentation(result);
-      if (presentation.kind === 'skipped') {
-        // Avoid retaining the stale "comparing" description in the skipped notice.
-        if (typeof pw.close === 'function') pw.close();
-        else pw.startCloseTimer(1);
-        const skippedWindow = new Z.ProgressWindow({ closeOnClick: true });
-        skippedWindow.changeHeadline(getString('pref-checkNowSkipped'));
-        skippedWindow.addDescription(getString('pref-checkNowSkippedDesc'));
-        skippedWindow.show();
-        skippedWindow.startCloseTimer(5000);
-        return;
-      }
-      pw.changeHeadline(getString('pref-checkNowComplete'));
-      pw.addDescription(getString('pref-checkNowResult', {
-        checked: presentation.checked,
-        changed: presentation.changed,
-        removed: presentation.removed,
-      }));
-      pw.startCloseTimer(5000);
-      await this.loadStatsAndCheckMismatch();
-    } catch (error: any) {
-      pw.changeHeadline(getString('pref-checkNowFailed'));
-      pw.addDescription(error?.message || String(error));
-      pw.startCloseTimer(5000);
     }
   }
 

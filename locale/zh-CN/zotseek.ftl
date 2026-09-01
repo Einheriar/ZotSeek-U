@@ -6,9 +6,9 @@
 
 zotseek-menu-findSimilar = 查找相似文献
 zotseek-menu-openZotSeek = 打开 ZotSeek...
-zotseek-menu-indexSelected = 为 ZotSeek 索引选中项
-zotseek-menu-indexCollection = 索引当前合集
-zotseek-menu-updateLibrary = 更新文献库索引
+zotseek-menu-indexSelected = 检查并更新所选条目
+zotseek-menu-indexCollection = 检查并更新当前合集
+zotseek-menu-updateLibrary = 检查并更新索引
 zotseek-menu-removeFromIndex = 从 ZotSeek 索引中移除
 zotseek-menu-findRelated = 查找相关文献
 
@@ -60,19 +60,11 @@ zotseek-pref-mcpServerLabel =
 zotseek-pref-mcpServerDesc = 让 Claude Code 等 MCP 客户端对您的文献库进行只读语义搜索。所有数据均保留在本机（仅限 localhost）。
 zotseek-pref-mcpServerUrl = 连接方式：
 zotseek-pref-mcpServerWarning = Zotero 的本地 HTTP 服务器已禁用。请在“设置 → 高级”中启用“允许本机上的其他应用程序与 Zotero 通信”。
-zotseek-pref-autoIndexing = 启动时增量同步
+zotseek-pref-autoIndexing = 自动维护
 zotseek-pref-autoIndexLabel =
-    .label = 每次 Zotero 启动后同步一次索引变化
-zotseek-pref-autoIndexDesc = 检查新增、修改和删除的条目，只重新处理发生变化的内容。完成后保持空闲，编辑笔记时 ZotSeek 不监听。
-zotseek-pref-checkNow =
-    .label = 立即执行增量同步
-zotseek-pref-checkNowRunning = 正在增量同步 ZotSeek 索引
-zotseek-pref-checkNowRunningDesc = 正在比较 Zotero 条目、笔记与本地索引……
-zotseek-pref-checkNowComplete = 增量同步完成
-zotseek-pref-checkNowResult = 已检查 { $checked } 个条目；更新 { $changed } 个；清理 { $removed } 个失效条目。
-zotseek-pref-checkNowSkipped = 增量同步未执行
-zotseek-pref-checkNowSkippedDesc = 当前操作已跳过。请先处理刚刚显示的提示，或稍后重试。
-zotseek-pref-checkNowFailed = 索引检查失败
+    .label = Zotero 启动时自动检查并更新索引
+zotseek-pref-autoIndexDesc = Zotero 启动时检查所选文库范围，自动更新新增或变化的条目，清理已从 Zotero 删除的记录，并在右下角显示进度。
+zotseek-pref-checkNowResult = 已检查 { $checked } 个条目；更新 { $changed } 个；清理了因 Zotero 删除而失效的 { $removed } 条记录。
 zotseek-indexing-noteUpdate = 正在更新 { $count } 个条目的笔记……
 zotseek-indexing-noteUpdateComplete = 已更新 { $count } 个条目的笔记
 zotseek-pref-indexScope = 索引范围
@@ -80,7 +72,7 @@ zotseek-pref-indexScopeUser =
  .label = 我的文献库
 zotseek-pref-indexScopeAll =
  .label = 所有文献库
-zotseek-pref-indexScopeDesc = 选择启动增量同步和手动增量同步时包含哪些文献库。
+zotseek-pref-indexScopeDesc = 此范围同时用于手动“检查并更新索引”和 Zotero 启动时的自动维护。
 zotseek-pref-searchSettings = 搜索设置
 zotseek-pref-resultsToShow = 显示结果数
 zotseek-pref-resultsToShowDesc = 显示多少个匹配结果（5-100）
@@ -158,15 +150,17 @@ zotseek-pref-excludeBooksDesc = 书籍缺乏论文结构且太长，不适合索
 zotseek-pref-excludeTag = 排除标签
 zotseek-pref-excludeTagDesc = 带有此标签的条目将在索引时被跳过。留空以禁用。
 zotseek-pref-actions = 操作
+zotseek-pref-maintenanceRepair = 维护与修复
 zotseek-pref-updateIndex =
-    .label = 补齐未索引条目
+    .label = 检查并更新索引
 zotseek-pref-recommended = ✓ 推荐
-zotseek-pref-updateIndexDesc = 仅为所选文献库中尚未建立索引的条目生成向量。适合首次索引或中断后继续，不检查已索引内容是否变化。
+zotseek-pref-updateIndexDesc = 添加缺失条目，更新元数据、笔记或索引设置发生变化的条目，跳过未变化条目，并清理已从 Zotero 删除的记录。索引设置变化可能会使已有条目按当前设置重新计算。
 zotseek-pref-rebuildIndex =
     .label = 重建索引
-zotseek-pref-rebuildIndexDesc = 清除并使用当前设置重新索引所有条目。更改索引模式后使用。
+zotseek-pref-rebuildIndexDesc = 清除并使用当前设置重新索引所有条目。更改索引模式或分块策略，或明确需要全量重算时使用。
 zotseek-pref-clearIndex =
     .label = 清除索引
+zotseek-pref-dangerZone = 危险操作
 zotseek-pref-destructive = ⚠ 有破坏性
 zotseek-pref-clearIndexDesc = 从数据库中删除所有嵌入向量。之后需要重新索引。
 zotseek-pref-about = 关于
@@ -347,24 +341,24 @@ zotseek-indexing-selectCollection = 请先选择一个合集。
     （在左侧边栏中点击一个合集）
 zotseek-indexing-emptyCollection = 合集"{ $name }"没有可索引的条目。
 zotseek-indexing-emptyCollections = 选定的 { $count } 个合集没有可索引的条目。
-zotseek-indexing-updateTitle = ZotSeek - 更新文献库索引
-zotseek-indexing-updateConfirmMsg = 这将为{ $scope }中未索引的条目建立语义搜索索引。
+zotseek-indexing-updateTitle = ZotSeek - 检查并更新索引
+zotseek-indexing-updateConfirmMsg = 要检查并更新{ $scope }的索引吗？ZotSeek 将添加缺失条目，更新元数据、笔记或索引设置发生变化的条目，跳过未变化条目，并清理已从 Zotero 删除的记录。索引设置变化可能会使已有条目按当前设置重新计算。
 zotseek-indexing-scopeUser = 您的个人文献库
 zotseek-indexing-scopeAll = 您的所有文献库（个人 + 群组）
 
+zotseek-indexing-configChangeTitle = ZotSeek - 索引设置已变化
+zotseek-indexing-configChangeMessage = { $scope }中有 { $affected } 个已有索引的条目受到索引设置变化影响。在您选择操作前，ZotSeek 不会删除记录、更新指纹或写入嵌入向量。要如何继续本次启动检查？
+zotseek-indexing-configChangeUpdate = 检查并更新索引
+zotseek-indexing-configChangeRebuild = 重建索引
+zotseek-indexing-configChangeCancel = 取消
+
 # 启动时检测到先前中断的索引任务时显示的恢复提示。
 zotseek-resume-title = ZotSeek - 恢复索引
-zotseek-resume-message = 上一次索引被中断。{ $scope }中仍有 { $count } 个条目待处理。现在恢复？
+zotseek-resume-message = 上一次索引被中断。ZotSeek 将重新检查{ $scope }中的全部 { $count } 个条目，并继续处理未完成或失败的更新。已经是最新状态的条目将被跳过。如果取消，本次 Zotero 启动也不再执行自动索引维护。现在恢复吗？
 zotseek-resume-scopeLibrary = 您的所有文献库
 zotseek-resume-scopeUserLibrary = 您的个人文献库
-zotseek-resume-scopeCollection = "{ $name }" 收藏夹
+zotseek-resume-scopeCollection = "{ $name }" 合集
 zotseek-resume-scopeCollections = 选定的 { $count } 个合集
-
-    已索引的条目将被跳过。
-
-    根据新条目数量，这可能需要几分钟。
-
-    继续？
 zotseek-indexing-noItemsSelected = 未选择条目
 zotseek-indexing-removedItems = 已从索引中移除 { $count } 个条目
 zotseek-indexing-notInIndex = 选中的条目不在索引中
