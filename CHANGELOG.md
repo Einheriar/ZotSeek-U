@@ -4,6 +4,16 @@ All notable changes to ZotSeek - Semantic Search for Zotero will be documented i
 
 ## Unreleased
 
+### Added
+- **PDF main-text indexing strategy v1.** Full indexing now selects only a
+  unique high-confidence main PDF, reads physical pages through Zotero
+  PDFWorker, removes high-confidence reference regions and repeated page
+  furniture, and packs compatible short paragraphs only within the same page.
+  Supplement and unknown attachments abstain instead of entering through a
+  first-readable fallback. All three preprocessing components remain
+  independently replayable, default on in production, and are versioned by
+  chunk strategy 6.
+
 ### Changed
 - Server-backed embedding models now use an advanced JSON template in the
   Zotero profile. The template explicitly declares connection details,

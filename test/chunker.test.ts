@@ -236,6 +236,10 @@ describe('preference reading', () => {
 });
 
 describe('persisted chunk strategy state', () => {
+  test('uses strategy 6 for the PDF main-text production pipeline', () => {
+    assert.equal(CHUNK_STRATEGY_VERSION, 6);
+  });
+
   test('initializes an empty partition even when it has no marker', () => {
     assert.equal(assessChunkStrategyState(0, undefined), 'initialize');
   });

@@ -9,6 +9,10 @@ type PageResult = { totalPages?: number; text?: string } | Error;
 function installPdfScenario(
   attachmentIds: number[],
   pageResults: Record<number, Record<number, PageResult>>,
+  options: {
+    parentTitle?: string;
+    fileNames?: Record<number, string>;
+  } = {},
 ) {
   const zotero = installZoteroStub();
   const calls: Array<{ attachmentId: number; pageIndex: number }> = [];
@@ -17,10 +21,15 @@ function installPdfScenario(
     id: 1,
     isRegularItem: () => true,
     getAttachments: () => attachmentIds,
+    getField: (field: string) => field === 'title'
+      ? options.parentTitle ?? 'Target article title'
+      : '',
   };
   const attachments = new Map(attachmentIds.map((id) => [id, {
     id,
+    key: `ATT${id}`,
     isPDFAttachment: () => true,
+    getFilePath: async () => `C:\\Zotero\\storage\\ATT${id}\\${options.fileNames?.[id] ?? `paper-${id}.pdf`}`,
   }]));
   zotero.Items.get = (id: number) => id === parent.id ? parent : attachments.get(id);
   zotero.Fulltext = {
@@ -41,6 +50,7 @@ function installPdfScenario(
   return {
     calls,
     getFulltextCalls: () => fulltextCalls,
+    attachment: (id: number) => attachments.get(id)!,
   };
 }
 
@@ -53,13 +63,15 @@ test('discovers physical pages from the first PDFWorker response without Fulltex
     },
   });
 
-  const pages = await new ZoteroAPI().getFullTextByPage(1);
+  const result = await new ZoteroAPI().getPdfWorkerTextByAttachment(scenario.attachment(10) as any);
 
-  assert.deepEqual(pages, [
+  assert.deepEqual(result.pages, [
     { pageNumber: 1, text: 'first page' },
     { pageNumber: 2, text: '' },
     { pageNumber: 3, text: 'third page' },
   ]);
+  assert.equal(result.status, 'ok');
+  assert.equal(result.pagesTotal, 3);
   assert.deepEqual(scenario.calls, [
     { attachmentId: 10, pageIndex: 0 },
     { attachmentId: 10, pageIndex: 1 },
@@ -69,7 +81,7 @@ test('discovers physical pages from the first PDFWorker response without Fulltex
 });
 
 test('preserves a failed physical page slot and continues extracting later pages', async () => {
-  installPdfScenario([10], {
+  const scenario = installPdfScenario([10], {
     10: {
       0: { totalPages: 3, text: 'first page' },
       1: new Error('page failed'),
@@ -77,47 +89,33 @@ test('preserves a failed physical page slot and continues extracting later pages
     },
   });
 
-  assert.deepEqual(await new ZoteroAPI().getFullTextByPage(1), [
+  const result = await new ZoteroAPI().getPdfWorkerTextByAttachment(scenario.attachment(10) as any);
+  assert.deepEqual(result.pages, [
     { pageNumber: 1, text: 'first page' },
     { pageNumber: 2, text: '' },
     { pageNumber: 3, text: 'third page' },
   ]);
+  assert.equal(result.status, 'degraded');
 });
 
-test('keeps a PDF when its first page is whitespace but a later page contains text', async () => {
+test('selects a main PDF when its first page is whitespace but its second page has article evidence', async () => {
   const scenario = installPdfScenario([10, 20], {
     10: {
       0: { totalPages: 2, text: '\f \r\n' },
-      1: { totalPages: 2, text: 'text from the second physical page' },
+      1: { totalPages: 2, text: 'Research Article\nTarget article title\nAbstract\nIntroduction' },
     },
     20: {
-      0: { totalPages: 1, text: 'text from a later attachment' },
+      0: { totalPages: 1, text: 'Supporting Information\nSupplementary methods' },
     },
+  }, {
+    fileNames: { 20: 'paper_mmc1.pdf' },
   });
 
-  assert.deepEqual(await new ZoteroAPI().getFullTextByPage(1), [
+  const selected = await new ZoteroAPI().getSelectedMainPdfText(1);
+  assert.equal(selected?.selection.selectedAttachmentId, 10);
+  assert.deepEqual(selected?.selectedText?.pages, [
     { pageNumber: 1, text: '\f \r\n' },
-    { pageNumber: 2, text: 'text from the second physical page' },
-  ]);
-  assert.deepEqual(scenario.calls, [
-    { attachmentId: 10, pageIndex: 0 },
-    { attachmentId: 10, pageIndex: 1 },
-  ]);
-});
-
-test('skips an empty PDF and keeps the first later attachment that contains text', async () => {
-  const scenario = installPdfScenario([10, 20], {
-    10: {
-      0: { totalPages: 2, text: '' },
-      1: { totalPages: 2, text: '   ' },
-    },
-    20: {
-      0: { totalPages: 1, text: 'text from second PDF' },
-    },
-  });
-
-  assert.deepEqual(await new ZoteroAPI().getFullTextByPage(1), [
-    { pageNumber: 1, text: 'text from second PDF' },
+    { pageNumber: 2, text: 'Research Article\nTarget article title\nAbstract\nIntroduction' },
   ]);
   assert.deepEqual(scenario.calls, [
     { attachmentId: 10, pageIndex: 0 },
@@ -126,22 +124,48 @@ test('skips an empty PDF and keeps the first later attachment that contains text
   ]);
 });
 
+test('does not use first-readable fallback and selects the only high-confidence main', async () => {
+  const scenario = installPdfScenario([10, 20], {
+    10: {
+      0: { totalPages: 2, text: '' },
+      1: { totalPages: 2, text: '   ' },
+    },
+    20: {
+      0: { totalPages: 1, text: 'Research Article\nTarget article title\nAbstract\nIntroduction' },
+    },
+  });
+
+  const selected = await new ZoteroAPI().getSelectedMainPdfText(1);
+  assert.equal(selected?.selection.selectedAttachmentId, 20);
+  assert.equal(selected?.selection.predictions[0].role, 'unknown');
+  assert.deepEqual(scenario.calls, [
+    { attachmentId: 10, pageIndex: 0 },
+    { attachmentId: 10, pageIndex: 1 },
+    { attachmentId: 20, pageIndex: 0 },
+  ]);
+});
+
 test('continues to another PDF when the first attachment probe fails', async () => {
-  installPdfScenario([10, 20], {
+  const scenario = installPdfScenario([10, 20], {
     10: {
       0: new Error('probe failed'),
     },
     20: {
-      0: { totalPages: 1, text: 'usable text' },
+      0: { totalPages: 1, text: 'Research Article\nTarget article title\nAbstract' },
     },
   });
 
-  assert.deepEqual(await new ZoteroAPI().getFullTextByPage(1), [
-    { pageNumber: 1, text: 'usable text' },
+  const selected = await new ZoteroAPI().getSelectedMainPdfText(1);
+  assert.equal(selected?.selection.selectedAttachmentId, 20);
+  assert.equal(selected?.selection.predictions[0].parserStatus, 'failed');
+  assert.equal(selected?.selectedText?.pages[0].pageNumber, 1);
+  assert.deepEqual(scenario.calls, [
+    { attachmentId: 10, pageIndex: 0 },
+    { attachmentId: 20, pageIndex: 0 },
   ]);
 });
 
-test('returns null when every PDF is empty or has an invalid page count', async () => {
+test('abstains when every PDF is empty or has an invalid page count', async () => {
   installPdfScenario([10, 20], {
     10: {
       0: { totalPages: 0, text: '' },
@@ -152,5 +176,30 @@ test('returns null when every PDF is empty or has an invalid page count', async 
     },
   });
 
-  assert.equal(await new ZoteroAPI().getFullTextByPage(1), null);
+  const selected = await new ZoteroAPI().getSelectedMainPdfText(1);
+  assert.equal(selected?.selectedText, null);
+  assert.equal(selected?.selection.decision, 'abstain');
+  assert.equal(selected?.selection.abstainReason, 'no-main');
+});
+
+test('compatibility page API returns only selector-approved main pages', async () => {
+  const scenario = installPdfScenario([10, 20], {
+    10: {
+      0: { totalPages: 1, text: 'Supporting Online Material\nTarget article title' },
+    },
+    20: {
+      0: { totalPages: 1, text: 'Research Article\nTarget article title\nAbstract' },
+    },
+  }, {
+    fileNames: { 10: 'target_som.pdf', 20: 'target.pdf' },
+  });
+
+  assert.deepEqual(await new ZoteroAPI().getFullTextByPage(1), [
+    { pageNumber: 1, text: 'Research Article\nTarget article title\nAbstract' },
+  ]);
+  assert.deepEqual(scenario.calls, [
+    { attachmentId: 10, pageIndex: 0 },
+    { attachmentId: 20, pageIndex: 0 },
+  ]);
+  assert.equal(scenario.getFulltextCalls(), 0);
 });

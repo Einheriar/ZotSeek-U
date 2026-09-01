@@ -51,8 +51,12 @@ export interface ChunkOptions {
   tokenCounter?: TokenCounter; // Exact prefixed-input counter for supported multilingual models
   noteSoftMinTokens?: number; // Model recommendation / 4; grouping target, never a hard minimum
   modelIdSnapshot?: string; // Internal batch snapshot; ignored by pure chunking logic
-  /** Benchmark isolation switch. Production callers omit this and retain legacy PDF filtering. */
+  /** Historical replay only. Production preprocessed pages must pass `off`. */
   pdfReferenceFiltering?: 'legacy' | 'off';
+  /** References v2 preprocessor switch; production defaults to `v2`. */
+  pdfReferenceRegionFiltering?: 'v2' | 'off';
+  /** Repeated page-furniture preprocessor switch; production defaults to `v1`. */
+  pdfPageFurnitureFiltering?: 'v1' | 'off';
   /** Benchmark ablation switch. Production callers omit this and retain the title breadcrumb. */
   pdfTitlePrefix?: 'current' | 'off';
   /** Frozen-run replay switch. Production packs compatible adjacent paragraphs on one PDF page. */
@@ -74,7 +78,7 @@ export interface ChunkResult {
 export type IndexingMode = 'abstract' | 'notes' | 'full';
 
 /** Bump whenever persisted chunk text, boundaries, or structure semantics change. */
-export const CHUNK_STRATEGY_VERSION = 5;
+export const CHUNK_STRATEGY_VERSION = 6;
 
 /** @deprecated Use CHUNK_STRATEGY_VERSION; kept for benchmark/source compatibility. */
 export const NOTE_CHUNK_STRATEGY_VERSION = CHUNK_STRATEGY_VERSION;

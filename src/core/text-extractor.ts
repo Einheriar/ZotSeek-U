@@ -25,6 +25,10 @@ import { TextSourceType } from './vector-store-sqlite';
 import { tokenizerService } from './tokenizer-service';
 import { getActiveModel } from './model-registry';
 import { resolveModelInputPolicy } from './model-input-policy';
+import {
+  assertPdfReferencePipelineModes,
+  preprocessPdfPages,
+} from '../utils/pdf-preprocessor';
 
 declare const Zotero: any;
 
@@ -158,19 +162,38 @@ export class TextExtractor {
         const metadataBody = this.buildMetadataBody(item, abstract);
         let pdfResult;
 
-        // Use page-by-page extraction for accurate page numbers
-        const pages = await this.zoteroAPI.getFullTextByPage(item.id);
+        // The selector consumes each sibling PDFWorker-direct result once and
+        // returns only a unique high-confidence main attachment for indexing.
+        const selectedPdf = await this.zoteroAPI.getSelectedMainPdfText(item.id);
+        const referenceMode = chunkOptions.pdfReferenceRegionFiltering ?? 'v2';
+        const pageFurnitureMode = chunkOptions.pdfPageFurnitureFiltering ?? 'v1';
+        const pdfChunkOptions: ChunkOptions = {
+          ...chunkOptions,
+          pdfReferenceFiltering: 'off',
+        };
+        assertPdfReferencePipelineModes(
+          referenceMode,
+          pdfChunkOptions.pdfReferenceFiltering,
+        );
 
-        if (pages && pages.length > 0) {
-          // Use new page-aware chunker for accurate page numbers
-          this.logger.debug(`Using page-by-page chunking for item ${item.id} (${pages.length} pages)`);
+        if (selectedPdf?.selectedText) {
+          const preprocessed = preprocessPdfPages(selectedPdf.selectedText.pages, {
+            documentKey: item.key,
+            pdfReferenceRegionFiltering: referenceMode,
+            pdfPageFurnitureFiltering: pageFurnitureMode,
+          });
+          this.logger.debug(
+            `PDF main-text preprocessing item=${item.id} attachment=${selectedPdf.selectedText.attachmentKey} ` +
+            `pages=${preprocessed.pages.length} references=${preprocessed.diagnostics.referenceRegionCount} ` +
+            `furnitureLines=${preprocessed.diagnostics.ignoredPageFurnitureLineCount}`
+          );
           try {
             pdfResult = chunkDocumentWithPagesEx(
               title,
               metadataBody,
-              pages,
+              preprocessed.pages,
               indexingMode,
-              chunkOptions
+              pdfChunkOptions
             );
           } catch (chunkError: any) {
             console.error(`[TextExtractor] chunkDocumentWithPagesEx failed for item ${item.id}:`,
@@ -179,21 +202,19 @@ export class TextExtractor {
             throw chunkError;
           }
         } else {
-          // Fallback to legacy chunker if page extraction fails
-          this.logger.debug(`Falling back to legacy chunking for item ${item.id}`);
-          const fulltext = await this.zoteroAPI.getFullText(item.id);
-          const totalPages = await this.zoteroAPI.getPageCount(item.id);
-          if (totalPages) {
-            chunkOptions.totalPages = totalPages;
-          }
-          pdfResult = chunkDocumentEx(
+          // Abstain is deliberate: supplement/unknown/unavailable PDFs do not
+          // re-enter through attachmentText or first-readable legacy fallbacks.
+          this.logger.debug(
+            `No eligible main PDF for item ${item.id}: ` +
+            `${selectedPdf?.selection.abstainReason ?? 'selection-failed'}`
+          );
+          pdfResult = chunkDocumentWithPagesEx(
             title,
             metadataBody,
-            fulltext,
+            null,
             indexingMode,
-            chunkOptions
+            pdfChunkOptions
           );
-          pdfResult.pagesTotal = pdfResult.pagesTotal || (totalPages || 0);
         }
 
         const noteTexts = await this.extractChildNoteTexts(item);

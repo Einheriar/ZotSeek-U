@@ -6,6 +6,11 @@
  */
 
 import { TextSourceType } from '../core/vector-store-sqlite';
+import {
+  PdfAttachmentSelection,
+  PdfAttachmentText,
+  selectMainPdfAttachment,
+} from './pdf-attachment-selector';
 
 declare const Zotero: any;
 
@@ -46,6 +51,11 @@ export interface ZoteroAttachment {
   isPDFAttachment(): boolean;
   isSnapshotAttachment(): boolean;
   getFilePath(): Promise<string>;
+}
+
+export interface SelectedMainPdfText {
+  selection: PdfAttachmentSelection;
+  selectedText: PdfAttachmentText | null;
 }
 
 export interface ZoteroCollection {
@@ -225,78 +235,125 @@ export class ZoteroAPI {
     }
   }
 
+  /** Extract one PDF attachment exactly once while preserving physical slots. */
+  async getPdfWorkerTextByAttachment(attachment: ZoteroAttachment): Promise<PdfAttachmentText> {
+    let fileName: string | undefined;
+    try {
+      const filePath = await attachment.getFilePath?.();
+      fileName = typeof filePath === 'string'
+        ? filePath.replace(/\\/g, '/').split('/').pop()
+        : undefined;
+    } catch {
+      // Filename is only one selector signal; missing files remain diagnosable.
+    }
+
+    try {
+      // PDFWorker is the page-count authority. Zotero.Fulltext may not have a
+      // database row yet and therefore cannot gate extraction.
+      const firstPageResult = await Zotero.PDFWorker.getFullText(
+        attachment.id,
+        [0],
+        false,
+        null,
+      );
+      const totalPages = Number(firstPageResult?.totalPages ?? 0);
+      if (!Number.isInteger(totalPages) || totalPages <= 0) {
+        debug(`PDFWorker returned an invalid page count for attachment ${attachment.id}: ${totalPages}`);
+        return {
+          attachmentId: attachment.id,
+          attachmentKey: attachment.key,
+          fileName,
+          pagesTotal: null,
+          pages: [],
+          status: 'failed',
+        };
+      }
+
+      const pages: Array<{ pageNumber: number; text: string }> = [];
+      let failedPages = 0;
+      let hasText = false;
+      for (let pageIndex = 0; pageIndex < totalPages; pageIndex++) {
+        try {
+          const pageResult = pageIndex === 0
+            ? firstPageResult
+            : await Zotero.PDFWorker.getFullText(
+              attachment.id,
+              [pageIndex],
+              false,
+              null,
+            );
+          const text = typeof pageResult?.text === 'string' ? pageResult.text : '';
+          if (text.trim().length > 0) hasText = true;
+          pages.push({ pageNumber: pageIndex + 1, text });
+        } catch (pageError) {
+          failedPages++;
+          debug(`Error extracting attachment ${attachment.id}, page ${pageIndex + 1}: ${pageError}`);
+          pages.push({ pageNumber: pageIndex + 1, text: '' });
+        }
+      }
+      return {
+        attachmentId: attachment.id,
+        attachmentKey: attachment.key,
+        fileName,
+        pagesTotal: totalPages,
+        pages,
+        status: hasText
+          ? failedPages > 0 ? 'degraded' : 'ok'
+          : failedPages > 0 ? 'degraded' : 'empty',
+      };
+    } catch (error) {
+      debug(`Failed to probe PDF attachment ${attachment.id}: ${error}`);
+      return {
+        attachmentId: attachment.id,
+        attachmentKey: attachment.key,
+        fileName,
+        pagesTotal: null,
+        pages: [],
+        status: 'failed',
+      };
+    }
+  }
+
   /**
-   * Get full text content page by page using PDFWorker
-   * Returns one {pageNumber, text} entry per physical page for the first
-   * text-bearing PDF attachment. Blank or failed pages keep an empty slot.
+   * Extract every sibling PDF once, select one high-confidence main document,
+   * and reuse its direct pages. Supplement and unknown attachments never fall
+   * back to attachment order or Zotero's best-attachment heuristic.
    */
-  async getFullTextByPage(itemId: number): Promise<Array<{ pageNumber: number; text: string }> | null> {
+  async getSelectedMainPdfText(itemId: number): Promise<SelectedMainPdfText | null> {
     try {
       const item = this.getItem(itemId);
       if (!item || !item.isRegularItem()) return null;
-
-      const attachmentIDs = item.getAttachments();
-
-      for (const id of attachmentIDs) {
-        const attachment = Zotero.Items.get(id);
-        if (!attachment || !attachment.isPDFAttachment()) continue;
-
-        try {
-          // PDFWorker reports the physical page count in its response. Probe
-          // page zero instead of consulting Zotero.Fulltext.getPages(), whose
-          // database row may not exist until Zotero has indexed the attachment.
-          const firstPageResult = await Zotero.PDFWorker.getFullText(id, [0], false, null);
-          const totalPages = Number(firstPageResult?.totalPages ?? 0);
-          if (!Number.isInteger(totalPages) || totalPages <= 0) {
-            debug(`PDFWorker returned an invalid page count for attachment ${id}: ${totalPages}`);
-            continue;
-          }
-
-          const pages: Array<{ pageNumber: number; text: string }> = [];
-          let hasText = false;
-
-          debug(`Extracting ${totalPages} pages for item ${itemId}`);
-
-          // Preserve one entry per physical page so blank or failed pages do
-          // not shift subsequent 1-based page numbers or reduce pagesTotal.
-          // Note: PDFWorker uses \n for paragraph breaks and \f for page breaks.
-          for (let pageIndex = 0; pageIndex < totalPages; pageIndex++) {
-            try {
-              const pageResult = pageIndex === 0
-                ? firstPageResult
-                : await Zotero.PDFWorker.getFullText(id, [pageIndex], false, null);
-              const text = typeof pageResult?.text === 'string' ? pageResult.text : '';
-              if (text.trim().length > 0) hasText = true;
-              pages.push({
-                pageNumber: pageIndex + 1,  // 1-based physical page number
-                text,
-              });
-            } catch (pageError) {
-              debug(`Error extracting attachment ${id}, page ${pageIndex + 1}: ${pageError}`);
-              pages.push({
-                pageNumber: pageIndex + 1,
-                text: '',
-              });
-            }
-          }
-
-          // Keep the existing first-successful-PDF selection semantics. An
-          // image-only/empty PDF should not hide a later text-bearing PDF.
-          if (hasText) {
-            debug(`Extracted ${pages.length} physical pages for item ${itemId}`);
-            return pages;
-          }
-        } catch (attachmentError) {
-          debug(`Failed to probe PDF attachment ${id}: ${attachmentError}`);
-          // Continue to another PDF attachment when available.
-        }
+      const attachments: PdfAttachmentText[] = [];
+      for (const attachmentId of item.getAttachments()) {
+        const attachment = Zotero.Items.get(attachmentId) as ZoteroAttachment | null;
+        if (!attachment?.isPDFAttachment?.()) continue;
+        attachments.push(await this.getPdfWorkerTextByAttachment(attachment));
       }
-
-      return null;
+      const selection = selectMainPdfAttachment(
+        item.getField('title') || '',
+        attachments,
+      );
+      const selectedText = selection.selectedAttachmentId == null
+        ? null
+        : attachments.find(candidate =>
+          candidate.attachmentId === selection.selectedAttachmentId
+        ) ?? null;
+      debug(
+        `PDF selector ${selection.selectorId}@${selection.selectorVersion} item=${itemId} ` +
+        `decision=${selection.decision} selected=${selection.selectedAttachmentKey ?? 'none'} ` +
+        `abstain=${selection.abstainReason ?? 'none'}`
+      );
+      return { selection, selectedText };
     } catch (error) {
-      debug(`Failed to get page-by-page text for item ${itemId}: ${error}`);
+      debug(`Failed to select main PDF for item ${itemId}: ${error}`);
       return null;
     }
+  }
+
+  /** Compatibility wrapper returning only the selected main PDF pages. */
+  async getFullTextByPage(itemId: number): Promise<Array<{ pageNumber: number; text: string }> | null> {
+    const selected = await this.getSelectedMainPdfText(itemId);
+    return selected?.selectedText?.pages ?? null;
   }
 
   /**

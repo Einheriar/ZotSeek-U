@@ -589,7 +589,7 @@ Paragraph 4: 900 tokens  ─┐
                          ─┘
 ```
 
-A chunk might be 400 tokens if that's where the paragraph ends naturally. Paragraphs larger than `maxTokens` are split at sentence boundaries into multiple chunks, preserving all content with correct page location data.
+A chunk might be 400 tokens if that's where the paragraph ends naturally. Paragraphs larger than `maxTokens` are split at sentence boundaries into multiple chunks, preserving all content with correct page location data. PDF chunks additionally use the same-page packing stage described below; non-PDF sources keep their own source-aware grouping rules.
 
 ### Structured Child Note Chunking
 
@@ -604,6 +604,33 @@ The production strategy is:
 5. Persist all represented paths as `sectionPaths: string[][]`, because one compact chunk may contain several adjacent subsections.
 
 The bibliographic paper title and the brief's “基本信息” section are not repeated in Note embeddings; stable item metadata already supplies that context. The selected strategy is versioned. If an existing model partition contains old chunks without the current strategy marker, ZotSeek keeps it searchable but pauses writes and background reconciliation until the user explicitly rebuilds the index.
+
+### PDF Main-Text Preprocessing
+
+Full indexing uses the versioned `zotseek-pdf-main-text-indexing-v1` pipeline:
+
+1. Enumerate sibling PDF attachments and extract every physical page through
+   Zotero PDFWorker, retaining empty page slots so later page numbers cannot
+   shift.
+2. Select a unique high-confidence main attachment from title, filename,
+   first-page structure, containment and parser-status evidence. Supplement and
+   unknown attachments abstain; they do not re-enter through a best-attachment
+   or first-readable fallback.
+3. Apply References v2 region filtering, followed by repeated page-furniture
+   filtering. Both return derived pages and an ignored-block ledger; the source
+   PDFWorker pages are never changed in place.
+4. Add the bibliographic title as PDF embedding context, then greedily pack
+   compatible adjacent short paragraphs on the same physical page. Packing
+   never crosses a page, filtering boundary or coarse section type.
+5. Enforce the active model's exact prefixed token budget, character ceiling
+   and the shared Summary/Note/PDF `maxChunksPerPaper` quota.
+
+References v2, page-furniture v1 and same-page packing are internal production
+switches that default on and can be disabled independently for deterministic
+benchmark replay. The legacy chunker References rules are explicitly disabled
+for preprocessed pages, preventing the same content from being filtered twice.
+Persisted PDF chunks retain their 1-based physical `pageNumber`; Summary and
+Note chunks never receive a synthetic PDF page.
 
 ### Truncation Detection (Max Chunks per Paper)
 
@@ -755,7 +782,7 @@ The search still works perfectly with `content` chunks - you just won't know whi
 
 ### References Filtering
 
-The chunker automatically detects and excludes bibliography sections to keep search results focused on actual content:
+The PDF preprocessor detects and excludes high-confidence bibliography regions to keep search results focused on actual content:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -790,7 +817,15 @@ The chunker automatically detects and excludes bibliography sections to keep sea
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-Once a references header is detected, all remaining pages are skipped. Individual citation entries are also detected as a fallback in case the header was missed.
+Production no longer uses a permanent chunker state that blindly discards every
+line after the first References-like heading, nor does it independently delete
+citation-looking body paragraphs. References v2 establishes document-level
+regions from conservative headings, entry evidence and page progression, keeps
+protected body locators, and records every excluded line in a diagnostic
+ledger. Content after a bibliography, such as a publisher note, may remain
+inside the excluded reference region because the product contract intentionally
+indexes the main body rather than post-reference matter. If no high-confidence
+region is found, the text remains visible.
 
 ### Performance-Optimized Chunking
 
