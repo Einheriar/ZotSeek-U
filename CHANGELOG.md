@@ -23,6 +23,21 @@ All notable changes to ZotSeek - Semantic Search for Zotero will be documented i
   dimensions before indexing, and document-prefix changes participate in the
   model input policy fingerprint.
 
+### Fixed
+- **Indexing-mode mismatch warnings now compare stable machine values.** The
+  database and business logic retain `abstract`, `notes`, or `full`, while the
+  current locale supplies display labels at the settings boundary. This avoids
+  false mismatch warnings when an index built under an English label is viewed
+  in Chinese and keeps legacy stored values normalized in one place.
+- **Zotero 8 incremental reconciliation repeatedly rebuilt an unchanged item.**
+  The persisted startup-fingerprint query began with template-literal
+  whitespace, which Zotero 8's database wrapper treated as a statement without
+  result rows. Every startup or manual reconciliation therefore ignored all
+  saved fingerprints, re-baselined unchanged items, and could unnecessarily
+  reload the embedding model and rebuild a paper. The query is now normalized
+  before execution, so unchanged indexes use their persisted fingerprints and
+  complete without extraction or embedding work.
+
 ---
 
 ## [1.20.558] - 2026-08-22

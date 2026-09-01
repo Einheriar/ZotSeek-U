@@ -23,6 +23,10 @@ import {
   getIndexingMode,
 } from './utils/chunker';
 import { getZotero } from './utils/zotero-helper';
+import {
+  isCanonicalIndexingMode,
+  normalizeStoredIndexingMode,
+} from './utils/indexing-mode';
 import { autoIndexManager } from './core/auto-index-manager';
 import { indexFreshnessNotifier } from './core/index-freshness-notifier';
 import { getString } from './utils/locale';
@@ -1176,6 +1180,9 @@ class ZotSeekPlugin {
     databasePath: string;
     lastIndexed: string;
     lastIndexDuration?: string;
+    /** Stable persisted machine value used for comparisons. */
+    indexedMode?: string;
+    /** @deprecated Compatibility display label; never use for business logic. */
     indexedWithMode?: string;
   }> {
     try {
@@ -1208,21 +1215,22 @@ class ZotSeekPlugin {
       this.logger.debug(`getStats(): Got stats: ${JSON.stringify(stats)}`);
 
       // Get the indexing mode that was used to build the current index
+      let indexedMode: string | undefined;
       let indexedWithMode: string | undefined;
       try {
         const storedMode = await this.vectorStore.getMetadata('indexingMode');
         if (storedMode) {
-          // Convert to human-readable format
-          // Support both old mode names (fulltext, hybrid) and new (full)
-          const modeLabels: { [key: string]: string } = {
-            'abstract': 'Abstract Only',
-            'notes': 'Metadata + Notes',
-            'full': 'Full Paper',
-            // Legacy mode names for backward compatibility
-            'fulltext': 'Full Paper',
-            'hybrid': 'Full Paper'
+          indexedMode = normalizeStoredIndexingMode(storedMode);
+          // Keep the historical field for external callers, but the settings
+          // UI localizes indexedMode and never compares this display string.
+          const compatibilityLabels = {
+            abstract: 'Abstract Only',
+            notes: 'Metadata + Notes',
+            full: 'Full Paper',
           };
-          indexedWithMode = modeLabels[storedMode] || storedMode;
+          indexedWithMode = indexedMode && isCanonicalIndexingMode(indexedMode)
+            ? compatibilityLabels[indexedMode]
+            : indexedMode;
         }
       } catch (e) {
         this.logger.debug(`Could not get indexing mode from metadata: ${e}`);
@@ -1287,6 +1295,7 @@ class ZotSeekPlugin {
         databasePath,
         lastIndexed,
         lastIndexDuration,
+        indexedMode,
         indexedWithMode,
       };
     } catch (error) {

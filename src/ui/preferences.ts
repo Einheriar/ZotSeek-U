@@ -5,6 +5,11 @@
 
 import { getZotero } from '../utils/zotero-helper';
 import { getString } from '../utils/locale';
+import {
+  CanonicalIndexingMode,
+  hasIndexingModeMismatch,
+  isCanonicalIndexingMode,
+} from '../utils/indexing-mode';
 import { autoIndexManager } from '../core/auto-index-manager';
 import {
   getAllModels,
@@ -935,48 +940,57 @@ class PreferencesManager {
       setText('zotseek-stat-avg-line', getString('pref-avgLine', { avg: stats.avgChunksPerPaper }));
       setText('zotseek-stat-lastindexed-line', getString('pref-lastIndexedLine', { date: stats.lastIndexed }));
 
-      // Handle index duration display
+      // Populate legacy compatibility fields without making their unlabeled
+      // spans visible in the current status-card layout.
       const durationLabel = doc.getElementById('zotseek-stat-duration-label');
       const durationValue = doc.getElementById('zotseek-stat-duration');
       if (stats.lastIndexDuration) {
         setText('zotseek-stat-duration', stats.lastIndexDuration);
-        if (durationLabel) durationLabel.style.display = 'block';
-        if (durationValue) durationValue.style.display = 'block';
-      } else {
-        if (durationLabel) durationLabel.style.display = 'none';
-        if (durationValue) durationValue.style.display = 'none';
       }
+      if (durationLabel) durationLabel.style.display = 'none';
+      if (durationValue) durationValue.style.display = 'none';
 
       // Handle indexed mode display and mismatch warning
       const indexedModeLabel = doc.getElementById('zotseek-stat-indexedmode-label');
       const indexedModeValue = doc.getElementById('zotseek-stat-indexedmode');
       const warningBox = doc.getElementById('zotseek-indexmode-warning');
 
-      if (stats.indexedWithMode) {
-        setText('zotseek-stat-indexedmode', stats.indexedWithMode);
-        if (indexedModeLabel) indexedModeLabel.style.display = 'block';
-        if (indexedModeValue) indexedModeValue.style.display = 'block';
-
-        // Check for mismatch
+      if (stats.indexedMode) {
         const rawCurrentMode = Z.Prefs.get('zotseek.indexingMode', true);
-        const currentMode: 'abstract' | 'notes' | 'full' =
+        const currentMode: CanonicalIndexingMode =
           rawCurrentMode === 'notes' || rawCurrentMode === 'full'
             ? rawCurrentMode
             : 'abstract';
-        const currentModeLabel = {
+        const modeLabels: Record<CanonicalIndexingMode, string> = {
           'abstract': getString('pref-abstractOnly'),
           'notes': getString('pref-notes'),
           'full': getString('pref-fullPaper')
-        }[currentMode];
+        };
+        const storedIndexingMode = String(stats.indexedMode);
+        const indexedModeDisplay = isCanonicalIndexingMode(storedIndexingMode)
+          ? modeLabels[storedIndexingMode]
+          : storedIndexingMode;
+        const currentModeLabel = modeLabels[currentMode];
+
+        setText('zotseek-stat-indexedmode', indexedModeDisplay);
+        if (indexedModeLabel) indexedModeLabel.style.display = 'none';
+        if (indexedModeValue) indexedModeValue.style.display = 'none';
 
         if (warningBox) {
-          if (stats.indexedWithMode !== currentModeLabel && stats.indexedPapers > 0) {
+          if (hasIndexingModeMismatch(
+            storedIndexingMode,
+            currentMode,
+            stats.indexedPapers,
+          )) {
             // Show warning - there's a mismatch
             warningBox.style.display = 'block';
-            const indexedModeEl = doc.getElementById('zotseek-warning-indexed-mode');
-            const currentModeEl = doc.getElementById('zotseek-warning-current-mode');
-            if (indexedModeEl) indexedModeEl.textContent = stats.indexedWithMode;
-            if (currentModeEl) currentModeEl.textContent = currentModeLabel;
+            setText(
+              'zotseek-indexmode-warning-description',
+              getString('pref-indexModeMismatchDesc', {
+                indexedMode: indexedModeDisplay,
+                currentMode: currentModeLabel,
+              }),
+            );
           } else {
             // Hide warning - modes match or no papers indexed
             warningBox.style.display = 'none';

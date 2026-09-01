@@ -1889,7 +1889,7 @@ export class VectorStoreSQLite {
       FROM ${DB_NAME}.startup_fingerprints
       WHERE library_key = ? AND item_key = ? AND model_id = ?
       LIMIT 1
-    `, [libraryKey, itemKey, modelId]);
+    `.trim(), [libraryKey, itemKey, modelId]);
     const row = rows?.[0];
     if (!row) return null;
     return {

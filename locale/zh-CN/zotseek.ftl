@@ -440,3 +440,12 @@ zotseek-export-statusFailed = Failed to save results as collection.
 
 zotseek-pref-embeddingModelTitle = 嵌入模型
 zotseek-pref-manageModelsTitle = 管理已安装模型
+
+## 设置页分组标题
+
+zotseek-prefs-group-status = 状态
+zotseek-prefs-group-models = 模型
+zotseek-prefs-group-indexing = 索引
+zotseek-prefs-group-search = 搜索
+zotseek-prefs-group-maintenance = 集成与维护
+zotseek-prefs-exclusions = 排除项
