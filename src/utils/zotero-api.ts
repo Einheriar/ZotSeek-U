@@ -227,7 +227,8 @@ export class ZoteroAPI {
 
   /**
    * Get full text content page by page using PDFWorker
-   * Returns array of {pageNumber, text} for each page
+   * Returns one {pageNumber, text} entry per physical page for the first
+   * text-bearing PDF attachment. Blank or failed pages keep an empty slot.
    */
   async getFullTextByPage(itemId: number): Promise<Array<{ pageNumber: number; text: string }> | null> {
     try {
@@ -240,35 +241,54 @@ export class ZoteroAPI {
         const attachment = Zotero.Items.get(id);
         if (!attachment || !attachment.isPDFAttachment()) continue;
 
-        // Get total pages first
-        const pageInfo = await Zotero.Fulltext.getPages(id);
-        if (!pageInfo || pageInfo.total <= 0) continue;
+        try {
+          // PDFWorker reports the physical page count in its response. Probe
+          // page zero instead of consulting Zotero.Fulltext.getPages(), whose
+          // database row may not exist until Zotero has indexed the attachment.
+          const firstPageResult = await Zotero.PDFWorker.getFullText(id, [0], false, null);
+          const totalPages = Number(firstPageResult?.totalPages ?? 0);
+          if (!Number.isInteger(totalPages) || totalPages <= 0) {
+            debug(`PDFWorker returned an invalid page count for attachment ${id}: ${totalPages}`);
+            continue;
+          }
 
-        const totalPages = pageInfo.total;
-        const pages: Array<{ pageNumber: number; text: string }> = [];
+          const pages: Array<{ pageNumber: number; text: string }> = [];
+          let hasText = false;
 
-        debug(`Extracting ${totalPages} pages for item ${itemId}`);
+          debug(`Extracting ${totalPages} pages for item ${itemId}`);
 
-        // Extract text page by page
-        // Note: PDFWorker uses \n for paragraph breaks and \f for page breaks
-        for (let pageIndex = 0; pageIndex < totalPages; pageIndex++) {
-          try {
-            const pageResult = await Zotero.PDFWorker.getFullText(id, [pageIndex], false, null);
-            if (pageResult && pageResult.text) {
+          // Preserve one entry per physical page so blank or failed pages do
+          // not shift subsequent 1-based page numbers or reduce pagesTotal.
+          // Note: PDFWorker uses \n for paragraph breaks and \f for page breaks.
+          for (let pageIndex = 0; pageIndex < totalPages; pageIndex++) {
+            try {
+              const pageResult = pageIndex === 0
+                ? firstPageResult
+                : await Zotero.PDFWorker.getFullText(id, [pageIndex], false, null);
+              const text = typeof pageResult?.text === 'string' ? pageResult.text : '';
+              if (text.trim().length > 0) hasText = true;
               pages.push({
-                pageNumber: pageIndex + 1,  // 1-based page number
-                text: pageResult.text
+                pageNumber: pageIndex + 1,  // 1-based physical page number
+                text,
+              });
+            } catch (pageError) {
+              debug(`Error extracting attachment ${id}, page ${pageIndex + 1}: ${pageError}`);
+              pages.push({
+                pageNumber: pageIndex + 1,
+                text: '',
               });
             }
-          } catch (pageError) {
-            debug(`Error extracting page ${pageIndex + 1}: ${pageError}`);
-            // Continue with other pages
           }
-        }
 
-        if (pages.length > 0) {
-          debug(`Extracted ${pages.length} pages for item ${itemId}`);
-          return pages;
+          // Keep the existing first-successful-PDF selection semantics. An
+          // image-only/empty PDF should not hide a later text-bearing PDF.
+          if (hasText) {
+            debug(`Extracted ${pages.length} physical pages for item ${itemId}`);
+            return pages;
+          }
+        } catch (attachmentError) {
+          debug(`Failed to probe PDF attachment ${id}: ${attachmentError}`);
+          // Continue to another PDF attachment when available.
         }
       }
 
