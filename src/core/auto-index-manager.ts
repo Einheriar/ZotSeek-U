@@ -8,7 +8,7 @@
 
 import { Logger } from '../utils/logger';
 import { noteHTMLToIndexText } from '../utils/note-text';
-import { getIndexingMode, NOTE_CHUNK_STRATEGY_VERSION } from '../utils/chunker';
+import { CHUNK_STRATEGY_VERSION, getIndexingMode } from '../utils/chunker';
 import { identityFromItem, localItemIDFromIdentity } from './identity-resolver';
 import {
   getActiveModel,
@@ -203,10 +203,10 @@ export class AutoIndexManager {
       Zotero.Prefs.get('zotseek.maxTokens', true),
     );
     return hashFreshnessText(JSON.stringify({
-      version: 3,
+      version: 4,
       mode,
       maxChunks,
-      noteChunkStrategyVersion: NOTE_CHUNK_STRATEGY_VERSION,
+      chunkStrategyVersion: CHUNK_STRATEGY_VERSION,
       modelInputPolicy: modelInputPolicyFingerprint(policy),
     }));
   }

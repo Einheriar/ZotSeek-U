@@ -19,8 +19,8 @@ import { textExtractor, ExtractedText, ExtractedChunks } from './core/text-extra
 import { ZoteroAPI } from './utils/zotero-api';
 import {
   assessChunkStrategyState,
+  CHUNK_STRATEGY_VERSION,
   getIndexingMode,
-  NOTE_CHUNK_STRATEGY_VERSION,
 } from './utils/chunker';
 import { getZotero } from './utils/zotero-helper';
 import { autoIndexManager } from './core/auto-index-manager';
@@ -780,7 +780,7 @@ class ZotSeekPlugin {
   }
 
   /**
-   * Prevent old and new Note chunk strategies from sharing one model partition.
+   * Prevent old and new chunk strategies from sharing one model partition.
    * Existing vectors remain searchable; only writes and startup reconciliation
    * pause until the user explicitly clears/rebuilds the index.
    */
@@ -802,7 +802,7 @@ class ZotSeekPlugin {
     );
 
     if (state === 'initialize') {
-      await this.vectorStore.setMetadata(metadataKey, NOTE_CHUNK_STRATEGY_VERSION);
+      await this.vectorStore.setMetadata(metadataKey, CHUNK_STRATEGY_VERSION);
       autoIndexManager.setChunkStrategyBlocked(false);
       this.chunkStrategyNoticeShown = false;
       return true;

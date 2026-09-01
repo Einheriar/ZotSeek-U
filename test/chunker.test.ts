@@ -11,6 +11,7 @@ import {
   countParagraphsUpTo,
   chunkNoteTexts,
   assessChunkStrategyState,
+  CHUNK_STRATEGY_VERSION,
   NOTE_CHUNK_STRATEGY_VERSION,
   getChunkOptionsFromPrefs,
   getIndexingMode,
@@ -234,16 +235,17 @@ describe('preference reading', () => {
   });
 });
 
-describe('persisted Note chunk strategy state', () => {
+describe('persisted chunk strategy state', () => {
   test('initializes an empty partition even when it has no marker', () => {
     assert.equal(assessChunkStrategyState(0, undefined), 'initialize');
   });
 
   test('accepts only the current marker for a non-empty partition', () => {
-    assert.equal(assessChunkStrategyState(20, NOTE_CHUNK_STRATEGY_VERSION), 'current');
+    assert.equal(NOTE_CHUNK_STRATEGY_VERSION, CHUNK_STRATEGY_VERSION);
+    assert.equal(assessChunkStrategyState(20, CHUNK_STRATEGY_VERSION), 'current');
     assert.equal(assessChunkStrategyState(20, undefined), 'rebuild-required');
     assert.equal(
-      assessChunkStrategyState(20, NOTE_CHUNK_STRATEGY_VERSION - 1),
+      assessChunkStrategyState(20, CHUNK_STRATEGY_VERSION - 1),
       'rebuild-required',
     );
   });
@@ -573,6 +575,172 @@ describe('exact token-aware note chunking', () => {
       .map(chunk => chunk.text.slice(chunk.text.indexOf('\n\n') + 2))
       .join('');
     assert.equal(recovered, pageText);
+  });
+
+  test('packs adjacent short PDF paragraphs on the same physical page by default', () => {
+    const first = 'The first short body paragraph preserves enough ordinary prose to remain searchable.';
+    const second = 'The second adjacent paragraph should share one embedding input when the token budget allows it.';
+    const result = chunkDocumentWithPagesEx('Packed PDF title', null, [
+      { pageNumber: 4, text: `${first}\n\n${second}` },
+    ], 'full', {
+      maxTokens: 260,
+      maxChunks: 100,
+      maxChars: 8000,
+      tokenCounter: exactCounter,
+    });
+    const bodyChunks = result.chunks.filter(chunk => chunk.type !== 'summary');
+
+    assert.equal(bodyChunks.length, 1);
+    assert.equal(bodyChunks[0].pageNumber, 4);
+    assert.equal(bodyChunks[0].paragraphIndex, 0);
+    assert.equal(bodyChunks[0].text, `Packed PDF title\n\n${first}\n\n${second}`);
+    assert.equal(bodyChunks[0].tokenCount, exactCounter(bodyChunks[0].text));
+  });
+
+  test('never packs PDF paragraphs across physical page boundaries', () => {
+    const pageOne = 'The final paragraph on page one is deliberately short but still long enough to be indexed. It also carries ordinary searchable prose.';
+    const pageTwo = 'The first paragraph on page two must retain its own physical page breadcrumb and chunk. It also carries ordinary searchable prose.';
+    const result = chunkDocumentWithPagesEx('Page boundary title', null, [
+      { pageNumber: 1, text: pageOne },
+      { pageNumber: 2, text: pageTwo },
+    ], 'full', {
+      maxTokens: 300,
+      maxChunks: 100,
+      maxChars: 8000,
+      tokenCounter: exactCounter,
+    });
+    const bodyChunks = result.chunks.filter(chunk => chunk.type !== 'summary');
+
+    assert.equal(bodyChunks.length, 2);
+    assert.deepEqual(bodyChunks.map(chunk => chunk.pageNumber), [1, 2]);
+  });
+
+  test('can disable same-page PDF paragraph packing for frozen benchmark replay', () => {
+    const first = 'The first benchmark paragraph is long enough to be indexed as an independent legacy chunk.';
+    const second = 'The second benchmark paragraph must also remain independent when paragraph packing is off.';
+    const result = chunkDocumentWithPagesEx('Frozen benchmark title', null, [
+      { pageNumber: 6, text: `${first}\n\n${second}` },
+    ], 'full', {
+      maxTokens: 300,
+      maxChunks: 100,
+      maxChars: 8000,
+      tokenCounter: exactCounter,
+      pdfParagraphPacking: 'off',
+    });
+    const bodyChunks = result.chunks.filter(chunk => chunk.type !== 'summary');
+
+    assert.equal(bodyChunks.length, 2);
+    assert.deepEqual(bodyChunks.map(chunk => chunk.paragraphIndex), [0, 1]);
+  });
+
+  test('applies the PDF chunk cap after same-page paragraph packing', () => {
+    const page = [
+      'First compact paragraph contains enough body text to pass the PDF minimum length threshold.',
+      'Second compact paragraph should fit beside the first one inside the exact model token budget.',
+      'Third compact paragraph is also retained because packing happens before the document chunk cap.',
+    ].join('\n\n');
+    const packed = chunkDocumentWithPagesEx('Cap ordering title', null, [
+      { pageNumber: 1, text: page },
+    ], 'full', {
+      maxTokens: 340,
+      maxChunks: 2,
+      maxChars: 8000,
+      tokenCounter: exactCounter,
+    });
+    const legacy = chunkDocumentWithPagesEx('Cap ordering title', null, [
+      { pageNumber: 1, text: page },
+    ], 'full', {
+      maxTokens: 340,
+      maxChunks: 2,
+      maxChars: 8000,
+      tokenCounter: exactCounter,
+      pdfParagraphPacking: 'off',
+    });
+
+    assert.equal(packed.chunks.filter(chunk => chunk.type !== 'summary').length, 1);
+    assert.equal(packed.wasTruncated, false);
+    assert.match(packed.chunks[1].text, /Third compact paragraph/);
+    assert.equal(legacy.chunks.filter(chunk => chunk.type !== 'summary').length, 1);
+    assert.equal(legacy.wasTruncated, true);
+    assert.doesNotMatch(legacy.chunks[1].text, /Second compact paragraph/);
+  });
+
+  test('preserves physical page numbering when an intermediate page is blank', () => {
+    const pageOneText = '第一页正文用于验证物理页码不会被空白页压缩。'.repeat(12);
+    const pageThreeText = '第三页正文必须仍然标记为第三页而不是第二页。'.repeat(12);
+    const result = chunkDocumentWithPagesEx('Physical page title', null, [
+      { pageNumber: 1, text: pageOneText },
+      { pageNumber: 2, text: '' },
+      { pageNumber: 3, text: pageThreeText },
+    ], 'full', {
+      maxTokens: 1000,
+      maxChunks: 100,
+      maxChars: 8000,
+      tokenCounter: exactCounter,
+    });
+    const bodyChunks = result.chunks.filter(chunk => chunk.type !== 'summary');
+
+    assert.equal(result.pagesTotal, 3);
+    assert.equal(result.pagesIndexed, 2);
+    assert.deepEqual([...new Set(bodyChunks.map(chunk => chunk.pageNumber))], [1, 3]);
+  });
+
+  test('keeps legacy page-aware PDF reference filtering enabled by default', () => {
+    const result = chunkDocumentWithPagesEx('Reference filter title', null, [
+      { pageNumber: 1, text: 'This body paragraph is long enough to become a searchable PDF chunk before the bibliography begins. It repeats enough ordinary prose to satisfy the minimum paragraph and token thresholds deterministically.' },
+      { pageNumber: 2, text: 'References\n\n[1] Smith, A. (2024). A bibliography entry that is long enough to become a chunk if filtering is disabled.' },
+      { pageNumber: 3, text: 'This trailing paragraph is intentionally long enough to expose the legacy document-tail latch.' },
+    ], 'full', {
+      maxTokens: 420,
+      maxChunks: 100,
+      maxChars: 8000,
+      tokenCounter: exactCounter,
+    });
+    const bodyText = result.chunks.filter(chunk => chunk.type !== 'summary').map(chunk => chunk.text).join('\n');
+
+    assert.match(bodyText, /body paragraph/);
+    assert.doesNotMatch(bodyText, /bibliography entry/);
+    assert.doesNotMatch(bodyText, /trailing paragraph/);
+  });
+
+  test('can disable both legacy PDF reference filters for benchmark isolation', () => {
+    const result = chunkDocumentWithPagesEx('Reference filter title', null, [
+      { pageNumber: 1, text: 'Data Availability Statement: the complete dataset is available at https://doi.org/10.1234/example and this正文 paragraph must remain searchable.' },
+      { pageNumber: 2, text: 'References\n\n[1] Smith, A. (2024). A bibliography entry that is long enough to become a chunk when filtering is disabled.' },
+      { pageNumber: 3, text: 'This trailing paragraph is intentionally long enough to prove that later physical pages remain eligible.' },
+    ], 'full', {
+      maxTokens: 420,
+      maxChunks: 100,
+      maxChars: 8000,
+      pdfReferenceFiltering: 'off',
+    });
+    const bodyChunks = result.chunks.filter(chunk => chunk.type !== 'summary');
+    const bodyText = bodyChunks.map(chunk => chunk.text).join('\n');
+
+    assert.match(bodyText, /Data Availability Statement/);
+    assert.match(bodyText, /bibliography entry/);
+    assert.match(bodyText, /trailing paragraph/);
+    assert.deepEqual([...new Set(bodyChunks.map(chunk => chunk.pageNumber))], [1, 2, 3]);
+  });
+
+  test('can disable the PDF body title breadcrumb for a benchmark ablation', () => {
+    const body = 'This PDF paragraph is deliberately long enough to survive the exact page-aware chunking path without any title breadcrumb.';
+    const result = chunkDocumentWithPagesEx('Breadcrumb title', null, [
+      { pageNumber: 1, text: body },
+    ], 'full', {
+      maxTokens: 420,
+      maxChunks: 100,
+      maxChars: 8000,
+      tokenCounter: exactCounter,
+      pdfTitlePrefix: 'off',
+    });
+    const bodyChunks = result.chunks.filter(chunk => chunk.type !== 'summary');
+
+    assert.equal(bodyChunks.length, 1);
+    assert.equal(bodyChunks[0].text, body);
+    assert.equal(bodyChunks[0].pageNumber, 1);
+    assert.equal(bodyChunks[0].tokenCount, exactCounter(body));
+    assert.equal(result.chunks[0].text, 'Breadcrumb title');
   });
 
   test('preserves a title that is longer than the character split threshold', () => {

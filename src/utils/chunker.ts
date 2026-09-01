@@ -51,6 +51,12 @@ export interface ChunkOptions {
   tokenCounter?: TokenCounter; // Exact prefixed-input counter for supported multilingual models
   noteSoftMinTokens?: number; // Model recommendation / 4; grouping target, never a hard minimum
   modelIdSnapshot?: string; // Internal batch snapshot; ignored by pure chunking logic
+  /** Benchmark isolation switch. Production callers omit this and retain legacy PDF filtering. */
+  pdfReferenceFiltering?: 'legacy' | 'off';
+  /** Benchmark ablation switch. Production callers omit this and retain the title breadcrumb. */
+  pdfTitlePrefix?: 'current' | 'off';
+  /** Frozen-run replay switch. Production packs compatible adjacent paragraphs on one PDF page. */
+  pdfParagraphPacking?: 'same-page' | 'off';
 }
 
 /**
@@ -68,7 +74,13 @@ export interface ChunkResult {
 export type IndexingMode = 'abstract' | 'notes' | 'full';
 
 /** Bump whenever persisted chunk text, boundaries, or structure semantics change. */
-export const NOTE_CHUNK_STRATEGY_VERSION = 4;
+export const CHUNK_STRATEGY_VERSION = 5;
+
+/** @deprecated Use CHUNK_STRATEGY_VERSION; kept for benchmark/source compatibility. */
+export const NOTE_CHUNK_STRATEGY_VERSION = CHUNK_STRATEGY_VERSION;
+
+/** Stable name for the production candidate assembled under Plan 11C. */
+export const PDF_MAIN_TEXT_INDEXING_STRATEGY_ID = 'zotseek-pdf-main-text-indexing-v1';
 
 export type ChunkStrategyState = 'initialize' | 'current' | 'rebuild-required';
 
@@ -78,7 +90,7 @@ export function assessChunkStrategyState(
   storedVersion: number | undefined,
 ): ChunkStrategyState {
   if (chunkCount <= 0) return 'initialize';
-  return storedVersion === NOTE_CHUNK_STRATEGY_VERSION
+  return storedVersion === CHUNK_STRATEGY_VERSION
     ? 'current'
     : 'rebuild-required';
 }
@@ -1554,6 +1566,9 @@ export function chunkDocumentWithPagesEx(
   options: ChunkOptions = {}
 ): ChunkResult {
   const opts = { ...DEFAULT_OPTIONS, ...options };
+  const legacyReferenceFiltering = options.pdfReferenceFiltering !== 'off';
+  const pdfTitlePrefixEnabled = options.pdfTitlePrefix !== 'off';
+  const samePageParagraphPacking = options.pdfParagraphPacking !== 'off';
   const chunks: Chunk[] = [];
   let wasTruncated = false;
   const totalPagesAvailable = pages ? pages.length : 0;
@@ -1563,7 +1578,11 @@ export function chunkDocumentWithPagesEx(
     ? title.substring(0, 200) + '...'
     : title;
 
-  const titleTokens = estimateTokens(titlePrefix) + 5;
+  const bodyTitlePrefix = pdfTitlePrefixEnabled ? titlePrefix : '';
+  const titleTokens = bodyTitlePrefix ? estimateTokens(bodyTitlePrefix) + 5 : 0;
+  const withBodyTitlePrefix = (text: string): string => bodyTitlePrefix
+    ? `${bodyTitlePrefix}\n\n${text}`
+    : text;
 
   // ═══════════════════════════════════════════════════════════════════════
   // CHUNK 1: Summary (always included)
@@ -1593,8 +1612,9 @@ export function chunkDocumentWithPagesEx(
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // FULL MODE: Create PARAGRAPH-LEVEL chunks with exact page numbers
-  // Each meaningful paragraph gets its own embedding for precise retrieval
+  // FULL MODE: Create page-aware chunks with exact physical page numbers.
+  // Compatible adjacent paragraphs may share one embedding input, but chunks
+  // never cross a physical page boundary.
   // ═══════════════════════════════════════════════════════════════════════
   if (!pages || pages.length === 0) {
     const enforced = enforceInputLimitsEx(chunks, opts);
@@ -1620,6 +1640,64 @@ export function chunkDocumentWithPagesEx(
       return 'methods';
     }
     return 'content';
+  };
+
+  const bodyFromChunk = (chunk: Chunk): string => {
+    const prefix = bodyTitlePrefix ? `${bodyTitlePrefix}\n\n` : '';
+    return prefix && chunk.text.startsWith(prefix)
+      ? chunk.text.slice(prefix.length)
+      : chunk.text;
+  };
+
+  /**
+   * Greedily pack compatible PDF paragraphs toward the active model budget.
+   * The first paragraph index is retained; paragraph order remains explicit in
+   * the lossless double-newline-joined body, and one page number covers all
+   * members because callers invoke this helper once per physical page.
+   */
+  const packPageParagraphs = (pageChunks: Chunk[]): Chunk[] => {
+    if (!samePageParagraphPacking || pageChunks.length < 2) return pageChunks;
+
+    const packed: Chunk[] = [];
+    let current: Chunk | null = null;
+
+    const flush = () => {
+      if (current) packed.push(current);
+      current = null;
+    };
+
+    for (const chunk of pageChunks) {
+      if (!current) {
+        current = { ...chunk };
+        continue;
+      }
+
+      if (current.pageNumber !== chunk.pageNumber || current.type !== chunk.type) {
+        flush();
+        current = { ...chunk };
+        continue;
+      }
+
+      const joinedBody: string = `${bodyFromChunk(current)}\n\n${bodyFromChunk(chunk)}`;
+      const joinedText = withBodyTitlePrefix(joinedBody);
+      const joinedTokens: number = opts.tokenCounter
+        ? opts.tokenCounter(joinedText)
+        : estimateTokens(joinedBody) + titleTokens;
+
+      if (joinedTokens <= opts.maxTokens && joinedText.length <= opts.maxChars) {
+        current = {
+          ...current,
+          text: joinedText,
+          tokenCount: joinedTokens,
+        };
+      } else {
+        flush();
+        current = { ...chunk };
+      }
+    }
+
+    flush();
+    return packed;
   };
 
   // Detect if we've reached the References/Bibliography section
@@ -1652,50 +1730,52 @@ export function chunkDocumentWithPagesEx(
 
   // Process each page and extract paragraphs using robust extraction
   for (const page of pages) {
-    if (chunks.length >= opts.maxChunks) {
-      wasTruncated = true;
-      break;
-    }
-    if (inReferencesSection) break; // Stop processing if we've hit references
+    if (legacyReferenceFiltering && inReferencesSection) break; // Stop processing if we've hit references
 
     // Skip pages with very little text
     if (page.text.trim().length < 100) continue;
 
     // Use robust paragraph extraction
     const paragraphs = extractParagraphsFromPage(page.text);
+    const pageGroups: Chunk[][] = [];
+    let currentGroup: Chunk[] = [];
+    const flushGroup = () => {
+      if (currentGroup.length > 0) pageGroups.push(currentGroup);
+      currentGroup = [];
+    };
 
     let paragraphIdx = 0;
     for (const para of paragraphs) {
-      if (chunks.length >= opts.maxChunks) {
-        wasTruncated = true;
-        break;
-      }
-
       // Check if we've hit the references section
-      if (!inReferencesSection && isReferencesHeader(para)) {
+      if (legacyReferenceFiltering && !inReferencesSection && isReferencesHeader(para)) {
+        flushGroup();
         inReferencesSection = true;
         // Skip the rest of this document
         break;
       }
 
       // Skip if we're in references section
-      if (inReferencesSection) {
+      if (legacyReferenceFiltering && inReferencesSection) {
         break; // Skip all remaining pages too
       }
 
       // Skip reference-like entries (in case header was missed)
-      if (isReferenceEntry(para)) {
+      if (legacyReferenceFiltering && isReferenceEntry(para)) {
+        flushGroup();
         paragraphIdx++;
         continue;
       }
 
-      // Skip too short paragraphs
+      // Short fragments include many section headings and captions. Keep them
+      // as conservative packing boundaries even though the legacy path does
+      // not emit them as independent chunks.
       if (para.length < MIN_PARA_LENGTH) {
+        flushGroup();
         paragraphIdx++;
         continue;
       }
 
-      const paraInput = `${titlePrefix}\n\n${para}`;
+      const paraInput = withBodyTitlePrefix(para);
       const paraTokens = opts.tokenCounter
         ? opts.tokenCounter(paraInput)
         : estimateTokens(para);
@@ -1703,6 +1783,7 @@ export function chunkDocumentWithPagesEx(
       // The whitespace estimator is useful for English noise filtering but is
       // not meaningful for CJK. Exact multilingual paths rely on char length.
       if (!opts.tokenCounter && paraTokens < MIN_PARA_TOKENS) {
+        flushGroup();
         paragraphIdx++;
         continue;
       }
@@ -1720,14 +1801,10 @@ export function chunkDocumentWithPagesEx(
 
           if (currentTokens + sentTokens > availableTokens && currentText.trim()) {
             // Flush current chunk
-            if (chunks.length >= opts.maxChunks) {
-              wasTruncated = true;
-              break;
-            }
             const sectionType = classifySection(currentText);
-            chunks.push({
-              index: chunks.length,
-              text: `${titlePrefix}\n\n${currentText.trim()}`,
+            currentGroup.push({
+              index: 0,
+              text: withBodyTitlePrefix(currentText.trim()),
               type: sectionType,
               tokenCount: currentTokens + titleTokens,
               pageNumber: page.pageNumber,
@@ -1743,26 +1820,22 @@ export function chunkDocumentWithPagesEx(
 
         // Flush remaining text
         if (currentText.trim()) {
-          if (chunks.length < opts.maxChunks) {
-            const sectionType = classifySection(currentText);
-            chunks.push({
-              index: chunks.length,
-              text: `${titlePrefix}\n\n${currentText.trim()}`,
-              type: sectionType,
-              tokenCount: currentTokens + titleTokens,
-              pageNumber: page.pageNumber,
-              paragraphIndex: paragraphIdx,
-            });
-          } else {
-            // Had content to flush but no room - this is truncation
-            wasTruncated = true;
-          }
+          const sectionType = classifySection(currentText);
+          currentGroup.push({
+            index: 0,
+            text: withBodyTitlePrefix(currentText.trim()),
+            type: sectionType,
+            tokenCount: currentTokens + titleTokens,
+            pageNumber: page.pageNumber,
+            paragraphIndex: paragraphIdx,
+          });
         }
       } else {
-        // Normal-sized paragraph: one chunk
+        // Keep one lossless candidate per recovered paragraph. Packing occurs
+        // only after every candidate on this physical page is known.
         const sectionType = classifySection(para);
-        chunks.push({
-          index: chunks.length,
+        currentGroup.push({
+          index: 0,
           text: paraInput,
           type: sectionType,
           tokenCount: opts.tokenCounter ? paraTokens : paraTokens + titleTokens,
@@ -1773,9 +1846,16 @@ export function chunkDocumentWithPagesEx(
 
       paragraphIdx++;
     }
+
+    flushGroup();
+    for (const group of pageGroups) {
+      chunks.push(...packPageParagraphs(group));
+    }
   }
 
-  // Enforce character limit as safety net (token estimates can undercount for dense text)
+  // Apply the shared document cap only after same-page packing and lossless
+  // oversized-input splitting. Otherwise legacy one-paragraph candidates can
+  // consume the quota before packing has a chance to reduce their count.
   const enforced = enforceInputLimitsEx(chunks, opts);
 
   // pagesIndexed: count distinct pages reflected in surviving chunks (excluding summary on p.1)
