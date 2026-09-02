@@ -2,15 +2,19 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   assessChangedNoteContent,
+  assessIndexConfigFingerprint,
   assessQuickFreshness,
   assessStoredSourceTexts,
   IndexFreshnessTracker,
+  legacyIndexConfigFingerprint,
   metadataFingerprint,
   noteContentFingerprint,
   noteStateFingerprint,
   notificationAffectsIndexedMetadata,
   resolveFreshnessDisplayState,
+  serializeIndexConfigFingerprint,
 } from '../src/core/index-freshness';
+import type { IndexConfigSnapshot } from '../src/core/index-freshness';
 import type { StartupFingerprint } from '../src/core/vector-store-sqlite';
 
 const note = (key: string, version: number, dateModified: string) => ({
@@ -34,6 +38,59 @@ function stored(overrides: Partial<StartupFingerprint> = {}): StartupFingerprint
 }
 
 describe('shared freshness fingerprints', () => {
+  test('classifies comparable config snapshots and preserves legacy compatibility', () => {
+    const base: IndexConfigSnapshot = {
+      indexContractVersion: 4,
+      mode: 'full',
+      maxChunksPerPaper: 100,
+      chunkStrategyVersion: 6,
+      modelInputPolicy: 'policy-v1',
+    };
+    const current = { ...base, maxChunksPerPaper: 101 };
+
+    assert.equal(
+      assessIndexConfigFingerprint(serializeIndexConfigFingerprint(current), current),
+      'current',
+    );
+    assert.equal(
+      assessIndexConfigFingerprint(legacyIndexConfigFingerprint(current), current),
+      'legacy-current',
+    );
+    assert.equal(
+      assessIndexConfigFingerprint(serializeIndexConfigFingerprint(base), current),
+      'max-chunks-increased',
+    );
+    assert.equal(
+      assessIndexConfigFingerprint(
+        serializeIndexConfigFingerprint(current),
+        base,
+      ),
+      'changed',
+    );
+
+    for (const incompatible of [
+      { ...base, mode: 'notes' as const },
+      { ...base, chunkStrategyVersion: 7 },
+      { ...base, modelInputPolicy: 'policy-v2' },
+    ]) {
+      assert.equal(
+        assessIndexConfigFingerprint(
+          serializeIndexConfigFingerprint(incompatible),
+          current,
+        ),
+        'changed',
+      );
+    }
+    assert.equal(
+      assessIndexConfigFingerprint(legacyIndexConfigFingerprint(base), current),
+      'changed',
+    );
+    assert.equal(
+      assessIndexConfigFingerprint('zotseek-index-config:v1:{bad', current),
+      'changed',
+    );
+  });
+
   test('sorts Child Notes by stable key before hashing', () => {
     const a = note('A', 1, '2026-01-01');
     const b = note('B', 2, '2026-01-02');

@@ -27,6 +27,43 @@ function threeButtonFlags(promptService: PromptServiceLike): number {
   return position0 * stringTitle + position1 * stringTitle + position2 * stringTitle;
 }
 
+function twoButtonFlags(promptService: PromptServiceLike): number {
+  const position0 = promptService.BUTTON_POS_0 ?? 1;
+  const position1 = promptService.BUTTON_POS_1 ?? 256;
+  const stringTitle = promptService.BUTTON_TITLE_IS_STRING ?? 127;
+  return position0 * stringTitle + position1 * stringTitle;
+}
+
+/** Use action-specific localized labels instead of platform-default OK/Cancel. */
+export function openIndexConfirmationPrompt(
+  promptService: PromptServiceLike | null | undefined,
+  win: unknown,
+  title: string,
+  message: string,
+  confirmLabel: string,
+  cancelLabel: string,
+): boolean {
+  if (typeof promptService?.confirmEx === 'function') {
+    return promptService.confirmEx(
+      win,
+      title,
+      message,
+      twoButtonFlags(promptService),
+      confirmLabel,
+      cancelLabel,
+      null,
+      null,
+      { value: false },
+    ) === 0;
+  }
+
+  // Preserve compatibility with older prompt implementations. Their native
+  // button labels may not be customizable, but cancellation remains safe.
+  return typeof promptService?.confirm === 'function'
+    ? promptService.confirm(win, title, message)
+    : false;
+}
+
 /** Close, Escape, and unknown results are always the zero-write cancel choice. */
 export function openIndexConfigChangePrompt(
   promptService: PromptServiceLike | null | undefined,

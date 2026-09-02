@@ -8,7 +8,11 @@
 
 import { Logger } from '../utils/logger';
 import { noteHTMLToIndexText } from '../utils/note-text';
-import { CHUNK_STRATEGY_VERSION, getIndexingMode } from '../utils/chunker';
+import {
+  CHUNK_STRATEGY_VERSION,
+  getChunkOptionsFromPrefs,
+  getIndexingMode,
+} from '../utils/chunker';
 import { identityFromItem, localItemIDFromIdentity } from './identity-resolver';
 import {
   getActiveModel,
@@ -28,15 +32,17 @@ import {
 import type { StartupFingerprint, TextSourceType } from './vector-store-sqlite';
 import {
   assessChangedNoteContent,
+  assessIndexConfigFingerprint,
   assessQuickFreshness,
   assessStoredSourceTexts,
   freshnessIdentityKey,
-  hashFreshnessText,
   indexFreshnessTracker,
   metadataFingerprint,
   noteContentFingerprint,
   noteStateFingerprint,
+  serializeIndexConfigFingerprint,
   type FreshnessIndexingMode,
+  type IndexConfigSnapshot,
 } from './index-freshness';
 
 declare const Zotero: any;
@@ -83,6 +89,7 @@ export type StartupConfigChangeChoice = 'update' | 'rebuild' | 'cancel';
 
 export type StartupConfigChangeContext = {
   affected: number;
+  rebuildRequired: number;
   checked: number;
 };
 
@@ -229,19 +236,25 @@ export class AutoIndexManager {
     };
   }
 
-  private getConfigFingerprint(mode: FreshnessIndexingMode): string {
-    const maxChunks = Zotero.Prefs.get('zotseek.maxChunksPerPaper', true) ?? 100;
+  private getConfigSnapshot(mode: FreshnessIndexingMode): IndexConfigSnapshot {
+    const maxChunks = getChunkOptionsFromPrefs(Zotero).maxChunks ?? 100;
     const policy = resolveModelInputPolicy(
       getActiveModel(),
       Zotero.Prefs.get('zotseek.maxTokens', true),
     );
-    return hashFreshnessText(JSON.stringify({
-      version: 4,
+    return {
+      indexContractVersion: 4,
       mode,
-      maxChunks,
+      maxChunksPerPaper: Number.isFinite(maxChunks) && maxChunks >= 1
+        ? maxChunks
+        : 100,
       chunkStrategyVersion: CHUNK_STRATEGY_VERSION,
       modelInputPolicy: modelInputPolicyFingerprint(policy),
-    }));
+    };
+  }
+
+  private getConfigFingerprint(mode: FreshnessIndexingMode): string {
+    return serializeIndexConfigFingerprint(this.getConfigSnapshot(mode));
   }
 
   private isScopedParent(item: any): boolean {
@@ -340,6 +353,28 @@ export class AutoIndexManager {
       checkedAt: new Date().toISOString(),
     };
     await this.vectorStore.setStartupFingerprint(fingerprint);
+  }
+
+  private async persistFingerprintSafely(
+    item: any,
+    quick: QuickSnapshot,
+    content: ContentSnapshot,
+    configFingerprint: string,
+    modelId: string,
+  ): Promise<boolean> {
+    const identity = identityFromItem(item);
+    try {
+      await this.persistFingerprint(item, quick, content, configFingerprint, modelId);
+      return true;
+    } catch (error: any) {
+      if (identity) indexFreshnessTracker.markDirty(identity);
+      this.logger.warn(
+        `Could not persist freshness for ` +
+        `${identity?.libraryKey || 'unknown'}/${identity?.itemKey || item?.id || 'unknown'}: ` +
+        `${error?.message || error}`,
+      );
+      return false;
+    }
   }
 
   private async persistSuccessful(
@@ -517,10 +552,10 @@ export class AutoIndexManager {
   private async inspectStartupConfigChanges(
     suppliedItems: any[],
   ): Promise<StartupConfigChangeContext> {
-    if (!this.vectorStore) return { affected: 0, checked: 0 };
+    if (!this.vectorStore) return { affected: 0, rebuildRequired: 0, checked: 0 };
 
     const mode = getIndexingMode(Zotero) as FreshnessIndexingMode;
-    const configFingerprint = this.getConfigFingerprint(mode);
+    const configSnapshot = this.getConfigSnapshot(mode);
     const modelId = getActiveModelId();
     const exclusionPolicy = readIndexExclusionPolicy(Zotero);
     const storedMode = typeof this.vectorStore.getMetadata === 'function'
@@ -530,8 +565,19 @@ export class AutoIndexManager {
     const indexedIdentities = await this.vectorStore.getIndexedIdentities(modelId);
     const indexed = new Set(indexedIdentities.map((identity: any) =>
       `${identity.libraryKey}\u0000${identity.itemKey}`));
+    const suppliedKeys = new Set(suppliedItems
+      .filter(item => this.shouldProcess(item, exclusionPolicy))
+      .map(item => identityFromItem(item))
+      .filter(Boolean)
+      .map(identity => freshnessIdentityKey(identity!)));
+    const scopedIndexedIdentities = indexedIdentities.filter((identity: any) =>
+      suppliedKeys.has(freshnessIdentityKey(identity)));
+    const indexStatus = typeof this.vectorStore.getIndexStatusByIdentity === 'function'
+      ? await this.vectorStore.getIndexStatusByIdentity(scopedIndexedIdentities)
+      : new Map<string, { wasTruncated: boolean }>();
     const seen = new Set<string>();
     let affected = 0;
+    let rebuildRequired = 0;
     let checked = 0;
 
     for (const item of suppliedItems) {
@@ -548,13 +594,28 @@ export class AutoIndexManager {
         identity.itemKey,
         modelId,
       );
-      if ((stored && stored.configFingerprint !== configFingerprint) ||
-          (!stored && storedModeChanged)) {
+      if (!stored && storedModeChanged) {
         affected++;
+        rebuildRequired++;
+        continue;
+      }
+      if (!stored) continue;
+      const configAssessment = assessIndexConfigFingerprint(
+        stored.configFingerprint,
+        configSnapshot,
+      );
+      if (configAssessment === 'changed') {
+        affected++;
+        rebuildRequired++;
+      } else if (configAssessment === 'max-chunks-increased') {
+        affected++;
+        const status = indexStatus.get(`${identity.libraryKey}|${identity.itemKey}`);
+        // Missing status cannot prove that selective baseline advancement is safe.
+        if (!status || status.wasTruncated) rebuildRequired++;
       }
     }
 
-    return { affected, checked };
+    return { affected, rebuildRequired, checked };
   }
 
   private async runCheck(promptForConfigChanges = false): Promise<StartupCheckResult> {
@@ -628,6 +689,7 @@ export class AutoIndexManager {
     this.checking = true;
     const result = this.emptyResult();
     const mode = getIndexingMode(Zotero) as FreshnessIndexingMode;
+    const configSnapshot = this.getConfigSnapshot(mode);
     const configFingerprint = this.getConfigFingerprint(mode);
     const modelId = getActiveModelId();
     const exclusionPolicy = readIndexExclusionPolicy(Zotero);
@@ -663,6 +725,13 @@ export class AutoIndexManager {
       const indexedIdentities = await this.vectorStore.getIndexedIdentities(modelId);
       const indexed = new Set(indexedIdentities.map((identity: any) =>
         freshnessIdentityKey(identity)));
+      const scopedIndexedIdentities = items
+        .map(item => identityFromItem(item))
+        .filter((identity): identity is { libraryKey: string; itemKey: string } =>
+          !!identity && indexed.has(freshnessIdentityKey(identity)));
+      const indexStatus = typeof this.vectorStore.getIndexStatusByIdentity === 'function'
+        ? await this.vectorStore.getIndexStatusByIdentity(scopedIndexedIdentities)
+        : new Map<string, { wasTruncated: boolean }>();
       let excludedOutdated = 0;
 
       if (allowWrites && (options.purgeMissingScope || excludedItems.length > 0)) {
@@ -725,27 +794,59 @@ export class AutoIndexManager {
           rebuildItems.push(item);
           continue;
         }
+        const configAssessment = storedFingerprint
+          ? assessIndexConfigFingerprint(
+              storedFingerprint.configFingerprint,
+              configSnapshot,
+            )
+          : null;
+        const status = indexStatus.get(`${identity.libraryKey}|${identity.itemKey}`);
+        const requiresConfigRebuild =
+          configAssessment === 'changed' ||
+          (configAssessment === 'max-chunks-increased' &&
+            (!status || status.wasTruncated));
         const quickAssessment = assessQuickFreshness({
           indexed: true,
           mode,
-          configFingerprint,
+          // Legacy-equal and safe max-chunk increases still need normal
+          // Metadata/Note checks before their config fingerprint can advance.
+          configFingerprint: requiresConfigRebuild
+            ? configFingerprint
+            : (storedFingerprint?.configFingerprint || configFingerprint),
           metadataFingerprint: quick.metadataFingerprint,
           noteStateFingerprint: quick.noteStateFingerprint,
           storedFingerprint,
         });
 
         if (quickAssessment === 'current') {
+          const configFingerprintNeedsUpgrade = !!storedFingerprint &&
+            storedFingerprint.configFingerprint !== configFingerprint;
           // Advance checkedAt only when the parent changed since verification,
           // avoiding writes for every unchanged item on every startup.
           if (persistFreshness && storedFingerprint &&
-              isModifiedAfterVerification(item.dateModified, storedFingerprint.checkedAt)) {
-            await this.vectorStore.setStartupFingerprint({
-              ...storedFingerprint,
-              checkedAt: new Date().toISOString(),
-            });
+              (configFingerprintNeedsUpgrade ||
+               isModifiedAfterVerification(item.dateModified, storedFingerprint.checkedAt))) {
+            try {
+              await this.vectorStore.setStartupFingerprint({
+                ...storedFingerprint,
+                configFingerprint,
+                metadataFingerprint: quick.metadataFingerprint,
+                noteStateFingerprint: quick.noteStateFingerprint,
+                checkedAt: new Date().toISOString(),
+              });
+            } catch (error: any) {
+              indexFreshnessTracker.markDirty(identity);
+              result.failed++;
+              this.logger.warn(
+                `Could not advance config fingerprint for ` +
+                `${identity.libraryKey}/${identity.itemKey}: ${error?.message || error}`,
+              );
+              continue;
+            }
           }
           indexFreshnessTracker.clearDirty(identity);
-          result.unchanged++;
+          if (persistFreshness && configFingerprintNeedsUpgrade) result.baselined++;
+          else result.unchanged++;
         } else if (quickAssessment === 'config-changed' ||
                    quickAssessment === 'metadata-changed') {
           indexFreshnessTracker.markDirty(identity);
@@ -755,7 +856,17 @@ export class AutoIndexManager {
           snapshots.set(item.id, { quick, content });
           if (assessChangedNoteContent(storedFingerprint, content.noteContentFingerprint) === 'current') {
             if (persistFreshness) {
-              await this.persistFingerprint(item, quick, content, configFingerprint, modelId);
+              const persisted = await this.persistFingerprintSafely(
+                item,
+                quick,
+                content,
+                configFingerprint,
+                modelId,
+              );
+              if (!persisted) {
+                result.failed++;
+                continue;
+              }
             }
             indexFreshnessTracker.clearDirty(identity);
             if (persistFreshness) result.baselined++;
@@ -782,7 +893,17 @@ export class AutoIndexManager {
             noteItems.push(item);
           } else {
             if (persistFreshness) {
-              await this.persistFingerprint(item, quick, content, configFingerprint, modelId);
+              const persisted = await this.persistFingerprintSafely(
+                item,
+                quick,
+                content,
+                configFingerprint,
+                modelId,
+              );
+              if (!persisted) {
+                result.failed++;
+                continue;
+              }
             }
             indexFreshnessTracker.clearDirty(identity);
             if (persistFreshness) result.baselined++;
@@ -797,7 +918,7 @@ export class AutoIndexManager {
 
       const fullItems = [...newItems, ...rebuildItems];
       if (!allowWrites) {
-        result.outdated = excludedOutdated + fullItems.length + noteItems.length;
+        result.outdated = excludedOutdated + fullItems.length + noteItems.length + result.failed;
       } else {
         const configurationChanged =
           getActiveModelId() !== modelId ||

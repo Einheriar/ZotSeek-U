@@ -316,6 +316,7 @@ zotseek-indexing-clearConfirmTitle = 清除 ZotSeek 索引
 zotseek-indexing-clearConfirmMsg = 这将删除所有存储的嵌入向量。您需要重新索引文献库。
 
     继续？
+zotseek-indexing-clearConfirmButton = 清除索引
 zotseek-indexing-initStorage = 正在初始化存储...
 zotseek-indexing-deletingAll = 正在删除所有嵌入向量...
 zotseek-indexing-clearedSuccess = 索引已成功清除！
@@ -325,6 +326,7 @@ zotseek-indexing-clearedMsg = 索引已成功清除。
 zotseek-indexing-rebuildTitle = 重建 ZotSeek 索引
 zotseek-indexing-rebuildConfirmTitle = 重建 ZotSeek 索引
 zotseek-indexing-rebuildConfirmMsg = 这将删除所有存储的嵌入向量并使用当前设置重建索引。
+zotseek-indexing-rebuildConfirmButton = 重建索引
 zotseek-indexing-chunkStrategyRebuildRequired = ZotSeek 检测到当前模型的索引使用旧版分块策略。旧索引仍可搜索，但后台增量更新已暂停，以避免新旧分块混合。请在设置中使用“重建索引”完成全量重建。关闭此提示不会启动重建或修改现有索引。
 
     根据文献库大小，这可能需要几分钟。
@@ -343,11 +345,13 @@ zotseek-indexing-emptyCollection = 合集"{ $name }"没有可索引的条目。
 zotseek-indexing-emptyCollections = 选定的 { $count } 个合集没有可索引的条目。
 zotseek-indexing-updateTitle = ZotSeek - 检查并更新索引
 zotseek-indexing-updateConfirmMsg = 要检查并更新{ $scope }的索引吗？ZotSeek 将添加缺失条目，更新元数据、笔记或索引设置发生变化的条目，跳过未变化条目，并清理已从 Zotero 删除或当前命中排除规则的索引记录。索引设置变化可能会使已有条目按当前设置重新计算。
+zotseek-indexing-updateConfirmButton = 检查并更新
+zotseek-indexing-confirmCancel = 取消
 zotseek-indexing-scopeUser = 您的个人文献库
 zotseek-indexing-scopeAll = 您的所有文献库（个人 + 群组）
 
 zotseek-indexing-configChangeTitle = ZotSeek - 索引设置已变化
-zotseek-indexing-configChangeMessage = { $scope }中有 { $affected } 个已有索引的条目受到索引设置变化影响。在您选择操作前，ZotSeek 不会删除记录、更新指纹或写入嵌入向量。要如何继续本次启动检查？
+zotseek-indexing-configChangeMessage = { $scope }中有 { $affected } 个已有索引条目的配置记录需要更新，其中 { $rebuildRequired } 个条目需要重新计算嵌入向量，其余条目只更新配置记录。在您选择操作前，ZotSeek 不会删除记录、更新指纹或写入嵌入向量。要如何继续本次启动检查？
 zotseek-indexing-configChangeUpdate = 检查并更新索引
 zotseek-indexing-configChangeRebuild = 重建索引
 zotseek-indexing-configChangeCancel = 取消
@@ -355,6 +359,7 @@ zotseek-indexing-configChangeCancel = 取消
 # 启动时检测到先前中断的索引任务时显示的恢复提示。
 zotseek-resume-title = ZotSeek - 恢复索引
 zotseek-resume-message = 上一次索引被中断。ZotSeek 将重新检查{ $scope }中的全部 { $count } 个条目，并继续处理未完成或失败的更新。已经是最新状态的条目将被跳过。如果取消，本次 Zotero 启动也不再执行自动索引维护。现在恢复吗？
+zotseek-resume-confirm = 继续执行
 zotseek-resume-scopeLibrary = 您的所有文献库
 zotseek-resume-scopeUserLibrary = 您的个人文献库
 zotseek-resume-scopeCollection = "{ $name }" 合集

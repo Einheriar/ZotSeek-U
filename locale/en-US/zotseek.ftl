@@ -316,6 +316,7 @@ zotseek-indexing-clearConfirmTitle = Clear ZotSeek Index
 zotseek-indexing-clearConfirmMsg = This will delete all stored embeddings. You will need to re-index your library.
 
     Continue?
+zotseek-indexing-clearConfirmButton = Clear Index
 zotseek-indexing-initStorage = Initializing storage...
 zotseek-indexing-deletingAll = Deleting all embeddings...
 zotseek-indexing-clearedSuccess = Index cleared successfully!
@@ -325,6 +326,7 @@ zotseek-indexing-clearedMsg = Index cleared successfully.
 zotseek-indexing-rebuildTitle = Rebuild ZotSeek Index
 zotseek-indexing-rebuildConfirmTitle = Rebuild ZotSeek Index
 zotseek-indexing-rebuildConfirmMsg = This will delete all stored embeddings and rebuild the index with your current settings.
+zotseek-indexing-rebuildConfirmButton = Rebuild Index
 zotseek-indexing-chunkStrategyRebuildRequired = ZotSeek detected that the current model's index uses an older chunking strategy. The existing index remains searchable, but background incremental updates are paused to avoid mixing old and new chunks. Use "Rebuild Index" in Settings to perform a full rebuild. Dismissing this notice does not start a rebuild or modify the existing index.
 
     This may take several minutes depending on library size.
@@ -343,11 +345,13 @@ zotseek-indexing-emptyCollection = Collection "{ $name }" has no items to index.
 zotseek-indexing-emptyCollections = The { $count } selected collections have no items to index.
 zotseek-indexing-updateTitle = ZotSeek - Check and Update Index
 zotseek-indexing-updateConfirmMsg = Check and update the index for { $scope }? ZotSeek will add missing items, update items whose metadata, notes, or indexing settings changed, skip unchanged items, and remove records for items deleted from Zotero or now excluded by indexing rules. Changes to indexing settings may recompute existing items using the current settings.
+zotseek-indexing-updateConfirmButton = Check and Update
+zotseek-indexing-confirmCancel = Cancel
 zotseek-indexing-scopeUser = your personal library
 zotseek-indexing-scopeAll = all your libraries (personal + groups)
 
 zotseek-indexing-configChangeTitle = ZotSeek - Index Settings Changed
-zotseek-indexing-configChangeMessage = The indexing settings changed for { $affected } already indexed item(s) in { $scope }. Before you choose, ZotSeek will not delete records, update fingerprints, or write embeddings. How should this startup check proceed?
+zotseek-indexing-configChangeMessage = The indexing settings changed for { $affected } already indexed item(s) in { $scope }; { $rebuildRequired } item(s) need embeddings recomputed, while the others only need their configuration record updated. Before you choose, ZotSeek will not delete records, update fingerprints, or write embeddings. How should this startup check proceed?
 zotseek-indexing-configChangeUpdate = Check and Update Index
 zotseek-indexing-configChangeRebuild = Rebuild Index
 zotseek-indexing-configChangeCancel = Cancel
@@ -355,6 +359,7 @@ zotseek-indexing-configChangeCancel = Cancel
 # Auto-resume prompt shown at startup when a previous bulk-index run was interrupted.
 zotseek-resume-title = ZotSeek - Resume Indexing
 zotseek-resume-message = A previous indexing run was interrupted. ZotSeek will recheck all { $count } item(s) in { $scope } and resume unfinished or failed updates. Items that are already current will be skipped. If you cancel, automatic index maintenance will also be skipped for this startup. Resume now?
+zotseek-resume-confirm = Resume Indexing
 zotseek-resume-scopeLibrary = your libraries
 zotseek-resume-scopeUserLibrary = your personal library
 zotseek-resume-scopeCollection = the "{ $name }" collection

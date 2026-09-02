@@ -48,6 +48,22 @@ export interface SourceTextSnapshot {
   notes: string[];
 }
 
+export interface IndexConfigSnapshot {
+  indexContractVersion: number;
+  mode: FreshnessIndexingMode;
+  maxChunksPerPaper: number;
+  chunkStrategyVersion: number;
+  modelInputPolicy: string;
+}
+
+export type IndexConfigFingerprintAssessment =
+  | 'current'
+  | 'legacy-current'
+  | 'max-chunks-increased'
+  | 'changed';
+
+const INDEX_CONFIG_FINGERPRINT_PREFIX = 'zotseek-index-config:v1:';
+
 export function freshnessIdentityKey(identity: StableIdentity): string {
   return `${identity.libraryKey}\u0000${identity.itemKey}`;
 }
@@ -67,6 +83,79 @@ export function hashFreshnessText(value: string): string {
   h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^
     Math.imul(h1 ^ (h1 >>> 13), 3266489909);
   return `${(h2 >>> 0).toString(16).padStart(8, '0')}${(h1 >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+/** Serialize a comparable config snapshot without changing the existing DB schema. */
+export function serializeIndexConfigFingerprint(snapshot: IndexConfigSnapshot): string {
+  return INDEX_CONFIG_FINGERPRINT_PREFIX + JSON.stringify({
+    formatVersion: 1,
+    indexContractVersion: snapshot.indexContractVersion,
+    mode: snapshot.mode,
+    maxChunksPerPaper: snapshot.maxChunksPerPaper,
+    chunkStrategyVersion: snapshot.chunkStrategyVersion,
+    modelInputPolicy: snapshot.modelInputPolicy,
+  });
+}
+
+/** Reproduce the pre-Plan-32 hash so equal legacy fingerprints upgrade without embedding. */
+export function legacyIndexConfigFingerprint(snapshot: IndexConfigSnapshot): string {
+  return hashFreshnessText(JSON.stringify({
+    version: snapshot.indexContractVersion,
+    mode: snapshot.mode,
+    maxChunks: snapshot.maxChunksPerPaper,
+    chunkStrategyVersion: snapshot.chunkStrategyVersion,
+    modelInputPolicy: snapshot.modelInputPolicy,
+  }));
+}
+
+function parseIndexConfigFingerprint(value: string): IndexConfigSnapshot | null {
+  if (!value.startsWith(INDEX_CONFIG_FINGERPRINT_PREFIX)) return null;
+  try {
+    const parsed = JSON.parse(value.slice(INDEX_CONFIG_FINGERPRINT_PREFIX.length));
+    if (parsed?.formatVersion !== 1 ||
+        !Number.isInteger(parsed.indexContractVersion) ||
+        !['abstract', 'notes', 'full'].includes(parsed.mode) ||
+        typeof parsed.maxChunksPerPaper !== 'number' ||
+        !Number.isFinite(parsed.maxChunksPerPaper) || parsed.maxChunksPerPaper < 1 ||
+        !Number.isInteger(parsed.chunkStrategyVersion) ||
+        typeof parsed.modelInputPolicy !== 'string' || !parsed.modelInputPolicy) {
+      return null;
+    }
+    return {
+      indexContractVersion: parsed.indexContractVersion,
+      mode: parsed.mode,
+      maxChunksPerPaper: parsed.maxChunksPerPaper,
+      chunkStrategyVersion: parsed.chunkStrategyVersion,
+      modelInputPolicy: parsed.modelInputPolicy,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Identify the one safe selective-rebuild case. Unknown or legacy differences
+ * remain conservative because their previous max-chunk value cannot be proven.
+ */
+export function assessIndexConfigFingerprint(
+  storedFingerprint: string,
+  current: IndexConfigSnapshot,
+): IndexConfigFingerprintAssessment {
+  if (storedFingerprint === serializeIndexConfigFingerprint(current)) return 'current';
+  if (storedFingerprint === legacyIndexConfigFingerprint(current)) return 'legacy-current';
+
+  const stored = parseIndexConfigFingerprint(storedFingerprint);
+  if (!stored) return 'changed';
+  const sameOtherConfig =
+    stored.indexContractVersion === current.indexContractVersion &&
+    stored.mode === current.mode &&
+    stored.chunkStrategyVersion === current.chunkStrategyVersion &&
+    stored.modelInputPolicy === current.modelInputPolicy;
+  if (!sameOtherConfig) return 'changed';
+  if (current.maxChunksPerPaper > stored.maxChunksPerPaper) {
+    return 'max-chunks-increased';
+  }
+  return current.maxChunksPerPaper === stored.maxChunksPerPaper ? 'current' : 'changed';
 }
 
 export function metadataFingerprint(item: any): string {

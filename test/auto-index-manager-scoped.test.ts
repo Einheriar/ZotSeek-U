@@ -3,8 +3,17 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { installZoteroStub } from './helpers/zotero-stub';
 import { autoIndexManager } from '../src/core/auto-index-manager';
-import { indexFreshnessTracker } from '../src/core/index-freshness';
+import {
+  indexFreshnessTracker,
+  legacyIndexConfigFingerprint,
+  metadataFingerprint,
+  noteContentFingerprint,
+  noteStateFingerprint,
+} from '../src/core/index-freshness';
+import { modelInputPolicyFingerprint, resolveModelInputPolicy } from '../src/core/model-input-policy';
+import { getActiveModel } from '../src/core/model-registry';
 import { textExtractor } from '../src/core/text-extractor';
+import { CHUNK_STRATEGY_VERSION } from '../src/utils/chunker';
 import type { StartupFingerprint, TextSourceType } from '../src/core/vector-store-sqlite';
 
 type FakePaper = ReturnType<typeof createPaper>;
@@ -54,6 +63,207 @@ function createNote(paper: FakePaper) {
 }
 
 describe('scoped index reconciliation', () => {
+  test('rebuilds only truncated papers when maxChunksPerPaper is increased', async () => {
+    const zotero = installZoteroStub({
+      'zotseek.indexScope': 'user',
+      'zotseek.indexingMode': 'notes',
+      'zotseek.embeddingModel': 'multilingual-e5-base',
+      'zotseek.maxChunksPerPaper': 100,
+      'zotseek.excludeBooks': false,
+      'zotseek.excludeTag': '',
+    });
+    const papers = [createPaper(1), createPaper(2)];
+    const notes = new Map(papers.map(paper => [paper.noteID, createNote(paper)]));
+    const paperByKey = new Map(papers.map(paper => [paper.key, paper]));
+    zotero.Libraries = {
+      userLibraryID: 1,
+      get: () => ({ libraryID: 1, libraryType: 'user' }),
+    };
+    zotero.Items = {
+      get: (id: number) => papers.find(paper => paper.id === id) || notes.get(id) || null,
+      getAsync: async (ids: number[]) => ids.map(id => notes.get(id)).filter(Boolean),
+      getIDFromLibraryAndKey: (_libraryID: number, key: string) =>
+        papers.find(paper => paper.key === key)?.id || false,
+    };
+
+    const legacyConfigFingerprint = legacyIndexConfigFingerprint({
+      indexContractVersion: 4,
+      mode: 'notes',
+      maxChunksPerPaper: 100,
+      chunkStrategyVersion: CHUNK_STRATEGY_VERSION,
+      modelInputPolicy: modelInputPolicyFingerprint(resolveModelInputPolicy(
+        getActiveModel(),
+        zotero.Prefs.get('zotseek.maxTokens', true),
+      )),
+    });
+    const fingerprints = new Map<string, StartupFingerprint>(papers.map(paper => [
+      `user\u0000${paper.key}\u0000multilingual-e5-base`,
+      {
+        libraryKey: 'user',
+        itemKey: paper.key,
+        modelId: 'multilingual-e5-base',
+        configFingerprint: legacyConfigFingerprint,
+        metadataFingerprint: metadataFingerprint(paper),
+        noteStateFingerprint: noteStateFingerprint([createNote(paper)], 'notes'),
+        noteContentFingerprint: noteContentFingerprint([
+          { key: createNote(paper).key, text: paper.noteText },
+        ], 'notes'),
+        checkedAt: '2026-08-30T00:00:00.000Z',
+      },
+    ]));
+    let fingerprintWrites = 0;
+    let failFingerprintFor: string | null = null;
+    const truncatedKeys = new Set([papers[0].key]);
+    const identities = papers.map(paper => ({ libraryKey: 'user', itemKey: paper.key }));
+    const store = {
+      getIndexedIdentities: async () => identities,
+      getMetadata: async () => 'notes',
+      getIndexStatusByIdentity: async (requested: Array<{ libraryKey: string; itemKey: string }>) =>
+        new Map(requested.map(identity => [
+          `${identity.libraryKey}|${identity.itemKey}`,
+          { wasTruncated: truncatedKeys.has(identity.itemKey) },
+        ])),
+      getStartupFingerprint: async (libraryKey: string, itemKey: string, modelId: string) =>
+        fingerprints.get(`${libraryKey}\u0000${itemKey}\u0000${modelId}`) || null,
+      setStartupFingerprint: async (fingerprint: StartupFingerprint) => {
+        if (fingerprint.itemKey === failFingerprintFor) {
+          failFingerprintFor = null;
+          throw new Error('fingerprint busy');
+        }
+        fingerprintWrites++;
+        fingerprints.set(
+          `${fingerprint.libraryKey}\u0000${fingerprint.itemKey}\u0000${fingerprint.modelId}`,
+          fingerprint,
+        );
+      },
+      getChunkTextsBySources: async (
+        _libraryKey: string,
+        itemKey: string,
+        sources: TextSourceType[],
+      ) => {
+        const paper = paperByKey.get(itemKey)!;
+        return sources.includes('note') ? [paper.noteText] : [`Summary ${paper.id}`];
+      },
+    };
+    autoIndexManager.setVectorStore(store);
+
+    const originalExtract = textExtractor.extractChunksFromItem;
+    (textExtractor as any).extractChunksFromItem = async (paper: FakePaper) => ({
+      chunks: [
+        { type: 'summary', text: `Summary ${paper.id}` },
+        { type: 'note', text: paper.noteText },
+      ],
+      wasTruncated: paper.id === 1,
+    });
+
+    try {
+      const baseline = await autoIndexManager.reconcileItems(papers, {
+        allowWrites: false,
+      });
+      assert.equal(baseline.baselined, 2);
+      assert.equal(fingerprintWrites, 2);
+
+      zotero.Prefs.set('zotseek.maxChunksPerPaper', 101, true);
+      autoIndexManager.setItemProvider(async () => papers);
+      autoIndexManager.setIndexCallback(async () => []);
+      autoIndexManager.setNoteIndexCallback(async () => []);
+
+      let promptedAffected = 0;
+      let promptedRebuildRequired = 0;
+      autoIndexManager.setStartupConfigChangeCallback(context => {
+        promptedAffected = context.affected;
+        promptedRebuildRequired = context.rebuildRequired;
+        return 'cancel';
+      });
+      const cancelled = await autoIndexManager.runNow({ promptForConfigChanges: true });
+      assert.equal(promptedAffected, 2);
+      assert.equal(promptedRebuildRequired, 1);
+      assert.equal(cancelled.outdated, 2);
+      assert.equal(fingerprintWrites, 2);
+
+      const fullCalls: number[][] = [];
+      const noteCalls: number[][] = [];
+      autoIndexManager.setIndexCallback(async candidates => {
+        fullCalls.push(candidates.map(item => item.id));
+        return candidates.map(item => item.id);
+      });
+      autoIndexManager.setNoteIndexCallback(async candidates => {
+        noteCalls.push(candidates.map(item => item.id));
+        return candidates.map(item => item.id);
+      });
+      autoIndexManager.setStartupConfigChangeCallback(() => 'update');
+      const updated = await autoIndexManager.runNow({ promptForConfigChanges: true });
+
+      assert.deepEqual(fullCalls, [[1]]);
+      assert.deepEqual(noteCalls, []);
+      assert.equal(updated.rebuilt, 1);
+      assert.equal(updated.baselined, 1);
+      assert.equal(updated.failed, 0);
+      assert.equal(fingerprintWrites, 4);
+
+      // Fingerprint-only progress is isolated per item. A failed write keeps
+      // the old config and dirty state so the next scoped check retries it.
+      zotero.Prefs.set('zotseek.maxChunksPerPaper', 102, true);
+      failFingerprintFor = papers[1].key;
+      const failedUpgrade = await autoIndexManager.reconcileItems(papers, {
+        fullIndexCallback: async candidates => candidates.map(item => item.id),
+        noteIndexCallback: async () => [],
+      });
+      assert.equal(failedUpgrade.rebuilt, 1);
+      assert.equal(failedUpgrade.failed, 1);
+      assert.equal(failedUpgrade.outdated, 1);
+      assert.equal(indexFreshnessTracker.isDirty({
+        libraryKey: 'user', itemKey: papers[1].key,
+      }), true);
+
+      const retried = await autoIndexManager.reconcileItems([papers[1]], {
+        fullIndexCallback: async () => { throw new Error('unexpected full rebuild'); },
+        noteIndexCallback: async () => { throw new Error('unexpected Note update'); },
+      });
+      assert.equal(retried.baselined, 1);
+      assert.equal(retried.failed, 0);
+      assert.equal(indexFreshnessTracker.isDirty({
+        libraryKey: 'user', itemKey: papers[1].key,
+      }), false);
+
+      // Even when no item is truncated, startup still asks before advancing
+      // configuration records, so Cancel remains a true zero-write choice.
+      truncatedKeys.clear();
+      zotero.Prefs.set('zotseek.maxChunksPerPaper', 103, true);
+      let allCurrentContext = { affected: 0, rebuildRequired: -1 };
+      autoIndexManager.setStartupConfigChangeCallback(context => {
+        allCurrentContext = context;
+        return 'cancel';
+      });
+      const writesBeforeCancel = fingerprintWrites;
+      const allCurrentCancelled = await autoIndexManager.runNow({ promptForConfigChanges: true });
+      assert.equal(allCurrentContext.affected, 2);
+      assert.equal(allCurrentContext.rebuildRequired, 0);
+      assert.equal(allCurrentCancelled.outdated, 2);
+      assert.equal(fingerprintWrites, writesBeforeCancel);
+
+      autoIndexManager.setIndexCallback(async () => {
+        throw new Error('unexpected full rebuild');
+      });
+      autoIndexManager.setNoteIndexCallback(async () => {
+        throw new Error('unexpected Note update');
+      });
+      autoIndexManager.setStartupConfigChangeCallback(() => 'update');
+      const allCurrentUpdated = await autoIndexManager.runNow({ promptForConfigChanges: true });
+      assert.equal(allCurrentUpdated.baselined, 2);
+      assert.equal(allCurrentUpdated.rebuilt, 0);
+      assert.equal(allCurrentUpdated.failed, 0);
+    } finally {
+      (textExtractor as any).extractChunksFromItem = originalExtract;
+      autoIndexManager.setStartupConfigChangeCallback(null);
+      autoIndexManager.setIndexCallback(null);
+      autoIndexManager.setNoteIndexCallback(null);
+      autoIndexManager.setItemProvider(null);
+      autoIndexManager.setVectorStore(null);
+      indexFreshnessTracker.clearAll();
+    }
+  });
+
   test('checks 150 supplied papers but sends only the changed parent to Note update', async () => {
     const zotero = installZoteroStub({
       'zotseek.indexingMode': 'notes',

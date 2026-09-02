@@ -40,7 +40,10 @@ import { similarDocumentsWrapper } from './ui/similar-documents-wrapper';
 import { toolbarButton } from './ui/toolbar-button';
 import { itemTreeIndexColumn } from './ui/item-tree-column';
 import { preferencesManager } from './ui/preferences';
-import { openIndexConfigChangePrompt } from './ui/index-config-change-prompt';
+import {
+  openIndexConfigChangePrompt,
+  openIndexConfirmationPrompt,
+} from './ui/index-config-change-prompt';
 import { showServerModelConfigurationPromptIfNeeded } from './ui/server-model-prompt';
 import { identityFromItem, libraryKeyFromLocalID, localItemIDFromIdentity } from './core/identity-resolver';
 import {
@@ -708,10 +711,13 @@ class ZotSeekPlugin {
       return false;
     }
     const win = Z.getMainWindow();
-    const proceed = Services.prompt.confirm(
+    const proceed = openIndexConfirmationPrompt(
+      Services?.prompt,
       win,
       getString('resume-title'),
-      getString('resume-message', { count: scopedItems.length, scope: label })
+      getString('resume-message', { count: scopedItems.length, scope: label }),
+      getString('resume-confirm'),
+      getString('indexing-confirmCancel'),
     );
 
     if (!proceed) {
@@ -743,7 +749,7 @@ class ZotSeekPlugin {
         ? this.zoteroAPI.getAllLibraryItems()
         : this.zoteroAPI.getLibraryItems(Z.Libraries.userLibraryID);
     });
-    autoIndexManager.setStartupConfigChangeCallback(({ affected }) => {
+    autoIndexManager.setStartupConfigChangeCallback(({ affected, rebuildRequired }) => {
       const Z = getZotero();
       const scopeLabel = this.getIndexScope() === 'all'
         ? getString('indexing-scopeAll')
@@ -752,7 +758,11 @@ class ZotSeekPlugin {
         Services?.prompt,
         Z?.getMainWindow(),
         getString('indexing-configChangeTitle'),
-        getString('indexing-configChangeMessage', { affected, scope: scopeLabel }),
+        getString('indexing-configChangeMessage', {
+          affected,
+          rebuildRequired,
+          scope: scopeLabel,
+        }),
         getString('indexing-configChangeUpdate'),
         getString('indexing-configChangeRebuild'),
         getString('indexing-configChangeCancel'),
@@ -1043,10 +1053,13 @@ class ZotSeekPlugin {
   public async clearIndex(): Promise<void> {
     const Z = getZotero();
 
-    const confirmed = Services.prompt.confirm(
+    const confirmed = openIndexConfirmationPrompt(
+      Services?.prompt,
       Z?.getMainWindow(),
       getString('indexing-clearConfirmTitle'),
-      getString('indexing-clearConfirmMsg')
+      getString('indexing-clearConfirmMsg'),
+      getString('indexing-clearConfirmButton'),
+      getString('indexing-confirmCancel'),
     );
 
     if (!confirmed) return;
@@ -1119,10 +1132,13 @@ class ZotSeekPlugin {
     if (!this.ensureOperationalModel(true)) return;
     const Z = getZotero();
 
-    const confirmed = Services.prompt.confirm(
+    const confirmed = openIndexConfirmationPrompt(
+      Services?.prompt,
       Z?.getMainWindow(),
       getString('indexing-rebuildConfirmTitle'),
-      getString('indexing-rebuildConfirmMsg')
+      getString('indexing-rebuildConfirmMsg'),
+      getString('indexing-rebuildConfirmButton'),
+      getString('indexing-confirmCancel'),
     );
 
     if (!confirmed) return;
@@ -1487,10 +1503,13 @@ class ZotSeekPlugin {
     this.logger.info(`Found ${items.length} items to index`);
 
     if (!skipConfirmation) {
-      const confirmed = Services.prompt.confirm(
+      const confirmed = openIndexConfirmationPrompt(
+        Services?.prompt,
         Z.getMainWindow(),
         getString('indexing-updateTitle'),
-        getString('indexing-updateConfirmMsg', { scope: scopeLabel })
+        getString('indexing-updateConfirmMsg', { scope: scopeLabel }),
+        getString('indexing-updateConfirmButton'),
+        getString('indexing-confirmCancel'),
       );
 
       if (!confirmed) return;
