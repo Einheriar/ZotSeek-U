@@ -281,7 +281,8 @@ export class AutoIndexManager {
     };
   }
 
-  private getConfigFingerprint(mode: FreshnessIndexingMode): string {
+  /** Expose the frozen runtime contract so write paths can prove mode-only changes. */
+  public getConfigFingerprint(mode: FreshnessIndexingMode): string {
     return serializeIndexConfigFingerprint(this.getConfigSnapshot(mode));
   }
 

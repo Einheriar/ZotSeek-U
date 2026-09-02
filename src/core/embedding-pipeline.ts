@@ -36,6 +36,12 @@ export interface EmbeddingProgress {
 
 export type ProgressCallback = (progress: EmbeddingProgress) => void;
 
+type PendingWorkerJob = {
+  resolve: (result: EmbeddingResult) => void;
+  reject: (error: Error) => void;
+  timeoutId: ReturnType<typeof setTimeout>;
+};
+
 /**
  * Embedding Pipeline with ChromeWorker support
  */
@@ -49,7 +55,7 @@ export class EmbeddingPipeline {
   private worker: any = null;
   private serverClient: ServerEmbeddingClient | null = null;
   private workerReady = false;
-  private pendingJobs = new Map<string, { resolve: Function; reject: Function }>();
+  private pendingJobs = new Map<string, PendingWorkerJob>();
   private ready = false;
   // In-flight init() promise so N concurrent cold-start callers share a single
   // worker creation instead of each spawning (and leaking) their own. Cleared
@@ -185,18 +191,16 @@ export class EmbeddingPipeline {
             }
           } else if (type === 'error') {
             this.logger.error(`Worker error: ${error}`);
-            if (jobId && this.pendingJobs.has(jobId)) {
-              const job = this.pendingJobs.get(jobId)!;
-              this.pendingJobs.delete(jobId);
+            const job = jobId ? this.takePendingJob(jobId) : undefined;
+            if (job) {
               job.reject(new Error(error));
             } else {
               clearTimeout(timeout);
               reject(new Error(error));
             }
           } else if (type === 'embedding' && jobId) {
-            const job = this.pendingJobs.get(jobId);
+            const job = this.takePendingJob(jobId);
             if (job) {
-              this.pendingJobs.delete(jobId);
               job.resolve({ embedding, modelId, processingTimeMs });
             }
           }
@@ -219,10 +223,7 @@ export class EmbeddingPipeline {
           // Reject any in-flight jobs with a recoverable error code so the
           // caller knows to retry rather than treat as permanent failure.
           this.workerReady = false;
-          for (const [jobId, job] of this.pendingJobs) {
-            job.reject(new Error('WORKER_DIED'));
-            this.pendingJobs.delete(jobId);
-          }
+          this.rejectPendingJobs(new Error('WORKER_DIED'));
 
           reject(new Error(`Worker failed: ${errorInfo.message}`));
         };
@@ -291,24 +292,45 @@ export class EmbeddingPipeline {
     return new Promise((resolve, reject) => {
       const jobId = Math.random().toString(36).substring(2, 15);
 
-      this.pendingJobs.set(jobId, { resolve, reject });
-
-      this.worker.postMessage({
-        type: 'embed',
-        jobId,
-        data: { text, kind },
-      });
-
       // Timeout for individual embedding
       // With smaller chunks (~2000 tokens), embeddings should take ~3-10 seconds
       // First embedding may be slower due to WASM compilation
-      setTimeout(() => {
-        if (this.pendingJobs.has(jobId)) {
-          this.pendingJobs.delete(jobId);
-          reject(new Error('Embedding timeout'));
-        }
+      const timeoutId = setTimeout(() => {
+        const job = this.takePendingJob(jobId);
+        if (job) job.reject(new Error('Embedding timeout'));
       }, 60000); // 60 seconds - enough for first-run WASM compilation
+
+      this.pendingJobs.set(jobId, { resolve, reject, timeoutId });
+
+      try {
+        this.worker.postMessage({
+          type: 'embed',
+          jobId,
+          data: { text, kind },
+        });
+      } catch (error: any) {
+        const job = this.takePendingJob(jobId);
+        job?.reject(error instanceof Error ? error : new Error(String(error)));
+      }
     });
+  }
+
+  /** Remove one pending job and release its timer before settling its promise. */
+  private takePendingJob(jobId: string): PendingWorkerJob | undefined {
+    const job = this.pendingJobs.get(jobId);
+    if (!job) return undefined;
+    this.pendingJobs.delete(jobId);
+    clearTimeout(job.timeoutId);
+    return job;
+  }
+
+  /** Reject every in-flight job without leaving dormant timeout callbacks behind. */
+  private rejectPendingJobs(error: Error): void {
+    for (const [jobId, job] of this.pendingJobs) {
+      this.pendingJobs.delete(jobId);
+      clearTimeout(job.timeoutId);
+      job.reject(error);
+    }
   }
 
   private async diagnoseExactInput(text: string, kind: 'query' | 'doc'): Promise<void> {
@@ -405,7 +427,7 @@ export class EmbeddingPipeline {
     this.workerReady = false;
     this.ready = false;
     this.initPromise = null;
-    this.pendingJobs.clear();
+    this.rejectPendingJobs(new Error('WORKER_DIED'));
     await this.init();
   }
 
@@ -483,10 +505,7 @@ export class EmbeddingPipeline {
     this.ready = false;
     this.initPromise = null;
     this.consecutiveRecoveries = 0;
-    for (const [, job] of this.pendingJobs) {
-      job.reject(new Error('Pipeline reset'));
-    }
-    this.pendingJobs.clear();
+    this.rejectPendingJobs(new Error('Pipeline reset'));
     tokenizerService.reset();
   }
 
@@ -536,7 +555,7 @@ export class EmbeddingPipeline {
       this.worker = null;
     }
     this.serverClient = null;
-    this.pendingJobs.clear();
+    this.rejectPendingJobs(new Error('Pipeline destroyed'));
     tokenizerService.reset();
   }
 }

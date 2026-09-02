@@ -21,6 +21,7 @@ import {
   assessChunkStrategyState,
   CHUNK_STRATEGY_VERSION,
   getIndexingMode,
+  type IndexingMode,
 } from './utils/chunker';
 import { getZotero } from './utils/zotero-helper';
 import {
@@ -28,6 +29,8 @@ import {
   normalizeStoredIndexingMode,
 } from './utils/indexing-mode';
 import { autoIndexManager, IndexCallbackResult } from './core/auto-index-manager';
+import { assessModeOnlyIndexConfigTransition } from './core/index-freshness';
+import { planModeTransitionReuse } from './core/index-mode-transition';
 import { indexFreshnessNotifier } from './core/index-freshness-notifier';
 import { getString } from './utils/locale';
 import { openDismissibleNotice } from './utils/prompt-notice';
@@ -108,6 +111,11 @@ const IDLE_COMPACT_MIN_BYTES = 10 * 1024 * 1024;
  * if the run was interrupted (cancel, crash, sleep, plugin reload).
  */
 type BulkScope = BulkIndexScope;
+
+type ModeTransitionReuseState = {
+  reusableByItem: Map<number, Map<number, PaperEmbedding>>;
+  reusedChunks: number;
+};
 
 interface PluginInfo {
   id: string;
@@ -1545,7 +1553,12 @@ class ZotSeekPlugin {
       let removed = 0;
       for (const item of selectedItems) {
         if (item.isRegularItem()) {
-          await this.vectorStore.delete(item.id);
+          const identity = identityFromItem(item);
+          if (!identity) {
+            this.logger.warn(`Cannot resolve stable identity for item ${item.id}; skipping removal`);
+            continue;
+          }
+          await this.vectorStore.deleteItem(identity.libraryKey, identity.itemKey);
           removed++;
         }
       }
@@ -1559,6 +1572,64 @@ class ZotSeekPlugin {
       this.logger.error(`Failed to remove from index: ${error?.message || error}`);
       showQuickNotification(getString('indexing-removeFailed'), 'fail');
     }
+  }
+
+  /**
+   * Find target chunks whose vectors can survive a proven mode-only change.
+   * Any missing/legacy fingerprint or simultaneous configuration change falls
+   * back to the caller's existing full-embedding path.
+   */
+  private async prepareModeTransitionReuse(
+    extractedItems: ExtractedChunks[],
+    targetMode: IndexingMode,
+    modelId: string,
+  ): Promise<ModeTransitionReuseState> {
+    const state: ModeTransitionReuseState = {
+      reusableByItem: new Map(),
+      reusedChunks: 0,
+    };
+    if (!this.vectorStore || extractedItems.length === 0) return state;
+
+    const currentConfigFingerprint = autoIndexManager.getConfigFingerprint(targetMode);
+    for (const extracted of extractedItems) {
+      const libraryKey = libraryKeyFromLocalID(extracted.libraryId);
+      if (!libraryKey) continue;
+      try {
+        const storedFingerprint = await this.vectorStore.getStartupFingerprint(
+          libraryKey,
+          extracted.itemKey,
+          modelId,
+        );
+        if (!storedFingerprint || !assessModeOnlyIndexConfigTransition(
+          storedFingerprint.configFingerprint,
+          currentConfigFingerprint,
+        )) {
+          continue;
+        }
+
+        const existing = await this.vectorStore.getItemChunksByIdentity(
+          libraryKey,
+          extracted.itemKey,
+        );
+        const plan = planModeTransitionReuse(extracted.chunks, existing, modelId);
+        if (plan.reusableByTargetIndex.size > 0) {
+          state.reusableByItem.set(extracted.itemId, plan.reusableByTargetIndex);
+          state.reusedChunks += plan.reusableByTargetIndex.size;
+        }
+        this.logger.info(
+          `Mode transition reuse for ${libraryKey}/${extracted.itemKey}: ` +
+          `${plan.reusableByTargetIndex.size}/${extracted.chunks.length} target chunks reused`,
+        );
+      } catch (error: any) {
+        // Reuse is an optimization. Failure to prove it must never block the
+        // established complete replacement path.
+        this.logger.warn(
+          `Mode transition reuse unavailable for ${libraryKey}/${extracted.itemKey}: ` +
+          `${error?.message || error}`,
+        );
+      }
+    }
+    return state;
   }
 
   /** Assess freshness inside the caller's exact scope, then write only changes. */
@@ -1727,19 +1798,9 @@ class ZotSeekPlugin {
         return { successfulIds: [], paused: false };
       }
 
-      // Reset pipeline to ensure fresh initialization
-      embeddingPipeline.reset();
-
-      progressWindow.updateProgress(getString('indexing-loadingModel'), null);
-      await embeddingPipeline.init();
-      if (embeddingPipeline.getModelId() !== indexingModelId) {
-        throw new Error('Embedding model changed while the indexing batch was starting.');
-      }
-      this.logger.info('Embedding pipeline initialized (Transformers.js)')
-      progressWindow.addLine(getString('indexing-modelLoaded'), 'chrome://zotero/skin/tick.png');
-
       // === PHASE 2: Process items in batches with checkpoints ===
       const totalBatches = Math.ceil(itemsToIndex.length / CHECKPOINT_BATCH_SIZE);
+      let pipelineInitialized = false;
       let totalItemsIndexed = 0;
       let totalChunksIndexed = 0;
       let totalItemsSkipped = 0; // Items with no extractable content
@@ -1791,10 +1852,17 @@ class ZotSeekPlugin {
           throw new Error('Paused by user');
         }
 
-        // === STEP 2: Generate embeddings for this batch ===
+        // === STEP 2: Reuse exact mode-transition vectors, then embed only the rest ===
+        const transitionReuse = await this.prepareModeTransitionReuse(
+          extractedBatch,
+          indexingMode,
+          indexingModelId,
+        );
         const batchChunks: Array<{ id: string; text: string; title: string }> = [];
         for (const extracted of extractedBatch) {
+          const reusable = transitionReuse.reusableByItem.get(extracted.itemId);
           for (const chunk of extracted.chunks) {
+            if (reusable?.has(chunk.index)) continue;
             batchChunks.push({
               id: `${extracted.itemId}_${chunk.index}`,
               text: chunk.embedText ?? chunk.text,
@@ -1804,29 +1872,54 @@ class ZotSeekPlugin {
         }
 
         progressWindow.setHeadline(getString('indexing-batchEmbedding', { current: batchNumber, total: totalBatches }));
-        this.logger.info(`Batch ${batchNumber}/${totalBatches}: Embedding ${batchChunks.length} chunks`);
-
-        const { embeddings: embeddingMap, failedChunks, failedItems } = await embedChunks(
-          batchChunks,
-          async (processed) => {
-            await progressWindow.waitIfPaused();
-            if (progressWindow.isStopRequested()) {
-              throw new Error('Paused by user');
-            }
-            if (progressWindow.isCancelled()) {
-              throw new Error('Cancelled by user');
-            }
-            progressWindow.updateProgressWithETA(
-              getString('indexing-batchEmbeddingChunks', { current: batchNumber, total: totalBatches }),
-              batchStart + Math.floor((processed / batchChunks.length) * batchItems.length),
-              itemsToIndex.length
-            );
-          },
-          indexingModelId,
+        this.logger.info(
+          `Batch ${batchNumber}/${totalBatches}: Reusing ${transitionReuse.reusedChunks} chunks, ` +
+          `embedding ${batchChunks.length} chunks`,
         );
+
+        let embeddingMap = new Map<string, { embedding: number[]; modelId: string }>();
+        let failedChunks = 0;
+        let failedItems = new Set<string>();
+        if (batchChunks.length > 0) {
+          if (!pipelineInitialized) {
+            embeddingPipeline.reset();
+            progressWindow.updateProgress(getString('indexing-loadingModel'), null);
+            await embeddingPipeline.init();
+            if (embeddingPipeline.getModelId() !== indexingModelId) {
+              throw new Error('Embedding model changed while the indexing batch was starting.');
+            }
+            pipelineInitialized = true;
+            this.logger.info('Embedding pipeline initialized (Transformers.js)');
+            progressWindow.addLine(getString('indexing-modelLoaded'), 'chrome://zotero/skin/tick.png');
+          }
+          const embedded = await embedChunks(
+            batchChunks,
+            async (processed) => {
+              await progressWindow.waitIfPaused();
+              if (progressWindow.isStopRequested()) {
+                throw new Error('Paused by user');
+              }
+              if (progressWindow.isCancelled()) {
+                throw new Error('Cancelled by user');
+              }
+              progressWindow.updateProgressWithETA(
+                getString('indexing-batchEmbeddingChunks', { current: batchNumber, total: totalBatches }),
+                batchStart + Math.floor((processed / batchChunks.length) * batchItems.length),
+                itemsToIndex.length
+              );
+            },
+            indexingModelId,
+          );
+          embeddingMap = embedded.embeddings;
+          failedChunks = embedded.failedChunks;
+          failedItems = embedded.failedItems;
+        }
 
         if (progressWindow.isStopRequested()) {
           throw new Error('Paused by user');
+        }
+        if (getActiveModelId() !== indexingModelId) {
+          throw new Error('Embedding model changed before the indexing batch could be saved.');
         }
 
         if (failedChunks > 0) {
@@ -1854,10 +1947,12 @@ class ZotSeekPlugin {
           }
           const itemEmbeddings: PaperEmbedding[] = [];
           const indexedAt = new Date().toISOString();
+          const reusable = transitionReuse.reusableByItem.get(extracted.itemId);
           for (const chunk of extracted.chunks) {
             const embeddingKey = `${extracted.itemId}_${chunk.index}`;
             const embeddingResult = embeddingMap.get(embeddingKey);
-            if (embeddingResult) {
+            const reusedEmbedding = reusable?.get(chunk.index);
+            if (embeddingResult || reusedEmbedding) {
               itemEmbeddings.push({
                 itemId: extracted.itemId,
                 chunkIndex: chunk.index,
@@ -1869,8 +1964,8 @@ class ZotSeekPlugin {
                 chunkText: chunk.text,
                 sectionPaths: chunk.sectionPaths,
                 textSource: chunk.type,
-                embedding: embeddingResult.embedding,
-                modelId: embeddingResult.modelId,
+                embedding: embeddingResult?.embedding || reusedEmbedding!.embedding,
+                modelId: embeddingResult?.modelId || reusedEmbedding!.modelId,
                 indexedAt,
                 contentHash: extracted.contentHash,
                 pageNumber: chunk.pageNumber,
@@ -2107,16 +2202,18 @@ class ZotSeekPlugin {
       const totalChunks = extractedItems.reduce((sum, item) => sum + item.chunks.length, 0);
       this.logger.info(`Extracted ${totalChunks} chunks from ${extractedItems.length} items`);
 
-      // Only initialize the embedding worker after the hash comparison confirms
-      // that at least one item genuinely changed.
-      itemRow.setText(getString('indexing-progressLoadingModel'));
-      embeddingPipeline.reset();
-      await embeddingPipeline.init();
+      const transitionReuse = await this.prepareModeTransitionReuse(
+        extractedItems,
+        indexingMode,
+        indexingModelId,
+      );
 
       // Prepare chunks for embedding
       const textsForEmbedding: Array<{ id: string; text: string; title: string }> = [];
       for (const extracted of extractedItems) {
+        const reusable = transitionReuse.reusableByItem.get(extracted.itemId);
         for (const chunk of extracted.chunks) {
+          if (reusable?.has(chunk.index)) continue;
           textsForEmbedding.push({
             id: `${extracted.itemId}_${chunk.index}`,
             text: chunk.embedText ?? chunk.text,
@@ -2125,14 +2222,33 @@ class ZotSeekPlugin {
         }
       }
 
-      // Generate embeddings with progress updates
-      const { embeddings: embeddingMap, failedChunks, failedItems } = await embedChunks(
-        textsForEmbedding,
-        (processed) => {
-          itemRow.setText(getString('indexing-embedding', { current: processed, total: textsForEmbedding.length }));
-        },
-        indexingModelId,
+      // Generate only missing embeddings. A pure shrinking transition can
+      // complete without loading the model at all.
+      let embeddingMap = new Map<string, { embedding: number[]; modelId: string }>();
+      let failedChunks = 0;
+      let failedItems = new Set<string>();
+      if (textsForEmbedding.length > 0) {
+        itemRow.setText(getString('indexing-progressLoadingModel'));
+        embeddingPipeline.reset();
+        await embeddingPipeline.init();
+        const embedded = await embedChunks(
+          textsForEmbedding,
+          (processed) => {
+            itemRow.setText(getString('indexing-embedding', { current: processed, total: textsForEmbedding.length }));
+          },
+          indexingModelId,
+        );
+        embeddingMap = embedded.embeddings;
+        failedChunks = embedded.failedChunks;
+        failedItems = embedded.failedItems;
+      }
+      this.logger.info(
+        `Mode-aware indexing: reused ${transitionReuse.reusedChunks} chunks, ` +
+        `embedded ${textsForEmbedding.length} chunks`,
       );
+      if (getActiveModelId() !== indexingModelId) {
+        throw new Error('Embedding model changed before auto-index results could be saved.');
+      }
 
       // Store embeddings with chunk metadata
       itemRow.setText(getString('indexing-saving'));
@@ -2147,10 +2263,12 @@ class ZotSeekPlugin {
         }
         const itemEmbeddings: PaperEmbedding[] = [];
         const indexedAt = new Date().toISOString();
+        const reusable = transitionReuse.reusableByItem.get(extracted.itemId);
         for (const chunk of extracted.chunks) {
           const embeddingKey = `${extracted.itemId}_${chunk.index}`;
           const embeddingData = embeddingMap.get(embeddingKey);
-          if (!embeddingData) continue;
+          const reusedEmbedding = reusable?.get(chunk.index);
+          if (!embeddingData && !reusedEmbedding) continue;
 
           itemEmbeddings.push({
             itemId: extracted.itemId,
@@ -2163,8 +2281,8 @@ class ZotSeekPlugin {
             chunkText: chunk.text,
             sectionPaths: chunk.sectionPaths,
             textSource: chunk.type,
-            embedding: embeddingData.embedding,
-            modelId: embeddingData.modelId,
+            embedding: embeddingData?.embedding || reusedEmbedding!.embedding,
+            modelId: embeddingData?.modelId || reusedEmbedding!.modelId,
             indexedAt,
             contentHash: extracted.contentHash,
             pageNumber: chunk.pageNumber,
@@ -2201,6 +2319,11 @@ class ZotSeekPlugin {
       if (failedChunks > 0) {
         const itemList = Array.from(failedItems).join(', ');
         this.logger.warn(`Auto-index: ${failedChunks} chunks failed in: ${itemList}`);
+      }
+      // Do not advance the legacy global marker when extraction skipped any
+      // eligible item. Fingerprint-less indexes still depend on this fallback.
+      if (successfulItemIds.length === filteredItems.length) {
+        await this.vectorStore!.setMetadata('indexingMode', indexingMode);
       }
       this.logger.info(`Auto-indexed ${successfulItemIds.length} items (${paperEmbeddings.length} chunks, ${failedChunks} failed)`);
 
@@ -2264,9 +2387,13 @@ class ZotSeekPlugin {
       const exclusionPolicy = readIndexExclusionPolicy(Z);
       const filteredItems = items.filter(item => !isItemExcludedFromIndex(item, exclusionPolicy));
       const extractedItems = await textExtractor.extractChunksFromItems(filteredItems, 'notes');
-      const statusMap = await this.vectorStore!.getIndexStatusMap(
-        extractedItems.map(item => item.itemId)
-      );
+      const statusIdentities = extractedItems
+        .map(extracted => {
+          const libraryKey = libraryKeyFromLocalID(extracted.libraryId);
+          return libraryKey ? { libraryKey, itemKey: extracted.itemKey } : null;
+        })
+        .filter((identity): identity is { libraryKey: string; itemKey: string } => identity !== null);
+      const statusMap = await this.vectorStore!.getIndexStatusByIdentity(statusIdentities);
       const maxChunks = Math.max(1, Number(Z.Prefs.get('zotseek.maxChunksPerPaper', true) ?? 100));
 
       const plans: Array<{
@@ -2373,7 +2500,7 @@ class ZotSeekPlugin {
         const now = new Date().toISOString();
         const combined = [...preservedSummary, ...newNotes, ...preservedPDF];
         const contentHash = hashChunkContent(combined.map(chunk => chunk.chunkText || ''));
-        const status = statusMap.get(extracted.itemId);
+        const status = statusMap.get(`${libraryKey}|${extracted.itemKey}`);
         const normalized = combined.map((chunk, chunkIndex): PaperEmbedding => ({
           ...chunk,
           itemId: extracted.itemId,
@@ -2457,8 +2584,13 @@ class ZotSeekPlugin {
       await this.ensureStoreReady();
 
       // Check if item is indexed
-      this.logger.debug(`Checking if item ${item.id} is indexed...`);
-      const isIndexed = await this.vectorStore!.isIndexed(item.id);
+      const identity = identityFromItem(item);
+      this.logger.debug(
+        `Checking if item ${identity ? `${identity.libraryKey}/${identity.itemKey}` : item.id} is indexed...`
+      );
+      const isIndexed = identity
+        ? await this.vectorStore!.isIndexedByIdentity(identity.libraryKey, identity.itemKey)
+        : false;
       this.logger.debug(`isIndexed result: ${isIndexed}`);
 
       if (!isIndexed) {

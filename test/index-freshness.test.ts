@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   assessChangedNoteContent,
   assessIndexConfigFingerprint,
+  assessModeOnlyIndexConfigTransition,
   assessQuickFreshness,
   assessStoredSourceTexts,
   IndexFreshnessTracker,
@@ -88,6 +89,46 @@ describe('shared freshness fingerprints', () => {
     assert.equal(
       assessIndexConfigFingerprint('zotseek-index-config:v1:{bad', current),
       'changed',
+    );
+  });
+
+  test('proves only modern configuration changes whose sole difference is mode', () => {
+    const base: IndexConfigSnapshot = {
+      indexContractVersion: 4,
+      mode: 'full',
+      maxChunksPerPaper: 100,
+      chunkStrategyVersion: 7,
+      modelInputPolicy: 'policy-v1',
+    };
+    const notes = { ...base, mode: 'notes' as const };
+
+    assert.deepEqual(
+      assessModeOnlyIndexConfigTransition(
+        serializeIndexConfigFingerprint(base),
+        serializeIndexConfigFingerprint(notes),
+      ),
+      { fromMode: 'full', toMode: 'notes' },
+    );
+    assert.equal(
+      assessModeOnlyIndexConfigTransition(
+        serializeIndexConfigFingerprint(base),
+        serializeIndexConfigFingerprint({ ...notes, maxChunksPerPaper: 120 }),
+      ),
+      null,
+    );
+    assert.equal(
+      assessModeOnlyIndexConfigTransition(
+        legacyIndexConfigFingerprint(base),
+        serializeIndexConfigFingerprint(notes),
+      ),
+      null,
+    );
+    assert.equal(
+      assessModeOnlyIndexConfigTransition(
+        serializeIndexConfigFingerprint(base),
+        serializeIndexConfigFingerprint(base),
+      ),
+      null,
     );
   });
 

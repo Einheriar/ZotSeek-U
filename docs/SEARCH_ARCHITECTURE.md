@@ -632,6 +632,31 @@ Full-mode sources; Metadata + Notes mode can still use all slots left after its
 Summary chunks. If Notes exceed the Full-mode cap, the item is reported as
 truncated even when no PDF is available to consume the unused total capacity.
 
+### Incremental Indexing-Mode Transitions
+
+Changing `abstract`, `notes` or `full` does not automatically discard every
+vector. For each indexed item, ZotSeek first requires a modern per-item config
+fingerprint proving that mode is the only changed setting. The index contract,
+model input policy, chunk strategy, `maxChunksPerPaper` and active model must
+remain identical. Missing/legacy fingerprints or any simultaneous setting
+change use the established complete replacement path.
+
+After that gate, target chunks are matched to stored chunks by exact source,
+faithful text and `sectionPaths` (with legacy Summary source aliases accepted
+only for Summary). Matching preserves duplicate multiplicity. A match carries
+forward only the embedding; index, source text, paths, location, content hash,
+truncation state and timestamps come from the new target extraction. Unmatched
+target chunks alone are sent to the embedding pipeline. If every target chunk
+matches, a shrinking transition does not load the model.
+
+This retains the historical mode semantics, including Abstract's short-summary
+guard and exclusion of tags. In particular, Full to Abstract never reads PDF or
+Child Notes and needs at most the target Summary embeddings. Notes to Full adds
+PDF while reusing compatible Metadata and the first 30 Notes. Full to Notes can
+reuse its stored Notes but must embed any target Notes beyond Full's 30-Note cap.
+The per-item replacement remains atomic, so a missing new embedding cannot
+destroy a complete old item index.
+
 References v2, page-furniture v1 and same-page packing are internal production
 switches that default on and can be disabled independently for deterministic
 benchmark replay. The legacy chunker References rules are explicitly disabled

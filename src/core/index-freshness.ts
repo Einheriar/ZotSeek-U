@@ -108,7 +108,7 @@ export function legacyIndexConfigFingerprint(snapshot: IndexConfigSnapshot): str
   }));
 }
 
-function parseIndexConfigFingerprint(value: string): IndexConfigSnapshot | null {
+export function parseIndexConfigFingerprint(value: string): IndexConfigSnapshot | null {
   if (!value.startsWith(INDEX_CONFIG_FINGERPRINT_PREFIX)) return null;
   try {
     const parsed = JSON.parse(value.slice(INDEX_CONFIG_FINGERPRINT_PREFIX.length));
@@ -131,6 +131,32 @@ function parseIndexConfigFingerprint(value: string): IndexConfigSnapshot | null 
   } catch {
     return null;
   }
+}
+
+export type IndexModeTransition = {
+  fromMode: FreshnessIndexingMode;
+  toMode: FreshnessIndexingMode;
+};
+
+/**
+ * Prove that two modern configuration fingerprints differ only by indexing
+ * mode. Legacy hashes are intentionally ineligible because their fields cannot
+ * be recovered and compared independently.
+ */
+export function assessModeOnlyIndexConfigTransition(
+  storedFingerprint: string,
+  currentFingerprint: string,
+): IndexModeTransition | null {
+  const stored = parseIndexConfigFingerprint(storedFingerprint);
+  const current = parseIndexConfigFingerprint(currentFingerprint);
+  if (!stored || !current || stored.mode === current.mode) return null;
+  if (stored.indexContractVersion !== current.indexContractVersion ||
+      stored.maxChunksPerPaper !== current.maxChunksPerPaper ||
+      stored.chunkStrategyVersion !== current.chunkStrategyVersion ||
+      stored.modelInputPolicy !== current.modelInputPolicy) {
+    return null;
+  }
+  return { fromMode: stored.mode, toMode: current.mode };
 }
 
 /**
