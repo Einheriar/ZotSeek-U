@@ -10,6 +10,7 @@ import {
   estimatePageForRange,
   countParagraphsUpTo,
   chunkNoteTexts,
+  combineFullModeChunks,
   assessChunkStrategyState,
   CHUNK_STRATEGY_VERSION,
   NOTE_CHUNK_STRATEGY_VERSION,
@@ -236,8 +237,8 @@ describe('preference reading', () => {
 });
 
 describe('persisted chunk strategy state', () => {
-  test('uses strategy 6 for the PDF main-text production pipeline', () => {
-    assert.equal(CHUNK_STRATEGY_VERSION, 6);
+  test('uses strategy 7 for prioritized Full-mode source allocation', () => {
+    assert.equal(CHUNK_STRATEGY_VERSION, 7);
   });
 
   test('initializes an empty partition even when it has no marker', () => {
@@ -252,6 +253,119 @@ describe('persisted chunk strategy state', () => {
       assessChunkStrategyState(20, CHUNK_STRATEGY_VERSION - 1),
       'rebuild-required',
     );
+  });
+});
+
+describe('Full-mode source allocation', () => {
+  const makeChunks = (
+    type: 'summary' | 'note' | 'content',
+    count: number,
+  ) => Array.from({ length: count }, (_, index) => ({
+    index,
+    text: `${type}-${index}`,
+    type,
+    tokenCount: 1,
+    pageNumber: index + 1,
+    paragraphIndex: index,
+    startChar: index * 10,
+    endChar: index * 10 + 9,
+  }));
+
+  test('keeps metadata first, caps Notes at 30, then fills with PDF', () => {
+    const result = combineFullModeChunks({
+      summaryChunks: makeChunks('summary', 1),
+      noteChunks: makeChunks('note', 80),
+      pdfChunks: makeChunks('content', 100),
+      pagesTotal: 100,
+    }, { maxChunks: 100 });
+
+    assert.equal(result.chunks.length, 100);
+    assert.equal(result.chunks.filter(chunk => chunk.type === 'summary').length, 1);
+    assert.equal(result.chunks.filter(chunk => chunk.type === 'note').length, 30);
+    assert.equal(result.chunks.filter(chunk => chunk.type === 'content').length, 69);
+    assert.deepEqual(result.chunks.map(chunk => chunk.index),
+      Array.from({ length: 100 }, (_, index) => index));
+    assert.equal(result.wasTruncated, true);
+    assert.equal(result.pagesIndexed, 69);
+    assert.equal(result.pagesTotal, 100);
+  });
+
+  test('gives PDF every slot left when Notes use less than their cap', () => {
+    const result = combineFullModeChunks({
+      summaryChunks: makeChunks('summary', 1),
+      noteChunks: makeChunks('note', 5),
+      pdfChunks: makeChunks('content', 100),
+    }, { maxChunks: 20 });
+
+    assert.equal(result.chunks.filter(chunk => chunk.type === 'note').length, 5);
+    assert.equal(result.chunks.filter(chunk => chunk.type === 'content').length, 14);
+  });
+
+  test('keeps the 30-Note cap even when no PDF can use the free slots', () => {
+    const result = combineFullModeChunks({
+      summaryChunks: makeChunks('summary', 1),
+      noteChunks: makeChunks('note', 80),
+      pdfChunks: [],
+    }, { maxChunks: 100 });
+
+    assert.equal(result.chunks.length, 31);
+    assert.equal(result.chunks.filter(chunk => chunk.type === 'note').length, 30);
+    assert.equal(result.wasTruncated, true);
+  });
+
+  test('lets PDF use all capacity after metadata when Notes are absent', () => {
+    const result = combineFullModeChunks({
+      summaryChunks: makeChunks('summary', 1),
+      noteChunks: [],
+      pdfChunks: makeChunks('content', 20),
+    }, { maxChunks: 10 });
+
+    assert.equal(result.chunks.filter(chunk => chunk.type === 'content').length, 9);
+    assert.equal(result.pagesIndexed, 9);
+  });
+
+  test('allows higher-priority sources to leave no capacity for PDF', () => {
+    const result = combineFullModeChunks({
+      summaryChunks: makeChunks('summary', 1),
+      noteChunks: makeChunks('note', 50),
+      pdfChunks: makeChunks('content', 50),
+    }, { maxChunks: 20 });
+
+    assert.equal(result.chunks.filter(chunk => chunk.type === 'summary').length, 1);
+    assert.equal(result.chunks.filter(chunk => chunk.type === 'note').length, 19);
+    assert.equal(result.chunks.filter(chunk => chunk.type === 'content').length, 0);
+    assert.equal(result.wasTruncated, true);
+  });
+
+  test('clears source locations from metadata and Notes but preserves PDF pages', () => {
+    const result = combineFullModeChunks({
+      summaryChunks: makeChunks('summary', 1),
+      noteChunks: makeChunks('note', 1),
+      pdfChunks: makeChunks('content', 1),
+    }, { maxChunks: 10 });
+
+    for (const chunk of result.chunks.filter(chunk => chunk.type !== 'content')) {
+      assert.equal(chunk.pageNumber, undefined);
+      assert.equal(chunk.paragraphIndex, undefined);
+      assert.equal(chunk.startChar, undefined);
+      assert.equal(chunk.endChar, undefined);
+    }
+    assert.equal(result.chunks.find(chunk => chunk.type === 'content')?.pageNumber, 1);
+  });
+
+  test('lets metadata consume the entire per-paper limit', () => {
+    const result = combineFullModeChunks({
+      summaryChunks: makeChunks('summary', 4),
+      noteChunks: makeChunks('note', 5),
+      pdfChunks: makeChunks('content', 5),
+    }, { maxChunks: 3 });
+
+    assert.deepEqual(result.chunks.map(chunk => chunk.text), [
+      'summary-0',
+      'summary-1',
+      'summary-2',
+    ]);
+    assert.equal(result.wasTruncated, true);
   });
 });
 

@@ -625,6 +625,13 @@ Full indexing uses the versioned `zotseek-pdf-main-text-indexing-v1` pipeline:
 5. Enforce the active model's exact prefixed token budget, character ceiling
    and the shared Summary/Note/PDF `maxChunksPerPaper` quota.
 
+Full mode assigns that shared quota in strict source order: all Summary chunks
+that fit are kept first, up to 30 Note chunks are kept next, and PDF chunks use
+only the remaining slots. The 30-chunk Note cap applies only while combining
+Full-mode sources; Metadata + Notes mode can still use all slots left after its
+Summary chunks. If Notes exceed the Full-mode cap, the item is reported as
+truncated even when no PDF is available to consume the unused total capacity.
+
 References v2, page-furniture v1 and same-page packing are internal production
 switches that default on and can be disabled independently for deterministic
 benchmark replay. The legacy chunker References rules are explicitly disabled
@@ -668,7 +675,8 @@ heuristic of approximately 1.3 tokens per whitespace-separated word:
 
 All models use an independent 8000-character upstream chunk split threshold.
 Oversized chunks are split into consecutive pieces without dropping their
-tails; only exhausting `maxChunksPerPaper` can make an item partially indexed.
+tails. Exhausting `maxChunksPerPaper`, or exceeding Full mode's 30-Note source
+cap, can make an item partially indexed.
 The local Worker and server paths do not perform a second character-based cut.
 Transformers.js feature extraction enables tokenizer truncation and therefore
 uses each local model's `model_max_length` for a direct over-limit call. Exact

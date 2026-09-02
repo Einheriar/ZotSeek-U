@@ -78,7 +78,7 @@ export interface ChunkResult {
 export type IndexingMode = 'abstract' | 'notes' | 'full';
 
 /** Bump whenever persisted chunk text, boundaries, or structure semantics change. */
-export const CHUNK_STRATEGY_VERSION = 6;
+export const CHUNK_STRATEGY_VERSION = 7;
 
 /** @deprecated Use CHUNK_STRATEGY_VERSION; kept for benchmark/source compatibility. */
 export const NOTE_CHUNK_STRATEGY_VERSION = CHUNK_STRATEGY_VERSION;
@@ -1307,10 +1307,12 @@ export interface FullModeChunkSources {
   pagesTotal?: number;
 }
 
+const FULL_MODE_NOTE_CHUNK_LIMIT = 30;
+
 /**
  * Combine metadata, note, and PDF chunks under one per-item chunk limit.
- * Metadata is kept first. Remaining capacity is shared between notes and PDF
- * so that a long source cannot completely crowd out the other source.
+ * Metadata is kept first, followed by at most 30 Note chunks. PDF chunks use
+ * only the capacity left after both higher-priority sources.
  */
 export function combineFullModeChunks(
   sources: FullModeChunkSources,
@@ -1320,36 +1322,15 @@ export function combineFullModeChunks(
   const maxChunks = Math.max(1, opts.maxChunks);
   const summaryChunks = sources.summaryChunks.slice(0, maxChunks);
   const remainingSlots = Math.max(0, maxChunks - summaryChunks.length);
-
-  let noteCount = 0;
-  let pdfCount = 0;
-
-  if (sources.noteChunks.length > 0 && sources.pdfChunks.length > 0) {
-    const noteQuota = Math.ceil(remainingSlots / 2);
-    const pdfQuota = remainingSlots - noteQuota;
-    noteCount = Math.min(noteQuota, sources.noteChunks.length);
-    pdfCount = Math.min(pdfQuota, sources.pdfChunks.length);
-
-    let unusedSlots = remainingSlots - noteCount - pdfCount;
-    if (unusedSlots > 0) {
-      const extraNotes = Math.min(
-        unusedSlots,
-        sources.noteChunks.length - noteCount
-      );
-      noteCount += extraNotes;
-      unusedSlots -= extraNotes;
-    }
-    if (unusedSlots > 0) {
-      pdfCount += Math.min(
-        unusedSlots,
-        sources.pdfChunks.length - pdfCount
-      );
-    }
-  } else if (sources.noteChunks.length > 0) {
-    noteCount = Math.min(remainingSlots, sources.noteChunks.length);
-  } else if (sources.pdfChunks.length > 0) {
-    pdfCount = Math.min(remainingSlots, sources.pdfChunks.length);
-  }
+  const noteCount = Math.min(
+    FULL_MODE_NOTE_CHUNK_LIMIT,
+    remainingSlots,
+    sources.noteChunks.length,
+  );
+  const pdfCount = Math.min(
+    Math.max(0, remainingSlots - noteCount),
+    sources.pdfChunks.length,
+  );
 
   const selected: Chunk[] = [
     ...summaryChunks.map(chunk => ({
