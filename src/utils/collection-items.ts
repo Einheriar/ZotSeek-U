@@ -5,8 +5,9 @@
  * Goes through the Search API rather than `collection.getChildItems()` for two
  * reasons: it descends into subcollections, which is what the resume path has
  * always done (so a cancelled run no longer comes back with a different item
- * set than it started with), and it honours the excludeBooks pref the same way
- * Index Library and auto-indexing already do.
+ * set than it started with). It deliberately preserves excluded books and
+ * tagged items: reconciliation needs the complete scope membership to remove
+ * stale indexes without touching anything outside the collection.
  *
  * De-duplicates because a paper filed in two of the selected collections is
  * still one indexing job.

@@ -26,6 +26,10 @@ import {
   resolveFreshnessDisplayState,
   type FreshnessDisplayState,
 } from '../core/index-freshness';
+import {
+  isItemExcludedFromIndex,
+  readIndexExclusionPolicy,
+} from '../utils/index-exclusion';
 
 declare const Zotero: any;
 
@@ -324,7 +328,7 @@ export class ItemTreeIndexColumn {
     }
     const identity = identityFromItem(item);
     const state = resolveFreshnessDisplayState({
-      excluded: hasZotseekExcludeTag(item),
+      excluded: isItemExcludedFromIndex(item, readIndexExclusionPolicy(Zotero)),
       covered: baseState !== 'not-indexed',
       dirty: !!identity && indexFreshnessTracker.isDirty(identity),
       timestampOutdated,
@@ -362,25 +366,6 @@ export class ItemTreeIndexColumn {
       }
     }, 500);
   }
-}
-
-/**
- * Module-level helper, matching the pattern used for utility functions
- * inside the IIFE bundle.
- */
-function hasZotseekExcludeTag(item: any): boolean {
-  try {
-    if (typeof item.getTags !== 'function') return false;
-    const excludeTag = String(Zotero.Prefs.get('zotseek.excludeTag', true) || '').trim();
-    if (!excludeTag) return false;
-    const tags = item.getTags() as Array<{ tag: string }>;
-    for (const t of tags) {
-      if (t.tag === excludeTag) return true;
-    }
-  } catch {
-    // ignore
-  }
-  return false;
 }
 
 export const itemTreeIndexColumn = new ItemTreeIndexColumn();

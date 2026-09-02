@@ -192,7 +192,7 @@
       <html:span data-l10n-id="zotseek-pref-recommended" style="margin-left: 8px; color: var(--zotseek-green); font-size: 11px; font-weight: 500;">✓ Recommended</html:span>
     </hbox>
     <html:p data-l10n-id="zotseek-pref-updateIndexDesc" style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 6px 0 0 0;">
-      Add missing items, update items whose metadata, notes, or indexing settings changed, skip unchanged items, and remove records for items deleted from Zotero. Changes to indexing settings may recompute existing items.
+      Add missing items, update items whose metadata, notes, or indexing settings changed, skip unchanged items, and remove records for items deleted from Zotero or now excluded by indexing rules. Changes to indexing settings may recompute existing items.
     </html:p>
   </vbox>
 
@@ -349,7 +349,7 @@
             native="true"
             checked="false" />
   <html:p style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 4px 0 0 24px;">
-    <html:span data-l10n-id="zotseek-pref-autoIndexDesc">Checks the selected library scope at startup, updates added or changed items, removes records for items deleted from Zotero, and shows progress in the lower-right corner.</html:span>
+    <html:span data-l10n-id="zotseek-pref-autoIndexDesc">Checks the selected library scope at startup, updates added or changed items, removes records for items deleted from Zotero or now excluded by indexing rules, and shows progress in the lower-right corner.</html:span>
   </html:p>
 </groupbox>
 
@@ -363,7 +363,7 @@
             native="true"
             checked="true" />
   <html:p data-l10n-id="zotseek-pref-excludeBooksDesc" style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 4px 0 0 24px;">
-    Books lack paper sections and are too long to index well.
+    Books will not be indexed. Existing ZotSeek indexes for books are removed by the next index check.
   </html:p>
 
   <html:div style="margin-top: 12px; display: flex; align-items: center; gap: 8px;">
@@ -376,7 +376,7 @@
                 style="width: 160px; padding: 4px 8px; border-radius: 4px; border-width: 1px; border-style: solid;" />
   </html:div>
   <html:p data-l10n-id="zotseek-pref-excludeTagDesc" style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 4px 0 0 24px;">
-    Items with this tag will be skipped during indexing. Leave empty to disable.
+    Items with this tag will not be indexed. Existing ZotSeek indexes for matching items are removed by the next index check. Leave empty to disable.
   </html:p>
 </groupbox>
 

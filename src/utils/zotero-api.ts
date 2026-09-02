@@ -104,12 +104,6 @@ export class ZoteroAPI {
       s.addCondition('itemType', 'isNot', 'attachment');
       s.addCondition('itemType', 'isNot', 'note');
 
-      // Exclude books if preference is set
-      const excludeBooks = Zotero.Prefs.get('zotseek.excludeBooks', true) ?? true;
-      if (excludeBooks) {
-        s.addCondition('itemType', 'isNot', 'book');
-      }
-
       const itemIDs = await s.search();
       return Zotero.Items.getAsync(itemIDs);
     } catch (error) {
@@ -127,12 +121,6 @@ export class ZoteroAPI {
       s.libraryID = libraryId || Zotero.Libraries.userLibraryID;
       s.addCondition('itemType', 'isNot', 'attachment');
       s.addCondition('itemType', 'isNot', 'note');
-
-      // Exclude books if preference is set
-      const excludeBooks = Zotero.Prefs.get('zotseek.excludeBooks', true) ?? true;
-      if (excludeBooks) {
-        s.addCondition('itemType', 'isNot', 'book');
-      }
 
       const itemIDs = await s.search();
       return Zotero.Items.getAsync(itemIDs);

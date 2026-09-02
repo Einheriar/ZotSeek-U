@@ -86,6 +86,10 @@ import {
   shouldClearBulkIndexScope,
   shouldRecordBulkIndexScope,
 } from './utils/bulk-index-resume';
+import {
+  isItemExcludedFromIndex,
+  readIndexExclusionPolicy,
+} from './utils/index-exclusion';
 
 /**
  * Don't bother compacting zotseek.sqlite on idle below this much reclaimable
@@ -156,20 +160,6 @@ class Logger {
 
   debug(...args: any[]): void {
     this.log('DEBUG', ...args);
-  }
-}
-
-/**
- * Check if an item has the exclusion tag (module-level to avoid prototype issues)
- */
-function hasExcludeTag(item: any): boolean {
-  // Use Zotero global directly (not getZotero()) to avoid IIFE scope issues
-  try {
-    const excludeTag = Zotero.Prefs.get('zotseek.excludeTag', true);
-    if (!excludeTag) return false;
-    return item.getTags?.()?.some((t: any) => t.tag === excludeTag) ?? false;
-  } catch {
-    return false;
   }
 }
 
@@ -711,8 +701,8 @@ class ZotSeekPlugin {
     await this.ensureStoreReady();
     if (!this.vectorStore) return false;
 
-    const eligible = items.filter(item => item?.isRegularItem?.() && !hasExcludeTag(item));
-    if (eligible.length === 0) {
+    const scopedItems = items.filter(item => item?.isRegularItem?.());
+    if (scopedItems.length === 0) {
       try { Z.Prefs.clear(BULK_INDEX_PENDING_PREF, true); } catch { /* ignore */ }
       this.logger.info('Resume marker found but the recorded scope is now empty — clearing');
       return false;
@@ -721,7 +711,7 @@ class ZotSeekPlugin {
     const proceed = Services.prompt.confirm(
       win,
       getString('resume-title'),
-      getString('resume-message', { count: eligible.length, scope: label })
+      getString('resume-message', { count: scopedItems.length, scope: label })
     );
 
     if (!proceed) {
@@ -730,8 +720,8 @@ class ZotSeekPlugin {
       return true;
     }
 
-    this.logger.info(`Resuming bulk index reconciliation for ${eligible.length} items (${label})`);
-    const result = await this.indexItems(eligible, scope);
+    this.logger.info(`Resuming bulk index reconciliation for ${scopedItems.length} items (${label})`);
+    const result = await this.indexItems(scopedItems, scope);
     if (result && shouldClearBulkIndexScope(result)) {
       try { Z.Prefs.clear(BULK_INDEX_PENDING_PREF, true); } catch { /* ignore */ }
     }
@@ -1615,6 +1605,7 @@ class ZotSeekPlugin {
     this.indexing = true;
     const Z = getZotero();
     const indexingModelId = getActiveModelId();
+    const exclusionPolicy = readIndexExclusionPolicy(Z);
 
     const indexStartTime = Date.now(); // Track total indexing time
 
@@ -1649,7 +1640,7 @@ class ZotSeekPlugin {
       const itemsToIndex: any[] = [];
       let skippedExcluded = 0;
       for (const item of items) {
-        if (hasExcludeTag(item)) {
+        if (isItemExcludedFromIndex(item, exclusionPolicy)) {
           skippedExcluded++;
           continue;
         }
@@ -1658,7 +1649,7 @@ class ZotSeekPlugin {
         itemsToIndex.push(item);
       }
       if (skippedExcluded > 0) {
-        this.logger.info(`Skipped ${skippedExcluded} items with exclusion tag`);
+        this.logger.info(`Skipped ${skippedExcluded} items excluded by indexing policy`);
         progressWindow.addLine(getString('indexing-skippedExcluded', { count: skippedExcluded }), 'chrome://zotero/skin/tick.png');
       }
       if (itemsToIndex.length === 0) {
@@ -1959,10 +1950,11 @@ class ZotSeekPlugin {
       // Get indexing mode
       const indexingMode = getIndexingMode(Z);
 
-      // Filter out items with exclusion tag
-      const filteredItems = items.filter(item => !hasExcludeTag(item));
+      // Defence in depth: reconciliation already excludes these candidates.
+      const exclusionPolicy = readIndexExclusionPolicy(Z);
+      const filteredItems = items.filter(item => !isItemExcludedFromIndex(item, exclusionPolicy));
       if (filteredItems.length === 0) {
-        this.logger.info('All items excluded by tag');
+        this.logger.info('All items excluded by indexing policy');
         try { itemRow.setIcon('chrome://zotero/skin/tick.png'); } catch { /* ignore */ }
         itemRow.setText(getString('indexing-allExcluded'));
         progressWin.startCloseTimer(3000);
@@ -2168,7 +2160,8 @@ class ZotSeekPlugin {
 
     try {
       await this.ensureStoreReady();
-      const filteredItems = items.filter(item => !hasExcludeTag(item));
+      const exclusionPolicy = readIndexExclusionPolicy(Z);
+      const filteredItems = items.filter(item => !isItemExcludedFromIndex(item, exclusionPolicy));
       const extractedItems = await textExtractor.extractChunksFromItems(filteredItems, 'notes');
       const statusMap = await this.vectorStore!.getIndexStatusMap(
         extractedItems.map(item => item.itemId)
@@ -2599,12 +2592,13 @@ class ZotSeekPlugin {
       // Resolve (libraryKey, itemKey) pairs to local Zotero items, skipping
       // unresolvable ones (dead group-library items) before extraction/embedding.
       const zoteroItems: any[] = [];
+      const exclusionPolicy = readIndexExclusionPolicy(Z);
       for (const { libraryKey, itemKey } of missing) {
         const localId = localItemIDFromIdentity({ libraryKey, itemKey });
         if (localId == null) continue;
         const item = Zotero.Items.get(localId);
         if (!item) continue;
-        if (hasExcludeTag(item)) continue;
+        if (isItemExcludedFromIndex(item, exclusionPolicy)) continue;
         zoteroItems.push(item);
       }
 

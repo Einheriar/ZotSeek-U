@@ -91,6 +91,17 @@ test('Notifier maps Child Note lifecycle events to only the parent stable identi
     },
   ), '⊘');
 
+  // The same excluded state applies to books when that policy is enabled.
+  zotero.Prefs.set('zotseek.excludeTag', '');
+  zotero.Prefs.set('zotseek.excludeBooks', true);
+  (parent as any).itemType = 'book';
+  (parent as any).getTags = () => [];
+  assert.equal((itemTreeIndexColumn as any).renderState(
+    'not-indexed',
+    parent,
+    null,
+  ), '⊘');
+
   notifier.stop();
   assert.equal(unregistered, 'freshness-observer');
   indexFreshnessTracker.clearAll();

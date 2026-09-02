@@ -6,6 +6,37 @@ import { ZoteroAPI } from '../src/utils/zotero-api';
 
 type PageResult = { totalPages?: number; text?: string } | Error;
 
+test('library and collection scope discovery preserve books for exclusion cleanup', async () => {
+  const zotero = installZoteroStub({ 'zotseek.excludeBooks': true });
+  const searches: Array<Array<[string, string, unknown?]>> = [];
+  zotero.Search = class {
+    libraryID: number | undefined;
+    private conditions: Array<[string, string, unknown?]> = [];
+
+    constructor() {
+      searches.push(this.conditions);
+    }
+
+    addCondition(field: string, operator: string, value?: unknown) {
+      this.conditions.push([field, operator, value]);
+    }
+
+    async search() {
+      return [1, 2];
+    }
+  };
+  zotero.Items.getAsync = async (ids: number[]) => ids.map(id => ({ id }));
+
+  const api = new ZoteroAPI();
+  assert.deepEqual((await api.getLibraryItems(1)).map(item => item.id), [1, 2]);
+  assert.deepEqual((await api.getCollectionItems(10, 1)).map(item => item.id), [1, 2]);
+  assert.equal(searches.length, 2);
+  for (const conditions of searches) {
+    assert.equal(conditions.some(([field, operator, value]) =>
+      field === 'itemType' && operator === 'isNot' && value === 'book'), false);
+  }
+});
+
 function installPdfScenario(
   attachmentIds: number[],
   pageResults: Record<number, Record<number, PageResult>>,

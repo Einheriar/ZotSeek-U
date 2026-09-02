@@ -20,6 +20,11 @@ import { modelInputPolicyFingerprint, resolveModelInputPolicy } from './model-in
 import { textExtractor } from './text-extractor';
 import { isModifiedAfterVerification } from '../utils/timestamp';
 import { normalizeStoredIndexingMode } from '../utils/indexing-mode';
+import {
+  isItemExcludedFromIndex,
+  readIndexExclusionPolicy,
+  type IndexExclusionPolicy,
+} from '../utils/index-exclusion';
 import type { StartupFingerprint, TextSourceType } from './vector-store-sqlite';
 import {
   assessChangedNoteContent,
@@ -54,6 +59,11 @@ type ContentSnapshot = {
   noteContentFingerprint: string;
   summaryChunkTexts: string[];
   noteChunkTexts: string[];
+};
+
+type PurgeResult = {
+  removed: number;
+  failed: number;
 };
 
 export type StartupCheckResult = {
@@ -234,18 +244,18 @@ export class AutoIndexManager {
     }));
   }
 
-  private shouldProcess(item: any): boolean {
+  private isScopedParent(item: any): boolean {
     if (!item || item.deleted || item.parentID) return false;
     if (typeof item.isRegularItem === 'function' && !item.isRegularItem()) return false;
     if (item.isNote?.() || item.isAttachment?.()) return false;
+    return true;
+  }
+
+  private shouldProcess(item: any, exclusionPolicy = readIndexExclusionPolicy(Zotero)): boolean {
+    if (!this.isScopedParent(item)) return false;
     const title = String(item.getField?.('title') || '').trim();
     if (!title) return false;
-
-    const excludeBooks = Zotero.Prefs.get('zotseek.excludeBooks', true) ?? true;
-    if (excludeBooks && item.itemType === 'book') return false;
-    const excludeTag = Zotero.Prefs.get('zotseek.excludeTag', true);
-    if (excludeTag && item.getTags?.()?.some((tag: any) => tag.tag === excludeTag)) return false;
-    return true;
+    return !isItemExcludedFromIndex(item, exclusionPolicy);
   }
 
   private async quickSnapshot(
@@ -388,15 +398,78 @@ export class AutoIndexManager {
   private async purgeMissingIndexedItems(
     indexed: Array<{ libraryKey: string; itemKey: string }>,
     scope: 'user' | 'all',
-  ): Promise<number> {
-    let removed = 0;
+  ): Promise<PurgeResult> {
+    const result: PurgeResult = { removed: 0, failed: 0 };
     for (const identity of indexed) {
       if (scope === 'user' && identity.libraryKey !== 'user') continue;
       if (localItemIDFromIdentity(identity) !== null) continue;
-      await this.vectorStore.deleteItem(identity.libraryKey, identity.itemKey);
-      removed++;
+      try {
+        await this.vectorStore.deleteItem(identity.libraryKey, identity.itemKey);
+        indexFreshnessTracker.clearDirty(identity);
+        result.removed++;
+      } catch (error: any) {
+        result.failed++;
+        this.logger.warn(
+          `Could not remove missing identity ${identity.libraryKey}/${identity.itemKey}: ` +
+          `${error?.message || error}`,
+        );
+      }
     }
-    return removed;
+    return result;
+  }
+
+  private async getAllIndexedIdentities(
+    activeModelId: string,
+    activeIdentities: Array<{ libraryKey: string; itemKey: string }>,
+  ): Promise<Array<{ libraryKey: string; itemKey: string }>> {
+    const byKey = new Map(activeIdentities.map(identity => [
+      freshnessIdentityKey(identity),
+      identity,
+    ]));
+    if (typeof this.vectorStore.getPerModelStats !== 'function') {
+      return Array.from(byKey.values());
+    }
+    const stats = await this.vectorStore.getPerModelStats();
+    for (const stat of stats || []) {
+      const modelId = String(stat?.modelId || '');
+      if (!modelId || modelId === activeModelId) continue;
+      const identities = await this.vectorStore.getIndexedIdentities(modelId);
+      for (const identity of identities) {
+        byKey.set(freshnessIdentityKey(identity), identity);
+      }
+    }
+    return Array.from(byKey.values());
+  }
+
+  private async purgeExcludedIndexedItems(
+    items: any[],
+    indexed: Array<{ libraryKey: string; itemKey: string }>,
+    exclusionPolicy: IndexExclusionPolicy,
+    libraryScope: 'user' | 'all' | false,
+  ): Promise<PurgeResult> {
+    const result: PurgeResult = { removed: 0, failed: 0 };
+    const indexedKeys = new Set(indexed.map(identity => freshnessIdentityKey(identity)));
+    for (const item of items) {
+      if (!isItemExcludedFromIndex(item, exclusionPolicy)) continue;
+      const identity = identityFromItem(item);
+      if (!identity || !indexedKeys.has(freshnessIdentityKey(identity))) continue;
+      if (libraryScope === 'user' && identity.libraryKey !== 'user') continue;
+      try {
+        // Exclusion is a global policy, so remove every model partition and
+        // fingerprint for this stable identity in one transaction.
+        await this.vectorStore.deleteItem(identity.libraryKey, identity.itemKey);
+        indexFreshnessTracker.clearDirty(identity);
+        result.removed++;
+      } catch (error: any) {
+        indexFreshnessTracker.markDirty(identity);
+        result.failed++;
+        this.logger.warn(
+          `Could not remove excluded identity ${identity.libraryKey}/${identity.itemKey}: ` +
+          `${error?.message || error}`,
+        );
+      }
+    }
+    return result;
   }
 
   /** Reconcile only the explicit items supplied by a manual command. */
@@ -449,6 +522,7 @@ export class AutoIndexManager {
     const mode = getIndexingMode(Zotero) as FreshnessIndexingMode;
     const configFingerprint = this.getConfigFingerprint(mode);
     const modelId = getActiveModelId();
+    const exclusionPolicy = readIndexExclusionPolicy(Zotero);
     const storedMode = typeof this.vectorStore.getMetadata === 'function'
       ? normalizeStoredIndexingMode(await this.vectorStore.getMetadata('indexingMode'))
       : undefined;
@@ -461,7 +535,7 @@ export class AutoIndexManager {
     let checked = 0;
 
     for (const item of suppliedItems) {
-      if (!this.shouldProcess(item)) continue;
+      if (!this.shouldProcess(item, exclusionPolicy)) continue;
       const identity = identityFromItem(item);
       if (!identity) continue;
       const key = freshnessIdentityKey(identity);
@@ -556,6 +630,7 @@ export class AutoIndexManager {
     const mode = getIndexingMode(Zotero) as FreshnessIndexingMode;
     const configFingerprint = this.getConfigFingerprint(mode);
     const modelId = getActiveModelId();
+    const exclusionPolicy = readIndexExclusionPolicy(Zotero);
     const storedMode = typeof this.vectorStore.getMetadata === 'function'
       ? normalizeStoredIndexingMode(await this.vectorStore.getMetadata('indexingMode'))
       : undefined;
@@ -564,26 +639,63 @@ export class AutoIndexManager {
 
     try {
       const seen = new Set<string>();
-      const items = suppliedItems.filter(item => {
-        if (!this.shouldProcess(item)) return false;
+      const scopedItems: any[] = [];
+      const items: any[] = [];
+      for (const item of suppliedItems) {
+        if (!this.isScopedParent(item)) continue;
         const identity = identityFromItem(item);
-        if (!identity) return false;
-        const key = `${identity.libraryKey}\u0000${identity.itemKey}`;
-        if (seen.has(key)) return false;
+        if (!identity) continue;
+        const key = freshnessIdentityKey(identity);
+        if (seen.has(key)) continue;
         seen.add(key);
-        return true;
-      });
-      result.checked = items.length;
+        if (isItemExcludedFromIndex(item, exclusionPolicy)) {
+          scopedItems.push(item);
+        } else if (this.shouldProcess(item, exclusionPolicy)) {
+          scopedItems.push(item);
+          items.push(item);
+        }
+      }
+      result.checked = scopedItems.length;
+
+      const excludedItems = scopedItems.filter(item =>
+        isItemExcludedFromIndex(item, exclusionPolicy));
 
       const indexedIdentities = await this.vectorStore.getIndexedIdentities(modelId);
-      if (options.purgeMissingScope) {
-        result.removed = await this.purgeMissingIndexedItems(
-          indexedIdentities,
-          options.purgeMissingScope,
-        );
-      }
       const indexed = new Set(indexedIdentities.map((identity: any) =>
-        `${identity.libraryKey}\u0000${identity.itemKey}`));
+        freshnessIdentityKey(identity)));
+      let excludedOutdated = 0;
+
+      if (allowWrites && (options.purgeMissingScope || excludedItems.length > 0)) {
+        // Missing Zotero identities and exclusion rules are global across
+        // embedding models, so inspect every partition before deleting.
+        const allIndexedIdentities = await this.getAllIndexedIdentities(
+          modelId,
+          indexedIdentities,
+        );
+        if (options.purgeMissingScope) {
+          const missing = await this.purgeMissingIndexedItems(
+            allIndexedIdentities,
+            options.purgeMissingScope,
+          );
+          result.removed += missing.removed;
+          result.failed += missing.failed;
+        }
+        if (excludedItems.length > 0) {
+          const excluded = await this.purgeExcludedIndexedItems(
+            excludedItems,
+            allIndexedIdentities,
+            exclusionPolicy,
+            options.purgeMissingScope || false,
+          );
+          result.removed += excluded.removed;
+          result.failed += excluded.failed;
+        }
+      } else if (!allowWrites && excludedItems.length > 0) {
+        excludedOutdated = excludedItems.filter(item => {
+          const identity = identityFromItem(item);
+          return !!identity && indexed.has(freshnessIdentityKey(identity));
+        }).length;
+      }
 
       const newItems: any[] = [];
       const rebuildItems: any[] = [];
@@ -685,7 +797,7 @@ export class AutoIndexManager {
 
       const fullItems = [...newItems, ...rebuildItems];
       if (!allowWrites) {
-        result.outdated = fullItems.length + noteItems.length;
+        result.outdated = excludedOutdated + fullItems.length + noteItems.length;
       } else {
         const configurationChanged =
           getActiveModelId() !== modelId ||
@@ -698,11 +810,11 @@ export class AutoIndexManager {
               indexFreshnessTracker.markDirty(identity);
             }
           }
-          result.outdated = items.filter(item => {
+          result.outdated += items.filter(item => {
             const identity = identityFromItem(item);
             return !!identity && indexed.has(freshnessIdentityKey(identity));
           }).length;
-          result.failed = fullItems.length + noteItems.length;
+          result.failed += fullItems.length + noteItems.length;
           result.skipped = true;
           this.logger.warn('Index configuration changed during freshness assessment; write callbacks skipped');
           return result;

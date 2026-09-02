@@ -25,12 +25,13 @@ function createPaper(id: number) {
     noteText: `Note ${id}`,
     noteVersion: 1,
     noteModified: '2026-08-30 10:00:00',
+    tags: [] as Array<{ tag: string }>,
     getField(field: string) {
       if (field === 'title') return this.title;
       if (field === 'abstractNote') return this.abstract;
       return '';
     },
-    getTags: () => [],
+    getTags() { return this.tags; },
     getNotes() { return [this.noteID]; },
     isRegularItem: () => true,
     isNote: () => false,
@@ -253,6 +254,210 @@ describe('scoped index reconciliation', () => {
     }
   });
 
+  test('removes excluded identities in the supplied scope across model partitions and retries failures', async () => {
+    const zotero = installZoteroStub({
+      'zotseek.indexingMode': 'abstract',
+      'zotseek.embeddingModel': 'multilingual-e5-base',
+      'zotseek.maxChunksPerPaper': 100,
+      'zotseek.excludeBooks': true,
+      'zotseek.excludeTag': 'no-zotseek',
+    });
+    const tagged = createPaper(1);
+    tagged.tags = [{ tag: 'no-zotseek' }];
+    const book = createPaper(2);
+    book.itemType = 'book';
+    const outside = createPaper(3);
+    outside.tags = [{ tag: 'no-zotseek' }];
+    const papers = [tagged, book, outside];
+    zotero.Libraries = {
+      userLibraryID: 1,
+      get: (libraryID: number) => libraryID === 1
+        ? { libraryID: 1, libraryType: 'user' }
+        : null,
+    };
+    zotero.Items = {
+      get: (id: number) => papers.find(paper => paper.id === id) || null,
+      getAsync: async () => [],
+      getIDFromLibraryAndKey: (_libraryID: number, key: string) =>
+        papers.find(paper => paper.key === key)?.id || false,
+    };
+
+    const allCovered = new Set(papers.map(paper => paper.key));
+    // The tagged item exists only in an inactive model partition. Exclusion
+    // cleanup must still find and remove it.
+    const activeCovered = new Set([book.key, outside.key]);
+    const deleted: string[] = [];
+    let failBookDelete = true;
+    let fingerprintWrites = 0;
+    const identities = (keys: Set<string>) => Array.from(keys, itemKey => ({
+      libraryKey: 'user',
+      itemKey,
+    }));
+    const store = {
+      getIndexedIdentities: async (modelId?: string) =>
+        identities(modelId === 'legacy-model'
+          ? new Set([tagged.key])
+          : activeCovered),
+      getPerModelStats: async () => [
+        { modelId: 'multilingual-e5-base' },
+        { modelId: 'legacy-model' },
+      ],
+      getMetadata: async () => 'abstract',
+      getStartupFingerprint: async () => null,
+      getChunkTextsBySources: async () => [],
+      setStartupFingerprint: async () => { fingerprintWrites++; },
+      deleteItem: async (_libraryKey: string, itemKey: string) => {
+        if (itemKey === book.key && failBookDelete) {
+          failBookDelete = false;
+          throw new Error('busy');
+        }
+        deleted.push(itemKey);
+        allCovered.delete(itemKey);
+        activeCovered.delete(itemKey);
+      },
+    };
+    autoIndexManager.setVectorStore(store);
+
+    const originalExtract = textExtractor.extractChunksFromItem;
+    (textExtractor as any).extractChunksFromItem = async (paper: FakePaper) => ({
+      chunks: [{ type: 'summary', text: `Summary ${paper.id}` }],
+      wasTruncated: false,
+    });
+
+    try {
+      const selected = await autoIndexManager.reconcileItems([tagged], {
+        fullIndexCallback: async () => [],
+        noteIndexCallback: async () => [],
+      });
+      assert.equal(selected.checked, 1);
+      assert.equal(selected.removed, 1);
+      assert.deepEqual(deleted, [tagged.key]);
+
+      // The same exclusion outside the supplied selected/collection scope is
+      // untouched. A failed delete remains retryable and keeps the dirty bit.
+      assert.equal(allCovered.has(outside.key), true);
+      const failed = await autoIndexManager.reconcileItems([book], {
+        fullIndexCallback: async () => [],
+        noteIndexCallback: async () => [],
+      });
+      assert.equal(failed.removed, 0);
+      assert.equal(failed.failed, 1);
+      assert.equal(failed.outdated, 1);
+      assert.equal(allCovered.has(book.key), true);
+      assert.equal(indexFreshnessTracker.isDirty({ libraryKey: 'user', itemKey: book.key }), true);
+
+      const retried = await autoIndexManager.reconcileItems([book], {
+        fullIndexCallback: async () => [],
+        noteIndexCallback: async () => [],
+      });
+      assert.equal(retried.removed, 1);
+      assert.equal(retried.failed, 0);
+      assert.equal(allCovered.has(book.key), false);
+      assert.equal(indexFreshnessTracker.isDirty({ libraryKey: 'user', itemKey: book.key }), false);
+
+      const readOnly = await autoIndexManager.reconcileItems([outside], {
+        allowWrites: false,
+      });
+      assert.equal(readOnly.removed, 0);
+      assert.equal(readOnly.outdated, 1);
+      assert.equal(allCovered.has(outside.key), true);
+
+      // Removing the policy condition after a successful purge makes the item
+      // a normal missing item for the active model.
+      tagged.tags = [];
+      const reintroduced = await autoIndexManager.reconcileItems([tagged], {
+        fullIndexCallback: async candidates => candidates.map(item => item.id),
+        noteIndexCallback: async () => [],
+      });
+      assert.equal(reintroduced.indexedNew, 1);
+      assert.equal(reintroduced.failed, 0);
+      assert.equal(fingerprintWrites, 1);
+    } finally {
+      (textExtractor as any).extractChunksFromItem = originalExtract;
+      autoIndexManager.setVectorStore(null);
+      indexFreshnessTracker.clearAll();
+    }
+  });
+
+  test('keeps group exclusions outside user-library cleanup and removes them in all-library cleanup', async () => {
+    const zotero = installZoteroStub({
+      'zotseek.indexingMode': 'abstract',
+      'zotseek.embeddingModel': 'multilingual-e5-base',
+      'zotseek.maxChunksPerPaper': 100,
+      'zotseek.excludeBooks': false,
+      'zotseek.excludeTag': 'no-zotseek',
+    });
+    const userPaper = createPaper(1);
+    userPaper.tags = [{ tag: 'no-zotseek' }];
+    const groupPaper = createPaper(2);
+    groupPaper.libraryID = 2;
+    groupPaper.tags = [{ tag: 'no-zotseek' }];
+    const papers = [userPaper, groupPaper];
+    zotero.Libraries = {
+      userLibraryID: 1,
+      get: (libraryID: number) => {
+        if (libraryID === 1) return { libraryID: 1, libraryType: 'user' };
+        if (libraryID === 2) {
+          return { libraryID: 2, libraryType: 'group', groupID: 99 };
+        }
+        return null;
+      },
+    };
+    zotero.Groups = {
+      get: (groupID: number) => groupID === 99 ? { libraryID: 2 } : null,
+    };
+    zotero.Items = {
+      get: (id: number) => papers.find(paper => paper.id === id) || null,
+      getAsync: async () => [],
+      getIDFromLibraryAndKey: (libraryID: number, key: string) =>
+        papers.find(paper => paper.libraryID === libraryID && paper.key === key)?.id || false,
+    };
+
+    const indexed = new Map([
+      [`user\u0000${userPaper.key}`, { libraryKey: 'user', itemKey: userPaper.key }],
+      [`group:99\u0000${groupPaper.key}`, {
+        libraryKey: 'group:99',
+        itemKey: groupPaper.key,
+      }],
+    ]);
+    const deleted: string[] = [];
+    const store = {
+      getIndexedIdentities: async () => Array.from(indexed.values()),
+      getPerModelStats: async () => [{ modelId: 'multilingual-e5-base' }],
+      deleteItem: async (libraryKey: string, itemKey: string) => {
+        deleted.push(`${libraryKey}/${itemKey}`);
+        indexed.delete(`${libraryKey}\u0000${itemKey}`);
+      },
+    };
+    autoIndexManager.setVectorStore(store);
+
+    try {
+      const userOnly = await autoIndexManager.reconcileItems(papers, {
+        purgeMissingScope: 'user',
+        fullIndexCallback: async () => [],
+        noteIndexCallback: async () => [],
+      });
+      assert.equal(userOnly.removed, 1);
+      assert.deepEqual(deleted, [`user/${userPaper.key}`]);
+      assert.equal(indexed.has(`group:99\u0000${groupPaper.key}`), true);
+
+      const allLibraries = await autoIndexManager.reconcileItems([groupPaper], {
+        purgeMissingScope: 'all',
+        fullIndexCallback: async () => [],
+        noteIndexCallback: async () => [],
+      });
+      assert.equal(allLibraries.removed, 1);
+      assert.deepEqual(deleted, [
+        `user/${userPaper.key}`,
+        `group:99/${groupPaper.key}`,
+      ]);
+      assert.equal(indexed.size, 0);
+    } finally {
+      autoIndexManager.setVectorStore(null);
+      indexFreshnessTracker.clearAll();
+    }
+  });
+
   test('startup config cancel and rebuild decisions happen before every write', async () => {
     const zotero = installZoteroStub({
       'zotseek.indexScope': 'user',
@@ -362,6 +567,97 @@ describe('scoped index reconciliation', () => {
       autoIndexManager.setNoteIndexCallback(null);
       autoIndexManager.setItemProvider(null);
       autoIndexManager.setVectorStore(null);
+    }
+  });
+
+  test('startup config cancel also defers exclusion deletion until update is chosen', async () => {
+    const zotero = installZoteroStub({
+      'zotseek.indexScope': 'user',
+      'zotseek.indexingMode': 'abstract',
+      'zotseek.embeddingModel': 'multilingual-e5-base',
+      'zotseek.maxChunksPerPaper': 150,
+      'zotseek.excludeBooks': false,
+      'zotseek.excludeTag': 'no-zotseek',
+    });
+    const changed = createPaper(1);
+    const excluded = createPaper(2);
+    excluded.tags = [{ tag: 'no-zotseek' }];
+    const papers = [changed, excluded];
+    zotero.Libraries = {
+      userLibraryID: 1,
+      get: (libraryID: number) => libraryID === 1
+        ? { libraryID: 1, libraryType: 'user' }
+        : null,
+    };
+    zotero.Items = {
+      get: (id: number) => papers.find(paper => paper.id === id) || null,
+      getAsync: async () => [],
+      getIDFromLibraryAndKey: (_libraryID: number, key: string) =>
+        papers.find(paper => paper.key === key)?.id || false,
+    };
+
+    const indexed = new Set(papers.map(paper => paper.key));
+    let fingerprintWrites = 0;
+    const deleted: string[] = [];
+    const store = {
+      getIndexedIdentities: async () => Array.from(indexed, itemKey => ({
+        libraryKey: 'user',
+        itemKey,
+      })),
+      getMetadata: async () => 'abstract',
+      getStartupFingerprint: async (_libraryKey: string, itemKey: string) =>
+        itemKey === changed.key
+          ? ({
+              libraryKey: 'user',
+              itemKey,
+              modelId: 'multilingual-e5-base',
+              configFingerprint: 'old-config',
+              metadataFingerprint: 'old-metadata',
+              noteStateFingerprint: 'old-note-state',
+              noteContentFingerprint: 'old-note-content',
+              checkedAt: '2026-08-30T00:00:00.000Z',
+            })
+          : null,
+      setStartupFingerprint: async () => { fingerprintWrites++; },
+      deleteItem: async (_libraryKey: string, itemKey: string) => {
+        deleted.push(itemKey);
+        indexed.delete(itemKey);
+      },
+    };
+    autoIndexManager.setVectorStore(store);
+    autoIndexManager.setItemProvider(async () => papers);
+    autoIndexManager.setIndexCallback(async candidates => candidates.map(item => item.id));
+    autoIndexManager.setNoteIndexCallback(async () => []);
+
+    const originalExtract = textExtractor.extractChunksFromItem;
+    (textExtractor as any).extractChunksFromItem = async () => ({
+      chunks: [{ type: 'summary', text: 'Summary' }],
+      wasTruncated: false,
+    });
+
+    try {
+      autoIndexManager.setStartupConfigChangeCallback(() => 'cancel');
+      const cancelled = await autoIndexManager.runNow({ promptForConfigChanges: true });
+      assert.equal(cancelled.skipped, true);
+      assert.equal(fingerprintWrites, 0);
+      assert.deepEqual(deleted, []);
+      assert.equal(indexed.has(excluded.key), true);
+
+      autoIndexManager.setStartupConfigChangeCallback(() => 'update');
+      const updated = await autoIndexManager.runNow({ promptForConfigChanges: true });
+      assert.equal(updated.rebuilt, 1);
+      assert.equal(updated.removed, 1);
+      assert.equal(updated.failed, 0);
+      assert.deepEqual(deleted, [excluded.key]);
+      assert.equal(fingerprintWrites, 1);
+    } finally {
+      (textExtractor as any).extractChunksFromItem = originalExtract;
+      autoIndexManager.setStartupConfigChangeCallback(null);
+      autoIndexManager.setIndexCallback(null);
+      autoIndexManager.setNoteIndexCallback(null);
+      autoIndexManager.setItemProvider(null);
+      autoIndexManager.setVectorStore(null);
+      indexFreshnessTracker.clearAll();
     }
   });
 });
