@@ -6,8 +6,6 @@
 import { ProgressWindowHelper } from 'zotero-plugin-toolkit';
 import { Logger } from './logger';
 
-declare const Services: any;
-
 // Set default icon for all progress windows
 ProgressWindowHelper.setIconURI(
   'default',
@@ -18,6 +16,10 @@ export interface StableProgressOptions {
   title: string;
   closeOnClick?: boolean;
   cancelCallback?: () => void;
+  stopCallback?: () => boolean | void;
+  stopLabel?: string;
+  stoppingLabel?: string;
+  stopTooltip?: string;
 }
 
 // Cap on visible checkpoint lines. Every createLine makes Zotero's _move()
@@ -37,14 +39,19 @@ export class StableProgressWindow {
   private cancelCallback?: () => void;
   private currentLine: any;
   private startTime: number;
-  private title: string;
+  private stopCallback?: () => boolean | void;
+  private stopLabel: string;
+  private stoppingLabel: string;
+  private stopTooltip: string;
+  private stopState: 'running' | 'pausing' | 'paused' = 'running';
+  private stopButton: any = null;
+  private progressLookupWarningLogged = false;
 
   // Pause/resume state
   private paused = false;
   private resumeResolver: (() => void) | null = null;
   private pausedAt: number = 0;
   private totalPausedMs: number = 0;
-  private pauseButton: any = null;
 
   // Track checkpoint lines for reverse-order display (newest first)
   private checkpointTexts: string[] = [];
@@ -53,8 +60,11 @@ export class StableProgressWindow {
   
   constructor(options: StableProgressOptions) {
     this.logger = new Logger('StableProgress');
-    this.title = options.title;
     this.cancelCallback = options.cancelCallback;
+    this.stopCallback = options.stopCallback;
+    this.stopLabel = options.stopLabel || '';
+    this.stoppingLabel = options.stoppingLabel || '';
+    this.stopTooltip = options.stopTooltip || '';
     this.startTime = Date.now();
     
     try {
@@ -295,6 +305,45 @@ export class StableProgressWindow {
   isCancelled(): boolean {
     return this.cancelled;
   }
+
+  /** Return true after the user has requested a safe indexing stop. */
+  isStopRequested(): boolean {
+    return this.stopState !== 'running';
+  }
+
+  /**
+   * Request a one-shot safe stop. The indexing loop owns the actual stop
+   * boundary and calls markStopped() only after no more writes can begin.
+   */
+  requestStop(): void {
+    if (this.stopState !== 'running') return;
+    try {
+      if (this.stopCallback?.() === false) return;
+    } catch (error: any) {
+      this.logger.error(`Safe indexing stop was rejected: ${error?.message || error}`);
+      return;
+    }
+    if (this.paused) {
+      this.paused = false;
+      this.totalPausedMs += Date.now() - this.pausedAt;
+      this.pausedAt = 0;
+    }
+    if (this.resumeResolver) {
+      this.resumeResolver();
+      this.resumeResolver = null;
+    }
+    this.stopState = 'pausing';
+    this.logger.info('Safe indexing stop requested by user');
+    this.updateStopButtonState();
+  }
+
+  /** Mark the task stopped and close only this progress window. */
+  markStopped(): void {
+    if (this.stopState === 'running') return;
+    this.stopState = 'paused';
+    this.updateStopButtonState();
+    this.close();
+  }
   
   /**
    * Cancel the operation
@@ -325,7 +374,6 @@ export class StableProgressWindow {
     this.paused = true;
     this.pausedAt = Date.now();
     this.logger.info('Progress paused by user');
-    this.updatePauseButtonState();
   }
 
   /**
@@ -337,7 +385,6 @@ export class StableProgressWindow {
     this.totalPausedMs += Date.now() - this.pausedAt;
     this.pausedAt = 0;
     this.logger.info('Progress resumed by user');
-    this.updatePauseButtonState();
 
     if (this.resumeResolver) {
       this.resumeResolver();
@@ -371,25 +418,7 @@ export class StableProgressWindow {
     this.progressWindow = null;
   }
 
-  /**
-   * Get Services object from available sources
-   */
-  private getServices(): any {
-    try {
-      const Z = (globalThis as any).Zotero;
-      const mainWindow = Z?.getMainWindow?.();
-      return mainWindow?.Services || (globalThis as any).Services;
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * Find the progress window belonging to this instance.
-   * Returns the most recently created 'Progress' window (last in the
-   * window manager enumeration) to avoid targeting stale popups left
-   * over from previous operations.
-   */
+  /** Find the native window that owns this helper's first progress line. */
   private findProgressWindow(): any {
     // Validate cached reference is still open
     if (this.progressWin) {
@@ -399,26 +428,34 @@ export class StableProgressWindow {
         // Window was destroyed
       }
       this.progressWin = null;
-      this.pauseButton = null; // Button was in the old window
+      this.stopButton = null;
     }
 
     try {
-      const Svc = this.getServices();
-      if (!Svc?.wm) return null;
-      const windows = Svc.wm.getEnumerator(null);
-      let lastMatch: any = null;
-      while (windows.hasMoreElements()) {
-        const win = windows.getNext();
-        if (win.document?.title === 'Progress') {
-          lastMatch = win;
+      // ProgressWindowHelper.win is the Zotero.ProgressWindow wrapper, whose
+      // real window is private. Its ItemProgress objects do retain the exact
+      // owning DOM through _hbox, avoiding locale-dependent title matching.
+      const lines = (this.progressWindow as any)?.lines;
+      if (Array.isArray(lines)) {
+        for (const line of lines) {
+          const doc = line?._hbox?.ownerDocument;
+          const win = doc?.defaultView;
+          if (win && !win.closed) {
+            this.progressWin = win;
+            this.progressLookupWarningLogged = false;
+            return win;
+          }
         }
       }
-      if (lastMatch) {
-        this.progressWin = lastMatch;
+      if (!this.progressLookupWarningLogged) {
+        this.logger.warn('Progress window DOM is not ready; controls will retry on the next update');
+        this.progressLookupWarningLogged = true;
       }
-      return lastMatch;
-    } catch {
-      // Ignore errors
+    } catch (error: any) {
+      if (!this.progressLookupWarningLogged) {
+        this.logger.warn(`Could not resolve the exact progress window: ${error?.message || error}`);
+        this.progressLookupWarningLogged = true;
+      }
     }
     return null;
   }
@@ -480,77 +517,59 @@ export class StableProgressWindow {
         }
       }
 
-      // Inject pause button if not yet present
-      this.injectPauseButton();
-    } catch {
-      // Ignore resize/position errors
+      // Inject the one-shot safe-stop control if this task enabled it.
+      this.injectStopButton();
+    } catch (error: any) {
+      this.logger.debug(`Could not resize progress window: ${error?.message || error}`);
     }
   }
 
-  /**
-   * Inject pause/play and cancel buttons into the progress window
-   */
-  private injectPauseButton(): void {
+  /** Inject a localized one-shot safe-stop button into this exact window. */
+  private injectStopButton(): void {
+    if (!this.stopCallback || this.stopButton) return;
+    if (!this.stopLabel || !this.stoppingLabel || !this.stopTooltip) {
+      this.logger.error('Safe-stop control requires localized labels and tooltip');
+      return;
+    }
+
     try {
       const win = this.findProgressWindow();
       if (!win) return;
-      if (this.pauseButton) return;
-
       const doc = win.document;
       const headline = doc.getElementById('zotero-progress-text-headline');
-      if (!headline) return;
+      if (!headline) {
+        this.logger.warn('Progress headline not ready; safe-stop control will retry');
+        return;
+      }
 
-      const btnStyle = 'padding: 2px 8px; font-size: 12px; cursor: pointer; border: 1px solid var(--material-border, #ccc); border-radius: 4px; background: var(--material-background, #f5f5f5); vertical-align: middle;';
-
-      // Pause/play button
-      const pauseBtn = doc.createElementNS('http://www.w3.org/1999/xhtml', 'button');
-      pauseBtn.setAttribute('id', 'zotseek-pause-btn');
-      pauseBtn.textContent = '\u23F8';
-      pauseBtn.title = 'Pause indexing';
-      pauseBtn.style.cssText = `margin-left: 8px; ${btnStyle}`;
-
-      pauseBtn.addEventListener('click', () => {
-        if (this.paused) {
-          this.resume();
-        } else {
-          this.pause();
-        }
-      });
-
-      // Cancel button
-      const cancelBtn = doc.createElementNS('http://www.w3.org/1999/xhtml', 'button');
-      cancelBtn.setAttribute('id', 'zotseek-cancel-btn');
-      cancelBtn.textContent = '\u2715';
-      cancelBtn.title = 'Cancel indexing';
-      cancelBtn.style.cssText = `margin-left: 4px; ${btnStyle}`;
-
-      cancelBtn.addEventListener('click', () => {
-        this.cancel();
-      });
-
-      headline.appendChild(pauseBtn);
-      headline.appendChild(cancelBtn);
-      this.pauseButton = pauseBtn;
-    } catch (error) {
-      this.logger.debug(`Could not inject control buttons: ${error}`);
+      const button = typeof doc.createXULElement === 'function'
+        ? doc.createXULElement('button')
+        : doc.createElementNS('http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul', 'button');
+      button.setAttribute('id', 'zotseek-stop-indexing');
+      button.setAttribute('label', this.stopLabel);
+      button.setAttribute('tooltiptext', this.stopTooltip);
+      button.setAttribute('style', 'margin-inline-start: 8px;');
+      button.addEventListener('command', () => this.requestStop());
+      button.addEventListener('click', () => this.requestStop());
+      headline.appendChild(button);
+      this.stopButton = button;
+      this.updateStopButtonState();
+      this.logger.debug('Safe-stop control attached to progress window');
+    } catch (error: any) {
+      this.logger.warn(`Could not inject safe-stop control: ${error?.message || error}`);
     }
   }
 
-  /**
-   * Update pause button text/state
-   */
-  private updatePauseButtonState(): void {
-    if (!this.pauseButton) return;
+  private updateStopButtonState(): void {
+    if (!this.stopButton) return;
     try {
-      if (this.paused) {
-        this.pauseButton.textContent = '\u25B6';
-        this.pauseButton.title = 'Resume indexing';
-      } else {
-        this.pauseButton.textContent = '\u23F8';
-        this.pauseButton.title = 'Pause indexing';
-      }
-    } catch {
-      // Ignore if window was closed
+      const pausing = this.stopState !== 'running';
+      this.stopButton.setAttribute('label', pausing ? this.stoppingLabel : this.stopLabel);
+      if (pausing) this.stopButton.setAttribute('disabled', 'true');
+      else this.stopButton.removeAttribute('disabled');
+      this.stopButton.setAttribute('tooltiptext', pausing ? this.stoppingLabel : this.stopTooltip);
+    } catch (error: any) {
+      this.logger.debug(`Could not update safe-stop control: ${error?.message || error}`);
     }
   }
 

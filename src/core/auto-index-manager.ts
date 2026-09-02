@@ -47,7 +47,19 @@ import {
 
 declare const Zotero: any;
 
-type IndexCallback = (items: any[]) => Promise<number[]>;
+/**
+ * Result returned by an indexing callback.
+ *
+ * The array-only form remains supported for callers that do not expose a
+ * pause state.  New callbacks can return this object so reconciliation can
+ * preserve the distinction between a partial pause and a normal failure.
+ */
+export type IndexCallbackResult = {
+  successfulIds: number[];
+  paused: boolean;
+};
+
+type IndexCallback = (items: any[]) => Promise<number[] | IndexCallbackResult>;
 type ItemProvider = () => Promise<any[]>;
 type CompletionCallback = (result: StartupCheckResult) => void | Promise<void>;
 type StartupConfigChangeCallback = (
@@ -83,6 +95,7 @@ export type StartupCheckResult = {
   outdated: number;
   failed: number;
   skipped: boolean;
+  paused: boolean;
 };
 
 export type StartupConfigChangeChoice = 'update' | 'rebuild' | 'cancel';
@@ -233,6 +246,21 @@ export class AutoIndexManager {
       outdated: 0,
       failed: 0,
       skipped,
+      paused: false,
+    };
+  }
+
+  private normalizeIndexCallbackResult(
+    callbackResult: number[] | IndexCallbackResult,
+  ): IndexCallbackResult {
+    if (Array.isArray(callbackResult)) {
+      return { successfulIds: callbackResult, paused: false };
+    }
+    return {
+      successfulIds: Array.isArray(callbackResult?.successfulIds)
+        ? callbackResult.successfulIds
+        : [],
+      paused: callbackResult?.paused === true,
     };
   }
 
@@ -941,15 +969,20 @@ export class AutoIndexManager {
           return result;
         }
         if (fullItems.length > 0 && fullIndexCallback) {
-          let successful: number[] = [];
+          let callbackResult: IndexCallbackResult = {
+            successfulIds: [],
+            paused: false,
+          };
           try {
-            successful = await fullIndexCallback(fullItems);
+            callbackResult = this.normalizeIndexCallbackResult(
+              await fullIndexCallback(fullItems),
+            );
           } catch (error: any) {
             this.logger.error(`Full-item reconciliation failed: ${error?.message || error}`);
           }
           const persisted = await this.persistSuccessful(
             fullItems,
-            successful,
+            callbackResult.successfulIds,
             configFingerprint,
             snapshots,
             mode,
@@ -961,17 +994,31 @@ export class AutoIndexManager {
             else result.rebuilt++;
           }
           result.failed += fullItems.length - persisted.size;
+          if (callbackResult.paused) {
+            result.paused = true;
+            // A paused full pass must not enter the Notes phase: the callback
+            // may have stopped between items and the original scope must stay
+            // recoverable for the next reconciliation.
+            result.failed += noteItems.length;
+            result.outdated = result.failed;
+            return result;
+          }
         }
         if (noteItems.length > 0 && noteIndexCallback) {
-          let successful: number[] = [];
+          let callbackResult: IndexCallbackResult = {
+            successfulIds: [],
+            paused: false,
+          };
           try {
-            successful = await noteIndexCallback(noteItems);
+            callbackResult = this.normalizeIndexCallbackResult(
+              await noteIndexCallback(noteItems),
+            );
           } catch (error: any) {
             this.logger.error(`Note reconciliation failed: ${error?.message || error}`);
           }
           const persisted = await this.persistSuccessful(
             noteItems,
-            successful,
+            callbackResult.successfulIds,
             configFingerprint,
             snapshots,
             mode,
@@ -979,6 +1026,7 @@ export class AutoIndexManager {
           );
           result.notesUpdated = persisted.size;
           result.failed += noteItems.length - persisted.size;
+          if (callbackResult.paused) result.paused = true;
         }
         result.outdated = result.failed;
       }

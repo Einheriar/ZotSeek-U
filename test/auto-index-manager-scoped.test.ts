@@ -199,6 +199,7 @@ describe('scoped index reconciliation', () => {
       assert.equal(updated.rebuilt, 1);
       assert.equal(updated.baselined, 1);
       assert.equal(updated.failed, 0);
+      assert.equal(updated.paused, false);
       assert.equal(fingerprintWrites, 4);
 
       // Fingerprint-only progress is isolated per item. A failed write keeps
@@ -409,6 +410,98 @@ describe('scoped index reconciliation', () => {
         libraryKey: 'user',
         itemKey: failedPaper.key,
       }), true);
+    } finally {
+      (textExtractor as any).extractChunksFromItem = originalExtract;
+      autoIndexManager.setVectorStore(null);
+      indexFreshnessTracker.clearAll();
+    }
+  });
+
+  test('propagates paused callback results and persists only completed items', async () => {
+    const zotero = installZoteroStub({
+      'zotseek.indexingMode': 'notes',
+      'zotseek.embeddingModel': 'multilingual-e5-base',
+      'zotseek.maxChunksPerPaper': 100,
+      'zotseek.excludeBooks': false,
+      'zotseek.excludeTag': '',
+    });
+    const papers = [createPaper(1), createPaper(2)];
+    const notes = new Map(papers.map(paper => [paper.noteID, createNote(paper)]));
+    zotero.Libraries = {
+      userLibraryID: 1,
+      get: (libraryID: number) => libraryID === 1
+        ? { libraryID: 1, libraryType: 'user' }
+        : null,
+    };
+    zotero.Items = {
+      get: (id: number) => papers.find(paper => paper.id === id) || notes.get(id) || null,
+      getAsync: async (ids: number[]) => ids.map(id => notes.get(id)).filter(Boolean),
+    };
+
+    const fingerprints = new Map<string, StartupFingerprint>();
+    const store = {
+      getIndexedIdentities: async () => papers.map(paper => ({
+        libraryKey: 'user',
+        itemKey: paper.key,
+      })),
+      getStartupFingerprint: async (libraryKey: string, itemKey: string, modelId: string) =>
+        fingerprints.get(`${libraryKey}\u0000${itemKey}\u0000${modelId}`) || null,
+      setStartupFingerprint: async (fingerprint: StartupFingerprint) => {
+        fingerprints.set(
+          `${fingerprint.libraryKey}\u0000${fingerprint.itemKey}\u0000${fingerprint.modelId}`,
+          fingerprint,
+        );
+      },
+      getChunkTextsBySources: async () => [],
+    };
+    autoIndexManager.setVectorStore(store);
+
+    const originalExtract = textExtractor.extractChunksFromItem;
+    (textExtractor as any).extractChunksFromItem = async (paper: FakePaper) => ({
+      chunks: [
+        { type: 'summary', text: `Summary ${paper.id}` },
+        { type: 'note', text: paper.noteText },
+      ],
+      wasTruncated: false,
+    });
+
+    try {
+      let noteCall: number[] | null = null;
+      const fullPaused = await autoIndexManager.reconcileItems(papers, {
+        fullIndexCallback: async candidates => ({
+          successfulIds: [candidates[0].id],
+          paused: true,
+        }),
+        noteIndexCallback: async candidates => {
+          noteCall = candidates.map(item => item.id);
+          return candidates.map(item => item.id);
+        },
+      });
+
+      assert.equal(fullPaused.paused, true);
+      assert.equal(fullPaused.rebuilt, 1);
+      assert.equal(fullPaused.failed, 1);
+      assert.equal(fullPaused.outdated, 1);
+      assert.equal(fingerprints.size, 1);
+      assert.equal(noteCall, null);
+
+      const changed = papers[0];
+      changed.noteText = 'Changed Note 1';
+      changed.noteVersion++;
+      changed.noteModified = '2026-08-31 09:00:00';
+      const notePaused = await autoIndexManager.reconcileItems([changed], {
+        fullIndexCallback: async () => { throw new Error('unexpected full rebuild'); },
+        noteIndexCallback: async (candidates: any[]) => {
+          noteCall = candidates.map((item: any) => Number(item.id)) as number[];
+          return { successfulIds: [candidates[0].id], paused: true };
+        },
+      });
+
+      assert.equal(notePaused.paused, true);
+      assert.equal(notePaused.notesUpdated, 1);
+      assert.equal(notePaused.failed, 0);
+      assert.deepEqual(noteCall, [1]);
+      assert.equal(fingerprints.size, 1);
     } finally {
       (textExtractor as any).extractChunksFromItem = originalExtract;
       autoIndexManager.setVectorStore(null);
