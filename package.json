@@ -9,6 +9,7 @@
     "build:dev": "node scripts/build.js --dev",
     "typecheck": "node scripts/typecheck.js",
     "test": "node scripts/test.js",
+    "check:locales": "node scripts/check-locales.js --self-test && node scripts/check-locales.js",
     "check:versions": "node scripts/check-versions.js",
     "watch": "node scripts/build.js --watch",
     "dev:install": "node scripts/dev-install.js",

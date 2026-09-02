@@ -1,0 +1,429 @@
+# ZotSeek Traditional Chinese (Taiwan)
+
+## 快顯功能表與工具列
+zotseek-menu-findSimilar = 尋找相似文獻
+zotseek-menu-openZotSeek = 開啟 ZotSeek…
+zotseek-menu-indexSelected = 檢查並更新所選項目
+zotseek-menu-indexCollection = 檢查並更新目前的分類
+zotseek-menu-updateLibrary = 檢查並更新索引
+zotseek-menu-removeFromIndex = 從 ZotSeek 索引移除
+zotseek-menu-findRelated = 尋找相關文獻
+zotseek-toolbar-openZotSeek = 開啟 ZotSeek
+zotseek-toolbar-findSimilar = 尋找相似文獻
+
+## 偏好設定
+zotseek-pref-title = ZotSeek
+zotseek-pref-indexStatistics = 索引統計
+zotseek-pref-papersIndexed = 已索引文獻
+zotseek-pref-totalChunks = 分塊總數
+zotseek-pref-storageUsed = 儲存空間用量
+zotseek-pref-model = 模型：
+zotseek-pref-avg = 平均：
+zotseek-pref-chunksPerPaper = 分塊/文獻
+zotseek-pref-lastIndexed = 上次索引：
+zotseek-pref-refreshStats =
+    .label = 重新整理統計
+zotseek-pref-compactDatabase =
+    .label = 壓縮資料庫
+zotseek-pref-autoCompact =
+    .label = Zotero 閒置時自動壓縮
+zotseek-pref-autoCompactDesc = 需要 Zotero 10 或更新版本。只有在可回收空間足夠且沒有索引工作進行時才會執行。
+zotseek-pref-indexModeMismatch = 索引模式不符
+zotseek-pref-indexModeMismatchDesc = 您的索引是以{ $indexedMode }模式建立，但目前設定為{ $currentMode }。
+zotseek-pref-indexModeMismatchAction = 按一下下方的「重建索引」，套用新的索引模式設定。
+zotseek-pref-indexingMode = 索引模式
+zotseek-pref-abstractOnly = 僅摘要
+zotseek-pref-abstractOnlyMenu =
+    .label = 僅摘要（較快）
+zotseek-pref-abstractSpeed = 快速 • 每篇文獻約 1 個分塊
+zotseek-pref-abstractDesc = 索引標題和摘要，適合依主題尋找文獻。
+zotseek-pref-notes = 中繼資料 + 筆記
+zotseek-pref-notesMenu =
+    .label = 中繼資料 + 筆記（不處理 PDF）
+zotseek-pref-notesSpeed = 專注 • 不處理 PDF
+zotseek-pref-notesDesc = 索引標題、摘要、標籤及子筆記。
+zotseek-pref-fullPaper = 全文
+zotseek-pref-fullPaperMenu =
+    .label = 全文（較完整）
+zotseek-pref-fullSpeed = 完整 • 筆記 + 每個 PDF 頁面約 1–2 個分塊
+zotseek-pref-fullDesc = 索引標題、摘要、標籤、子筆記，以及含頁碼的完整 PDF 內容。
+zotseek-pref-mcpServer = AI 代理程式存取
+zotseek-pref-mcpServerLabel =
+    .label = 允許 AI 代理程式搜尋您的文獻庫（本機 MCP 伺服器）
+zotseek-pref-mcpServerDesc = 讓 Claude Code 等 MCP 用戶端對您的文獻庫執行唯讀語意搜尋。所有資料都保留在這部電腦上（僅限 localhost）。
+zotseek-pref-mcpServerUrl = 連線方式：
+zotseek-pref-mcpServerWarning = Zotero 的本機 HTTP 伺服器已停用。請在「設定 → 進階」啟用「允許此電腦上的其他應用程式與 Zotero 通訊」。
+zotseek-pref-autoIndexing = 自動維護
+zotseek-pref-autoIndexLabel =
+    .label = Zotero 啟動時檢查並更新索引
+zotseek-pref-autoIndexDesc = 啟動時檢查所選文獻庫範圍，更新新增或變更的項目，移除已從 Zotero 刪除或目前遭索引規則排除的記錄，並在右下角顯示進度。
+zotseek-pref-checkNowResult = 已檢查 { $checked } 個項目；更新 { $changed } 個；移除 { $removed } 筆索引記錄。
+zotseek-indexing-noteUpdate = 正在更新 { $count } 個項目的筆記…
+zotseek-indexing-noteUpdateComplete = 已更新 { $count } 個項目的筆記
+zotseek-pref-indexScope = 索引範圍
+zotseek-pref-indexScopeUser =
+    .label = 我的文獻庫
+zotseek-pref-indexScopeAll =
+    .label = 所有文獻庫
+zotseek-pref-indexScopeDesc = 此範圍同時套用於手動「檢查並更新索引」及 Zotero 啟動時的自動維護。
+zotseek-pref-searchSettings = 搜尋設定
+zotseek-pref-resultsToShow = 顯示結果數
+zotseek-pref-resultsToShowDesc = 要顯示的相符結果數（5–100）
+zotseek-pref-minSimilarity = 最低相似度
+zotseek-pref-minSimilarityDesc = % — 篩除品質較差的相符結果（0–100）
+zotseek-pref-advancedSettings = 進階設定
+zotseek-pref-maxTokens = 每個分塊的 Token 上限
+zotseek-pref-maxTokensDesc = 可選的使用者覆寫值；最終限制由目前的模型策略決定
+zotseek-pref-modelInputPolicy = 上限：{ $limit } · 建議值：{ $recommended } · 有效值：{ $effective } · 前綴：{ $prefix }
+zotseek-pref-modelInputUnknown = 由伺服器管理
+zotseek-pref-modelInputPrefixRequired = 必要
+zotseek-pref-modelInputPrefixNone = 無
+zotseek-pref-modelStatusBundled = 內建
+zotseek-pref-modelStatusInstalled = 已安裝
+zotseek-pref-modelStatusDownload = 需要下載 · 約 { $size } MB
+zotseek-pref-modelMultilingual = 多語言
+zotseek-modelDownloadChoiceTitle = 安裝 Embedding 模型
+zotseek-modelDownloadChoiceMessage = 尚未安裝 { $model }。自動下載會從 huggingface.co 一次下載約 { $size } MB 並儲存在這部電腦上。ZotSeek 不會將您的 Zotero 文獻庫傳送至 Hugging Face。
+zotseek-modelDownloadAutomatic = 自動下載（建議）
+zotseek-modelDownloadManual = 手動下載
+zotseek-modelDownloadCancel = 取消
+zotseek-modelDownloadManualTitle = 手動下載模型
+zotseek-modelDownloadManualMessage = 請從官方模型頁面下載必要檔案，並在保留所列子目錄的情況下儲存至安裝位置。
+
+    模型：{ $model }
+    官方頁面：{ $page }
+
+    必要檔案：
+    { $files }
+
+    安裝位置：
+    { $path }
+zotseek-modelDownloadOpenPage = 開啟模型頁面
+zotseek-modelDownloadOpenLocation = 開啟安裝位置
+zotseek-modelDownloadClose = 關閉
+zotseek-modelDownloadStarting = 正在下載 { $model }…
+zotseek-modelDownloadProgress = 正在下載 { $model }：檔案 { $done}/{ $total }
+zotseek-modelDownloadFailed = 模型操作失敗：{ $error }
+zotseek-modelDownloadRevealFailedTitle = 無法開啟安裝位置
+zotseek-modelDownloadRevealFailedMessage = ZotSeek 無法開啟模型安裝位置。您可以複製此路徑並手動開啟：
+
+    { $path }
+zotseek-pref-resetMaxTokens =
+    .label = 使用建議值
+zotseek-pref-serverConfigTitle = 進階 Server 模型
+zotseek-pref-serverConfigDesc = 在設定檔的 JSON 範本中設定固定的 Server 模型槽位。ZotSeek 會在啟動時驗證；編輯檔案後請重新啟動 Zotero 以套用變更。
+zotseek-pref-serverConfigPath = 範本：
+zotseek-pref-serverConfigNotLoaded = 尚未載入範本。請重新啟動 Zotero。
+zotseek-pref-serverConfigLoaded = 已設定 Server（{ $model }）。編輯檔案後請重新啟動 Zotero 以套用變更。
+zotseek-pref-serverConfigNone = Server（NONE）：尚未設定 Server 模型。請在模型選單中選擇 Server 以查看設定說明。
+zotseek-pref-serverConfigErrors = Server（UNKNOWN）：有 { $errors } 個設定錯誤。請檢查範本中的模型 ID、回送服務 URL、向量維度、Token 配額，以及查詢/文件前綴。
+zotseek-pref-serverModelIncomplete = Server 模型資訊不完整。請設定 JSON 範本並重新啟動 Zotero。
+zotseek-serverConfigRequiredTitle = 必須設定 Server 模型
+zotseek-serverConfigRequiredMessage = 已選擇 Server（{ $state }），但模型資訊不完整。ZotSeek 會保留此選項，但目前無法建立索引或執行語意搜尋。
+
+    編輯：{ $path }
+
+    儲存檔案後重新啟動 Zotero。
+
+    { $guidance }
+zotseek-serverConfigMissingEntry = 將範本的「model」欄位設為一個完整的 Server 模型物件。
+zotseek-serverConfigInvalidEntry = 範本有 { $errors } 個設定錯誤。請依照範例補齊模型 ID、回送服務 URL、向量維度、Token 配額，以及查詢/文件前綴。
+zotseek-serverConfigOpenLocation = 開啟檔案位置
+    .label = 開啟檔案位置
+zotseek-serverConfigClose = 關閉
+zotseek-serverConfigRevealFailedTitle = 無法開啟檔案位置
+zotseek-serverConfigRevealFailedMessage = ZotSeek 無法開啟設定檔位置。您可以複製此路徑並手動開啟：
+
+    { $path }
+zotseek-pref-maxChunks = 每篇文獻的分塊上限
+zotseek-pref-maxChunksDesc = 長篇文件的限制（1–200）
+zotseek-pref-excludeBooks =
+    .label = 不索引書籍
+zotseek-pref-excludeBooksDesc = 書籍不會建立索引。現有的書籍 ZotSeek 索引會在下次索引檢查時移除。
+zotseek-pref-excludeTag = 排除標籤
+zotseek-pref-excludeTagDesc = 含有此標籤的項目不會建立索引。相符項目的現有 ZotSeek 索引會在下次索引檢查時移除。留空即可停用。
+zotseek-pref-actions = 操作
+zotseek-pref-maintenanceRepair = 維護與修復
+zotseek-pref-updateIndex =
+    .label = 檢查並更新索引
+zotseek-pref-recommended = ✓ 建議
+zotseek-pref-updateIndexDesc = 新增缺少的項目，更新中繼資料、筆記或索引設定已變更的項目，略過未變更項目，並移除已從 Zotero 刪除或目前遭索引規則排除的記錄。索引設定變更可能會使用目前設定重新計算現有項目。
+zotseek-pref-rebuildIndex =
+    .label = 重建索引
+zotseek-pref-rebuildIndexDesc = 清除索引並以目前設定重新索引所有項目。變更索引模式或分塊策略，或需要完整重新索引時使用。
+zotseek-pref-clearIndex =
+    .label = 清除索引
+zotseek-pref-dangerZone = 危險區域
+zotseek-pref-destructive = ⚠ 破壞性操作
+zotseek-pref-clearIndexDesc = 從資料庫移除所有 Embedding。之後必須重新建立索引。
+zotseek-pref-about = 關於
+zotseek-pref-githubRepo =
+    .value = GitHub 儲存庫
+zotseek-pref-modelLine = 模型：{ $model }
+zotseek-pref-avgLine = 平均：{ $avg } 個分塊/文獻
+zotseek-pref-lastIndexedLine = 上次索引：{ $date }
+zotseek-pref-compacted = 資料庫已壓縮
+zotseek-pref-compactionFailed = 壓縮失敗
+zotseek-pref-healthHeader = 資料庫健康狀態
+zotseek-pref-healthOrphans = 未解析的 Embedding：{ $count }
+zotseek-pref-healthOrphansDesc = 來源項目無法與目前文獻庫配對的 Embedding。清除可釋放空間，但無法復原。
+zotseek-pref-healthPurgeOrphans =
+    .label = 清除孤立項目
+zotseek-pref-healthPurgeConfirmTitle = 清除未解析的 Embedding
+zotseek-pref-healthPurgeConfirmMsg = 這會永久刪除目前 Zotero 文獻庫中找不到的項目所對應的 Embedding。要繼續嗎？
+zotseek-pref-healthPurgeDoneTitle = 已清除孤立項目
+zotseek-pref-healthPurgeDoneMsg = 已移除 { $count } 筆未解析的記錄。
+zotseek-pref-healthPurgeFailedTitle = 清除失敗
+
+## 搜尋對話方塊
+zotseek-search-search =
+    .value = 搜尋：
+zotseek-search-placeholder =
+    .placeholder = 輸入搜尋查詢（輸入時會自動搜尋）…
+zotseek-search-addQuery =
+    .label = +
+    .tooltiptext = 新增查詢以進行 AND/OR 組合
+zotseek-search-searchBtn =
+    .label = 搜尋
+zotseek-search-and =
+    .label = AND
+zotseek-search-or =
+    .label = OR
+zotseek-search-using =
+    .value = 使用
+zotseek-search-minimum =
+    .label = 最小值
+zotseek-search-product =
+    .label = 乘積
+zotseek-search-average =
+    .label = 平均值
+zotseek-search-andDesc =
+    .value = — 結果必須符合兩個查詢
+zotseek-search-query2 =
+    .value = 查詢 2：
+zotseek-search-query3 =
+    .value = 查詢 3：
+zotseek-search-query4 =
+    .value = 查詢 4：
+zotseek-search-enterQuery = 輸入查詢 { $n }…
+zotseek-search-removeQuery =
+    .label = ✕
+    .tooltiptext = 移除此查詢
+zotseek-search-mode =
+    .value = 模式：
+zotseek-search-modeHybrid =
+    .label = 🔗 混合（建議）
+zotseek-search-modeSemantic =
+    .label = 🧠 僅語意
+zotseek-search-modeKeyword =
+    .label = 🔤 僅關鍵字
+zotseek-search-modeDesc =
+    .value = 相符類型：🔗 兩種搜尋 · 🧠 AI 相符 · 🔤 關鍵字相符
+zotseek-search-results =
+    .value = 結果：
+zotseek-search-bySection = 依章節
+zotseek-search-byLocation = 依位置（精確頁碼與段落）
+zotseek-search-settings =
+    .label = ⚙ 設定
+    .tooltiptext = 開啟 ZotSeek 偏好設定
+zotseek-search-openSelected =
+    .label = 開啟所選項目
+zotseek-search-close =
+    .label = 關閉
+zotseek-search-initializing = 正在初始化搜尋…
+zotseek-search-hybrid = 混合
+zotseek-search-semantic = 語意
+zotseek-search-keyword = 關鍵字
+zotseek-search-loadingModel = 正在載入 AI 模型（第一次可能需要稍候）…
+zotseek-search-finding = { $mode }搜尋：正在尋找項目…
+zotseek-search-findingMulti = { $mode }搜尋（{ $op }）：正在尋找項目…
+zotseek-search-noItemsFound = 找不到項目
+zotseek-search-showInLibrary = 顯示於文獻庫
+zotseek-search-showItemsInLibrary = 在文獻庫中顯示 { $count } 個項目
+zotseek-search-addToCollection = 新增至分類
+zotseek-search-noCollections = 沒有分類
+zotseek-search-moreCollections = …以及其他 { $count } 個
+zotseek-search-foundItems = 找到 { $count } 個項目
+zotseek-search-foundItemsFromMatches = 找到 { $count } 個項目（來自 { $matches } 個相符結果）
+zotseek-search-foundItemsQuery = 找到 { $count } 個項目（{ $query }）
+zotseek-search-searching = 正在搜尋…
+zotseek-search-searchLabel = 搜尋
+zotseek-search-searchingMoment = 即將開始搜尋…
+zotseek-search-queryTooShort = 請至少輸入 2 個中日韓字元或 3 個其他字元
+zotseek-search-failed = 搜尋失敗：{ $error }
+zotseek-search-noItemsMatchingAll = 找不到符合所有查詢的項目
+zotseek-search-matchBoth = — 結果必須符合兩個查詢
+zotseek-search-matchAll = — 結果必須符合所有查詢
+zotseek-search-matchAny = — 結果可以符合任一查詢
+
+## 結果表格與來源
+zotseek-column-match = 相符度
+zotseek-column-title = 標題
+zotseek-column-authors = 作者
+zotseek-column-year = 年份
+zotseek-column-location = 位置
+zotseek-column-section = 章節
+zotseek-source-abstract = 摘要
+zotseek-source-fulltext = 全文
+zotseek-source-title = 標題
+zotseek-source-methods = 方法
+zotseek-source-results = 結果
+zotseek-source-content = 內容
+zotseek-source-note = 筆記
+zotseek-search-hybrid-menuitem =
+    .label = 🔗 混合（建議）
+zotseek-search-semantic-menuitem =
+    .label = 🧠 僅語意
+zotseek-search-keyword-menuitem =
+    .label = 🔤 僅關鍵字
+
+## 相似文獻對話方塊
+zotseek-similar-title =
+    .title = 尋找相似文獻
+zotseek-similar-similarTo = 相似於：{ " " }
+zotseek-similar-loading = 正在載入…
+zotseek-similar-openSelected =
+    .label = 開啟所選項目
+zotseek-similar-close =
+    .label = 關閉
+zotseek-similar-initFailed = 初始化失敗：{ $error }
+zotseek-similar-noSource = 未選擇來源文獻
+zotseek-similar-finding = 正在尋找相似文獻…
+zotseek-similar-loadingModel = 正在載入 AI 模型…
+zotseek-similar-searching = 正在搜尋…
+zotseek-similar-noResults = 找不到相似文獻
+zotseek-similar-found = 找到 { $count } 篇相似文獻
+zotseek-similar-searchFailed = 搜尋失敗：{ $error }
+
+## 索引進度
+zotseek-indexing-title = ZotSeek 索引
+zotseek-indexing-clearTitle = 正在清除 ZotSeek 索引
+zotseek-indexing-clearConfirmTitle = 清除 ZotSeek 索引
+zotseek-indexing-clearConfirmMsg = 這會刪除所有已儲存的 Embedding。您將需要重新索引文獻庫。
+
+    要繼續嗎？
+zotseek-indexing-clearConfirmButton = 清除索引
+zotseek-indexing-initStorage = 正在初始化儲存空間…
+zotseek-indexing-deletingAll = 正在刪除所有 Embedding…
+zotseek-indexing-clearedSuccess = 已成功清除索引！
+zotseek-indexing-clearedMsg = 已成功清除索引。
+
+    現在可以重新索引您的文獻庫。
+zotseek-indexing-rebuildTitle = 重建 ZotSeek 索引
+zotseek-indexing-rebuildConfirmTitle = 重建 ZotSeek 索引
+zotseek-indexing-rebuildConfirmMsg = 這會刪除所有已儲存的 Embedding，並以目前設定重建索引。
+zotseek-indexing-rebuildConfirmButton = 重建索引
+zotseek-indexing-chunkStrategyRebuildRequired = ZotSeek 偵測到目前模型的索引使用舊版分塊策略。現有索引仍可搜尋，但背景增量更新已暫停，以免混用新舊分塊。請在「設定」中使用「重建索引」執行完整重建。關閉此通知不會開始重建或修改現有索引。
+
+    視文獻庫大小而定，這可能需要幾分鐘。
+
+    要繼續嗎？
+zotseek-indexing-rebuildingTitle = 正在重建 ZotSeek 索引
+zotseek-indexing-clearingExisting = 正在清除現有索引…
+zotseek-indexing-existingCleared = ✓ 已清除現有索引
+zotseek-indexing-loading = 正在載入…
+zotseek-indexing-alreadyInProgress = 索引工作已在進行中…
+zotseek-indexing-selectItems = 請選取要索引的項目。
+zotseek-indexing-selectCollection = 請先選取一個分類。
+
+    （在左側邊欄按一下分類）
+zotseek-indexing-emptyCollection = 分類「{ $name }」沒有可索引的項目。
+zotseek-indexing-emptyCollections = 所選的 { $count } 個分類沒有可索引的項目。
+zotseek-indexing-updateTitle = ZotSeek — 檢查並更新索引
+zotseek-indexing-updateConfirmMsg = 要檢查並更新{ $scope }的索引嗎？ZotSeek 會新增缺少的項目，更新中繼資料、筆記或索引設定已變更的項目，略過未變更項目，並移除已從 Zotero 刪除或目前遭索引規則排除的記錄。索引設定變更可能會使用目前設定重新計算現有項目。
+zotseek-indexing-updateConfirmButton = 檢查並更新
+zotseek-indexing-confirmCancel = 取消
+zotseek-indexing-scopeUser = 您的個人文獻庫
+zotseek-indexing-scopeAll = 您的所有文獻庫（個人 + 群組）
+zotseek-indexing-configChangeTitle = ZotSeek — 索引設定已變更
+zotseek-indexing-configChangeMessage = { $scope }中有 { $affected } 個已索引項目的設定記錄需要更新；其中 { $rebuildRequired } 個項目必須重新計算 Embedding，其餘只需更新設定記錄。在您選擇前，ZotSeek 不會刪除記錄、更新指紋或寫入 Embedding。這次啟動檢查應如何繼續？
+zotseek-indexing-configChangeUpdate = 檢查並更新索引
+zotseek-indexing-configChangeRebuild = 重建索引
+zotseek-indexing-configChangeCancel = 取消
+zotseek-resume-title = ZotSeek — 繼續索引
+zotseek-resume-message = 上一次索引工作遭到中斷。ZotSeek 將重新檢查{ $scope }中的全部 { $count } 個項目，並繼續未完成或失敗的更新。已是最新狀態的項目會被略過。如果取消，本次啟動也會略過自動索引維護。現在繼續嗎？
+zotseek-resume-confirm = 繼續索引
+zotseek-resume-scopeLibrary = 您的文獻庫
+zotseek-resume-scopeUserLibrary = 您的個人文獻庫
+zotseek-resume-scopeCollection = 「{ $name }」分類
+zotseek-resume-scopeCollections = 所選的 { $count } 個分類
+zotseek-resume-scopeItems = 所選項目範圍
+zotseek-indexing-noItemsSelected = 未選取任何項目
+zotseek-indexing-removedItems = 已從索引移除 { $count } 個項目
+zotseek-indexing-notInIndex = 所選項目不在索引中
+zotseek-indexing-removeFailed = 無法從索引移除
+zotseek-indexing-mode = 索引模式：{ $mode }
+zotseek-indexing-checking = 正在檢查已索引項目…
+zotseek-indexing-skippedExcluded = ✓ 已略過 { $count } 個排除項目
+zotseek-indexing-skippedIndexed = ✓ 已略過 { $count } 個已索引項目
+zotseek-indexing-allIndexed = 所有項目都已索引！
+zotseek-indexing-allInIndex = ✓ { $count } 個項目已在索引中
+zotseek-indexing-nothingToIndex = 無需索引 — 所有項目都是最新狀態！
+zotseek-indexing-loadingModel = 正在載入 AI 模型（Transformers.js）…
+zotseek-indexing-modelLoaded = ✓ 已載入 AI 模型
+zotseek-indexing-batchExtracting = 批次 { $current }/{ $total }：正在擷取文字…
+zotseek-indexing-batchEmbedding = 批次 { $current }/{ $total }：正在產生 Embedding…
+zotseek-indexing-batchEmbeddingChunks = 批次 { $current }/{ $total }：正在嵌入分塊
+zotseek-indexing-chunksFailed = ⚠ 已略過 { $count } 個分塊：{ $items }
+zotseek-indexing-batchSaving = 批次 { $current }/{ $total }：正在儲存檢查點…
+zotseek-indexing-checkpoint = ✓ 檢查點 { $current }/{ $total }：已儲存 { $items } 個項目、{ $chunks } 個分塊
+zotseek-indexing-complete = 索引完成！
+zotseek-indexing-completeMode = ✓ 模式：{ $mode }
+zotseek-indexing-completePrevious = ✓ 先前已索引：{ $count } 個項目
+zotseek-indexing-completeNew = ✓ 新增索引：{ $count } 個項目
+zotseek-indexing-completeChunks = ✓ 分塊總數：{ $count }
+zotseek-indexing-completeAvg = ✓ 平均分塊/項目：{ $avg }
+zotseek-indexing-completeDuration = ✓ 花費時間：{ $duration }
+zotseek-indexing-completeNoContent = ⚠ 沒有內容：{ $count } 個項目
+zotseek-indexing-completeTruncated = ⚠ 部分內容：{ $count } 個項目已達每篇文獻的分塊上限。請提高限制，或切換至摘要模式以索引全文。
+zotseek-indexing-completeSuccess = 已成功完成索引！
+zotseek-indexing-cancelled = 已取消索引
+zotseek-indexing-pauseAction = 暫停索引
+zotseek-indexing-pausingAction = 正在暫停…
+zotseek-indexing-pauseTooltip = 在目前的安全檢查點後停止，並於下次啟動 Zotero 時繼續
+zotseek-indexing-paused = 索引已暫停。下次啟動 Zotero 時，ZotSeek 會詢問是否繼續此確切範圍。
+zotseek-indexing-failed = 索引失敗：{ $error }
+zotseek-indexing-progressTitle = ZotSeek
+zotseek-indexing-progressItem = 正在索引：{ $title }
+zotseek-indexing-progressLoadingModel = 正在載入模型…
+zotseek-indexing-allExcluded = 所有項目都已排除，不會建立索引
+zotseek-indexing-extracting = 正在擷取…
+zotseek-indexing-noContent = ✗ 找不到內容
+zotseek-indexing-embedding = 正在嵌入 { $current }/{ $total }…
+zotseek-indexing-saving = 正在儲存…
+zotseek-indexing-chunksIndexed = ✓ 已索引 { $count } 個分塊
+zotseek-indexing-chunksIndexedWithFailed = ✓ 已索引 { $count } 個分塊（{ $failed } 個失敗）
+
+## 匯出至分類
+zotseek-export-saveAsCollection =
+    .label = 將結果儲存為分類
+zotseek-export-addToCollectionNew =
+    .label = 新分類…
+zotseek-export-dialogTitle =
+    .title = 將結果儲存為分類
+zotseek-export-nameLabel =
+    .value = 分類名稱：
+zotseek-export-libraryLabel =
+    .value = 文獻庫：
+zotseek-export-ok =
+    .label = 儲存
+zotseek-export-cancel =
+    .label = 取消
+zotseek-export-itemcountSimple = { $count } 個項目 → { $destination }
+zotseek-export-itemcountFiltered = { $total } 個項目中保留 { $kept } 個 → { $destination }（{ $reasons }）
+zotseek-export-reasonOtherLibrary = { $count } 個位於其他文獻庫
+zotseek-export-reasonDeleted = { $count } 個已刪除
+zotseek-export-itemcountEmpty = 沒有可新增的項目。
+zotseek-export-statusExported = 已將 { $count } 個項目新增至「{ $name }」。
+zotseek-export-statusExportedSkipped = 已將 { $count } 個項目新增至「{ $name }」，略過 { $skipped } 個。
+zotseek-export-statusFailed = 無法將結果儲存為分類。
+
+## 群組與模型標題
+zotseek-prefs-group-status = 狀態
+zotseek-prefs-group-models = 模型
+zotseek-prefs-group-indexing = 索引
+zotseek-prefs-group-search = 搜尋
+zotseek-prefs-group-maintenance = 整合與維護
+zotseek-prefs-exclusions = 排除項目
+zotseek-pref-embeddingModelTitle = Embedding 模型
+zotseek-pref-manageModelsTitle = 管理已安裝的模型

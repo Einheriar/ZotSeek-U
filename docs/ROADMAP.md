@@ -63,7 +63,9 @@ Multi-select and "Add to Collection" are done (v1.8.0). Still missing: add tags 
 > GitHub: [#11](https://github.com/introfini/ZotSeek/issues/11)
 
 ### Localization / i18n
-ZotSeek's own UI only has English strings — this is expected. However, a user reported that installing ZotSeek caused *other* plugins' strings (Translate for Zotero, Better Notes) and some built-in Zotero labels to switch to English. Needs investigation — may be a locale loading conflict.
+ZotSeek ships UI resources for `en-US`, `zh-CN`, `zh-TW`, `ja-JP`, `ko-KR`, `de`, `fr-FR`, `es-ES`, `ru-RU`, and `th-TH`. The plugin follows Zotero's application locale; it does not maintain a separate language preference. `en-US` is the canonical resource and intended final fallback; the exact unsupported-locale negotiation still needs a Zotero runtime smoke test.
+
+`npm run check:locales` verifies that every registered locale contains the required Fluent/DTD files and preserves the canonical message IDs, attributes, and variables. The same check runs before every build. A remaining follow-up is to migrate the user-visible imperative strings identified in the TypeScript UI audit; logs, protocol errors, model IDs, and machine values must remain language-independent.
 
 > GitHub: [#16](https://github.com/introfini/ZotSeek/issues/16)
 

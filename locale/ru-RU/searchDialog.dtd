@@ -1,0 +1,9 @@
+<!ENTITY searchDialog.title "ZotSeek">
+<!ENTITY searchDialog.searchLabel "Поисковый запрос:">
+<!ENTITY searchDialog.searchPlaceholder "Введите запрос для семантического поиска...">
+<!ENTITY searchDialog.searchButton "Поиск">
+<!ENTITY searchDialog.openButton "Открыть выбранное">
+<!ENTITY searchDialog.closeButton "Закрыть">
+<!ENTITY searchDialog.searching "Поиск...">
+<!ENTITY searchDialog.resultsFound "Найдено">
+<!ENTITY searchDialog.similarPapers "похожих документов">

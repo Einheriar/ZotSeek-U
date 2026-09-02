@@ -1,0 +1,9 @@
+<!ENTITY searchDialog.title "ZotSeek">
+<!ENTITY searchDialog.searchLabel "검색어:">
+<!ENTITY searchDialog.searchPlaceholder "의미 검색어를 입력하세요…">
+<!ENTITY searchDialog.searchButton "검색">
+<!ENTITY searchDialog.openButton "선택 항목 열기">
+<!ENTITY searchDialog.closeButton "닫기">
+<!ENTITY searchDialog.searching "검색 중…">
+<!ENTITY searchDialog.resultsFound "찾음">
+<!ENTITY searchDialog.similarPapers "개의 유사 문헌">

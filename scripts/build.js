@@ -1,6 +1,7 @@
 const esbuild = require('esbuild');
 const fs = require('fs');
 const path = require('path');
+const { checkLocales } = require('./check-locales');
 
 const args = process.argv.slice(2);
 const isDev = args.includes('--dev');
@@ -9,6 +10,9 @@ const isWatch = args.includes('--watch');
 const buildDir = path.resolve(__dirname, '../build');
 const srcDir = path.resolve(__dirname, '../src');
 const bundledModelPath = path.join('Xenova', 'multilingual-e5-base');
+
+// Catch missing messages, attributes and variables before copying resources.
+checkLocales({ rootDir: path.resolve(__dirname, '..') });
 
 // Ensure build directory exists
 if (!fs.existsSync(buildDir)) {
@@ -24,6 +28,9 @@ function copyStaticFiles() {
     const destPath = path.resolve(buildDir, dir);
 
     if (fs.existsSync(srcPath)) {
+      // Locale copies must mirror the source instead of retaining a language
+      // directory removed since the previous build.
+      if (dir === 'locale') fs.rmSync(destPath, { recursive: true, force: true });
       const modelsRoot = path.resolve(srcPath, 'models');
       fs.cpSync(srcPath, destPath, {
         recursive: true,

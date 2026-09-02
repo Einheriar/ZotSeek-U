@@ -1,0 +1,9 @@
+<!ENTITY searchDialog.title "ZotSeek">
+<!ENTITY searchDialog.searchLabel "Requête :">
+<!ENTITY searchDialog.searchPlaceholder "Saisissez votre requête de recherche sémantique…">
+<!ENTITY searchDialog.searchButton "Rechercher">
+<!ENTITY searchDialog.openButton "Ouvrir la sélection">
+<!ENTITY searchDialog.closeButton "Fermer">
+<!ENTITY searchDialog.searching "Recherche en cours…">
+<!ENTITY searchDialog.resultsFound "Trouvé">
+<!ENTITY searchDialog.similarPapers "documents similaires">

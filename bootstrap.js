@@ -38,6 +38,14 @@ async function startup({ id, version, resourceURI, rootURI }, reason) {
     ["content", "zotseek", rootURI + "content/"],
     ["locale", "zotseek", "en-US", rootURI + "locale/en-US/"],
     ["locale", "zotseek", "zh-CN", rootURI + "locale/zh-CN/"],
+    ["locale", "zotseek", "zh-TW", rootURI + "locale/zh-TW/"],
+    ["locale", "zotseek", "ja-JP", rootURI + "locale/ja-JP/"],
+    ["locale", "zotseek", "ko-KR", rootURI + "locale/ko-KR/"],
+    ["locale", "zotseek", "de", rootURI + "locale/de/"],
+    ["locale", "zotseek", "fr-FR", rootURI + "locale/fr-FR/"],
+    ["locale", "zotseek", "es-ES", rootURI + "locale/es-ES/"],
+    ["locale", "zotseek", "ru-RU", rootURI + "locale/ru-RU/"],
+    ["locale", "zotseek", "th-TH", rootURI + "locale/th-TH/"],
   ]);
   Zotero.debug("[ZotSeek Bootstrap] Chrome content and locale registered");
 

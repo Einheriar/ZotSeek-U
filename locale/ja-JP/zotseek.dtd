@@ -1,0 +1,11 @@
+<!ENTITY zotseek.title "ZotSeek">
+<!ENTITY semanticSearch.searchPlaceholder "ライブラリを検索…">
+<!ENTITY semanticSearch.findSimilar "類似文献を検索">
+<!ENTITY semanticSearch.indexCollection "コレクションをインデックス化">
+<!ENTITY semanticSearch.indexLibrary "ライブラリをインデックス化">
+<!ENTITY semanticSearch.reindex "再インデックス化">
+<!ENTITY semanticSearch.clearIndex "インデックスを消去">
+<!ENTITY semanticSearch.settings "設定">
+<!ENTITY semanticSearch.noResults "結果が見つかりません">
+<!ENTITY semanticSearch.indexing "インデックス作成中…">
+<!ENTITY semanticSearch.indexed "件の文献をインデックス化済み">

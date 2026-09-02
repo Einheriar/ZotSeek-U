@@ -1,0 +1,11 @@
+<!ENTITY zotseek.title "ZotSeek">
+<!ENTITY semanticSearch.searchPlaceholder "Bibliothek durchsuchen…">
+<!ENTITY semanticSearch.findSimilar "Ähnliche Dokumente finden">
+<!ENTITY semanticSearch.indexCollection "Sammlung prüfen und aktualisieren">
+<!ENTITY semanticSearch.indexLibrary "Bibliothek prüfen und aktualisieren">
+<!ENTITY semanticSearch.reindex "Neu indizieren">
+<!ENTITY semanticSearch.clearIndex "Index löschen">
+<!ENTITY semanticSearch.settings "Einstellungen">
+<!ENTITY semanticSearch.noResults "Keine Ergebnisse gefunden">
+<!ENTITY semanticSearch.indexing "Indizierung läuft…">
+<!ENTITY semanticSearch.indexed "Dokumente indiziert">

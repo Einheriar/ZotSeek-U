@@ -1,0 +1,9 @@
+<!ENTITY searchDialog.title "ZotSeek">
+<!ENTITY searchDialog.searchLabel "คำค้นหา:">
+<!ENTITY searchDialog.searchPlaceholder "ป้อนคำค้นหาเชิงความหมายของคุณ…">
+<!ENTITY searchDialog.searchButton "ค้นหา">
+<!ENTITY searchDialog.openButton "เปิดรายการที่เลือก">
+<!ENTITY searchDialog.closeButton "ปิด">
+<!ENTITY searchDialog.searching "กำลังค้นหา…">
+<!ENTITY searchDialog.resultsFound "พบ">
+<!ENTITY searchDialog.similarPapers "เอกสารที่คล้ายกัน">

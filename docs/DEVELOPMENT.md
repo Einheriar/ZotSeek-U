@@ -329,9 +329,19 @@ zotseek/
 │   ├── icons/                # Plugin icons
 │   └── overlay.xhtml         # UI overlays
 │
-├── locale/                   # Localization
-│   └── en-US/
-│       └── zotseek.dtd
+├── locale/                   # Localization (10 registered locales)
+│   ├── en-US/                # Canonical message structure
+│   ├── zh-CN/                # Simplified Chinese
+│   ├── zh-TW/                # Traditional Chinese (Taiwan)
+│   ├── ja-JP/                # Japanese
+│   ├── ko-KR/                # Korean
+│   ├── de/                   # German
+│   ├── fr-FR/                # French
+│   ├── es-ES/                # Spanish
+│   ├── ru-RU/                # Russian
+│   └── th-TH/                # Thai
+│   # Each locale contains zotseek.ftl, zotseek-menu.ftl,
+│   # zotseek.dtd, and searchDialog.dtd
 │
 ├── skin/                     # Styles
 │   └── default/
@@ -346,6 +356,30 @@ zotseek/
 ├── package.json
 └── tsconfig.json
 ```
+
+### Localization architecture
+
+ZotSeek follows Zotero's application locale and does not store a separate
+language preference. `bootstrap.js` registers each supported locale. Zotero's
+locale negotiation then selects the matching resources, with `en-US` as the
+canonical resource and intended final fallback. Verify the exact fallback path
+in Zotero whenever registration or application compatibility changes.
+
+The UI has three localization paths:
+
+1. XHTML elements use `data-l10n-id` and `zotseek.ftl`. English text or label
+   attributes on the same element are startup fallbacks and must not be used by
+   application logic.
+2. TypeScript-created prompts, menus, status text, and progress windows call
+   `getString()` from `src/utils/locale.ts`.
+3. The legacy overlay and dialog resources use `zotseek.dtd` and
+   `searchDialog.dtd`.
+
+When adding or changing a message, update every locale while preserving Fluent
+variables and attributes. Run `npm run check:locales`; it verifies the required
+files, message/entity keys, attributes, variables, and `bootstrap.js`
+registrations. `npm run build` runs the same validation before copying locale
+resources into `build/`.
 
 ### Data Flow
 

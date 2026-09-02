@@ -1,0 +1,11 @@
+<!ENTITY zotseek.title "ZotSeek">
+<!ENTITY semanticSearch.searchPlaceholder "Поиск в вашей библиотеке...">
+<!ENTITY semanticSearch.findSimilar "Найти похожие документы">
+<!ENTITY semanticSearch.indexCollection "Индексировать коллекцию">
+<!ENTITY semanticSearch.indexLibrary "Индексировать библиотеку">
+<!ENTITY semanticSearch.reindex "Переиндексировать">
+<!ENTITY semanticSearch.clearIndex "Очистить индекс">
+<!ENTITY semanticSearch.settings "Настройки">
+<!ENTITY semanticSearch.noResults "Результаты не найдены">
+<!ENTITY semanticSearch.indexing "Индексирование...">
+<!ENTITY semanticSearch.indexed "проиндексированных документов">

@@ -1,0 +1,9 @@
+<!ENTITY searchDialog.title "ZotSeek">
+<!ENTITY searchDialog.searchLabel "検索クエリ：">
+<!ENTITY searchDialog.searchPlaceholder "セマンティック検索のクエリを入力…">
+<!ENTITY searchDialog.searchButton "検索">
+<!ENTITY searchDialog.openButton "選択項目を開く">
+<!ENTITY searchDialog.closeButton "閉じる">
+<!ENTITY searchDialog.searching "検索中…">
+<!ENTITY searchDialog.resultsFound "見つかった文献：">
+<!ENTITY searchDialog.similarPapers "件の類似文献">

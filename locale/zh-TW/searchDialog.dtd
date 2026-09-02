@@ -1,0 +1,9 @@
+<!ENTITY searchDialog.title "ZotSeek">
+<!ENTITY searchDialog.searchLabel "搜尋查詢：">
+<!ENTITY searchDialog.searchPlaceholder "輸入語意搜尋查詢…">
+<!ENTITY searchDialog.searchButton "搜尋">
+<!ENTITY searchDialog.openButton "開啟所選項目">
+<!ENTITY searchDialog.closeButton "關閉">
+<!ENTITY searchDialog.searching "正在搜尋…">
+<!ENTITY searchDialog.resultsFound "找到">
+<!ENTITY searchDialog.similarPapers "篇相似文獻">

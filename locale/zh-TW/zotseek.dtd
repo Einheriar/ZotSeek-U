@@ -1,0 +1,11 @@
+<!ENTITY zotseek.title "ZotSeek">
+<!ENTITY semanticSearch.searchPlaceholder "搜尋您的文獻庫…">
+<!ENTITY semanticSearch.findSimilar "尋找相似文獻">
+<!ENTITY semanticSearch.indexCollection "索引分類">
+<!ENTITY semanticSearch.indexLibrary "索引文獻庫">
+<!ENTITY semanticSearch.reindex "重新索引">
+<!ENTITY semanticSearch.clearIndex "清除索引">
+<!ENTITY semanticSearch.settings "設定">
+<!ENTITY semanticSearch.noResults "找不到結果">
+<!ENTITY semanticSearch.indexing "正在索引…">
+<!ENTITY semanticSearch.indexed "篇文獻已索引">

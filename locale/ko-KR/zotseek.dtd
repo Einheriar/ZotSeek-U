@@ -1,0 +1,11 @@
+<!ENTITY zotseek.title "ZotSeek">
+<!ENTITY semanticSearch.searchPlaceholder "라이브러리 검색…">
+<!ENTITY semanticSearch.findSimilar "유사 문헌 찾기">
+<!ENTITY semanticSearch.indexCollection "컬렉션 색인">
+<!ENTITY semanticSearch.indexLibrary "라이브러리 색인">
+<!ENTITY semanticSearch.reindex "다시 색인">
+<!ENTITY semanticSearch.clearIndex "색인 지우기">
+<!ENTITY semanticSearch.settings "설정">
+<!ENTITY semanticSearch.noResults "결과가 없습니다">
+<!ENTITY semanticSearch.indexing "색인 생성 중…">
+<!ENTITY semanticSearch.indexed "개 문헌 색인됨">

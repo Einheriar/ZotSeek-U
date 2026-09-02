@@ -1,0 +1,11 @@
+<!ENTITY zotseek.title "ZotSeek">
+<!ENTITY semanticSearch.searchPlaceholder "ค้นหาในไลบรารีของคุณ…">
+<!ENTITY semanticSearch.findSimilar "ค้นหาเอกสารที่คล้ายกัน">
+<!ENTITY semanticSearch.indexCollection "จัดทำดัชนีคอลเลกชัน">
+<!ENTITY semanticSearch.indexLibrary "จัดทำดัชนีไลบรารี">
+<!ENTITY semanticSearch.reindex "สร้างดัชนีใหม่">
+<!ENTITY semanticSearch.clearIndex "ล้างดัชนี">
+<!ENTITY semanticSearch.settings "การตั้งค่า">
+<!ENTITY semanticSearch.noResults "ไม่พบผลลัพธ์">
+<!ENTITY semanticSearch.indexing "กำลังจัดทำดัชนี…">
+<!ENTITY semanticSearch.indexed "เอกสารในดัชนี">
