@@ -908,10 +908,14 @@ See [Chunking Strategy](#chunking-strategy) for detailed trade-offs. Summary:
 
 Search uses two process-local, non-persistent caches. The semantic cache holds
 pre-normalized vectors for all stored model partitions plus lightweight source
-and location metadata; it deliberately excludes `chunk_text`. The T0 lexical
-cache holds one in-memory BM25 index for the active-model/fallback corpus. Both
-are lost when Zotero exits, so the first corresponding query after startup or
-invalidation rebuilds them from `zotseek.sqlite`.
+and location metadata; it deliberately excludes `chunk_text`. Since Plan 43,
+the vector cache reads only the active model and only this narrow projection
+from SQLite, decodes stored vectors directly to `Float32Array`, and normalizes
+them in place. The public `getAll()` bulk contract remains complete and
+cross-model. The T0 lexical cache holds one in-memory BM25 index for the
+active-model/fallback corpus. Both caches are lost when Zotero exits, so the
+first corresponding query after startup or invalidation rebuilds them from
+`zotseek.sqlite`.
 
 Both caches share a monotonically increasing mutation generation but use
 independent keyed single-flight builds. Concurrent cold semantic queries for the
@@ -930,6 +934,13 @@ semantics and is converted to an empty semantic branch by the Hybrid layer. No
 known-stale or potentially mixed cache is returned. The next query after writes
 settle rebuilds normally, without requiring a restart or index clear.
 
+Identical query embeddings also use an in-flight-only single-flight keyed by
+the runtime model and exact query text. The promise is removed after success or
+failure, so this does not retain a persistent query-result cache. Hybrid result
+mapping batch-loads Zotero items and then restores input order; T0 tokenization
+reuses one `Intl.Segmenter` instance. These optimizations do not change the
+per-semantic-branch 50-candidate hydration window.
+
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                      CACHING ARCHITECTURE                            │
@@ -941,35 +952,45 @@ settle rebuilds normally, without requiring a restart or index clear.
 │  │          │     │  (disk)  │     │  (RAM)   │                    │
 │  └──────────┘     └──────────┘     └──────────┘                    │
 │       │                                  │                          │
-│       │         ~200ms load              │                          │
+│       │     active-model projection      │                          │
 │       └──────────────────────────────────┘                          │
 │                                                                      │
 │  SUBSEQUENT SEARCHES (cache hit):                                   │
 │  ┌──────────┐     ┌──────────┐                                     │
-│  │  Query   │ ──► │  Cache   │  ──► Results in <50ms               │
+│  │  Query   │ ──► │  Cache   │  ──► scoring + bounded hydration    │
 │  │          │     │  (RAM)   │                                      │
 │  └──────────┘     └──────────┘                                     │
 │                                                                      │
 │  CACHE CONTENTS:                                                    │
-│  • Pre-normalized Float32Arrays (ready for dot product)            │
-│  • Item metadata (title, authors, year)                            │
-│  • ~75MB for 1000 papers                                           │
+│  • Active-model pre-normalized Float32Arrays                       │
+│  • Stable item identity, title, source and location metadata       │
+│  • No chunk_text, abstract, hash, timestamp, or section paths      │
 │                                                                      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Performance Benchmarks
 
-Tested on MacBook Pro M3:
+Plan 43 measured the current Windows development corpus in Zotero 9.0.6:
+150 Full-mode papers, 8,894 chunks, bundled `multilingual-e5-base`, REST
+`topK=10`, papers granularity, and query
+`mother child neural synchrony emotional regulation`.
 
-| Operation | Time |
-|-----------|------|
-| Model loading | ~1.5 seconds |
-| Index 1 chunk | ~3 seconds |
-| Index 10 papers (40 chunks) | ~2 minutes |
-| First search | ~200ms |
-| Subsequent searches | <50ms |
-| Hybrid search | ~150ms |
+| Operation | Before | After Plan 43 |
+|-----------|--------|---------------|
+| Two concurrent cold Full Hybrid requests | 12.065 / 12.352 s | 10.275 / 10.483 s |
+| Five cache-invalidated rebuilds, median | 9.999 s | 8.731 s |
+| Five rebuild cycles, post-GC Working Set | 2.010–2.092 GB | 1.939–1.952 GB |
+| Rebuild-query pre-GC Working Set | 2.57–2.63 GB | 2.192–2.210 GB |
+| Stable warm Full Hybrid, five requests | 3.042–3.500 s in Plan 40B; another D0 run was 2.644–2.772 s | 3.024–3.172 s |
+
+All compared responses were byte-identical. Warm timings vary enough between
+runs that Plan 43 does not claim a stable warm-latency win; its demonstrated
+benefits are the cache-invalidated path and lower main-process memory. Working
+Set includes the whole Zotero parent process, model, tokenizer, lexical index,
+vector cache, UI, and temporary query objects; it is not a direct JavaScript
+heap or isolated cache-size measurement. Preserve the exact corpus, process
+state, cache state, and endpoint when comparing future results.
 
 ---
 

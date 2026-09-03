@@ -1,5 +1,6 @@
 import { selfTest, scenario, assertEq, assertTrue } from '../self-test';
 import { vectorStoreSQLite } from '../../core/vector-store-sqlite';
+import { getActiveModelId } from '../../core/model-registry';
 
 declare const Zotero: any;
 
@@ -15,18 +16,18 @@ selfTest.register('task-37d-partitioned-search', async () => {
   await vectorStoreSQLite.put(mk('ZZPART_A', 'nomic-embed-text-v1.5', 768));
   await vectorStoreSQLite.put(mk('ZZPART_B', 'bge-m3', 1024));
   return [
-    await scenario('getAllCached exposes modelId for filtering', async () => {
-      const all = await (vectorStoreSQLite as any).getAllCached();
-      const seen = new Set(all.map((e: any) => e.modelId));
+    await scenario('getAll preserves both model partitions', async () => {
+      const all = await vectorStoreSQLite.getAll();
+      const mine = all.filter((e: any) => e.itemKey === 'ZZPART_A' || e.itemKey === 'ZZPART_B');
+      const seen = new Set(mine.map((e: any) => e.modelId));
       assertTrue(seen.has('nomic-embed-text-v1.5') && seen.has('bge-m3'),
-        'both model ids should be present pre-filter');
+        'getAll() should expose both model partitions');
     }),
-    await scenario('filtering by active model excludes the other model', async () => {
+    await scenario('getAllCached returns only the active model partition', async () => {
+      const active = getActiveModelId();
       const all = await (vectorStoreSQLite as any).getAllCached();
-      const active = 'nomic-embed-text-v1.5';
-      const filtered = all.filter((e: any) => e.modelId === active);
-      assertTrue(filtered.every((e: any) => e.modelId === active), 'only active model remains');
-      assertTrue(!filtered.some((e: any) => e.itemKey === 'ZZPART_B'), 'bge-m3 item excluded');
+      assertTrue(all.every((e: any) => e.modelId === active),
+        `cache rows must use active model ${active}`);
     }),
     await scenario('cleanup', async () => {
       await vectorStoreSQLite.deleteItem('user', 'ZZPART_A');

@@ -66,6 +66,14 @@ export class EmbeddingPipeline {
   private consecutiveRecoveries = 0;
   private static MAX_RECOVERIES_PER_EMBED = 2;
 
+  // Concurrent Full-mode semantic branches can ask for the same query
+  // embedding. Share only the in-flight work; completed results are removed
+  // immediately so this does not become a persistent query cache.
+  private queryEmbeddingsInFlight = new Map<string, Promise<EmbeddingResult>>();
+  // Distinguishes calls that started before a reset/model switch from the
+  // current lifecycle, including calls still waiting for init() to finish.
+  private queryEmbeddingLifecycle = 0;
+
   // Time allowed for the worker to report ready. Covers reading the model
   // off disk and initialising the WASM runtime, both of which scale with
   // model size and disk speed.
@@ -436,7 +444,32 @@ export class EmbeddingPipeline {
    * Uses the model's query prefix for better retrieval
    */
   async embedQuery(query: string): Promise<EmbeddingResult> {
-    return this.embed(query, 'query');
+    const lifecycle = this.queryEmbeddingLifecycle;
+    // Resolve the actual runtime model before constructing the key. The
+    // persisted selection may differ from the constructor default on a cold
+    // start, and the key must describe the vector space doing the work.
+    await this.init();
+    if (lifecycle !== this.queryEmbeddingLifecycle) {
+      // A reset while init() was pending invalidated this caller's pre-reset
+      // state. Re-enter under the current model instead of registering a
+      // flight from the old lifecycle.
+      return this.embedQuery(query);
+    }
+    const key = `${this.model.id}\u0000${query}`;
+    const existing = this.queryEmbeddingsInFlight.get(key);
+    if (existing) return existing;
+
+    const flight = this.embed(query, 'query');
+    this.queryEmbeddingsInFlight.set(key, flight);
+    try {
+      return await flight;
+    } finally {
+      // A reset/model switch can start a newer flight for the same key after
+      // clearing this map. Never let the old promise remove that newer entry.
+      if (this.queryEmbeddingsInFlight.get(key) === flight) {
+        this.queryEmbeddingsInFlight.delete(key);
+      }
+    }
   }
 
   /**
@@ -496,6 +529,8 @@ export class EmbeddingPipeline {
    */
   reset(): void {
     this.logger.info('Resetting embedding pipeline');
+    this.queryEmbeddingLifecycle++;
+    this.queryEmbeddingsInFlight.clear();
     if (this.worker) {
       try { this.worker.terminate(); } catch { /* ignore */ }
       this.worker = null;
@@ -550,6 +585,8 @@ export class EmbeddingPipeline {
    * Cleanup worker
    */
   destroy(): void {
+    this.queryEmbeddingLifecycle++;
+    this.queryEmbeddingsInFlight.clear();
     if (this.worker) {
       this.worker.terminate();
       this.worker = null;

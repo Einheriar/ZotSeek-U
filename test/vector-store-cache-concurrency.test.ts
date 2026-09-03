@@ -78,6 +78,13 @@ function vectorRow(itemKey: string, embedding: number[]): PaperEmbedding {
   };
 }
 
+function encodeFloat32(values: number[]): string {
+  const bytes = new Uint8Array(new Float32Array(values).buffer);
+  let binary = '';
+  for (const value of bytes) binary += String.fromCharCode(value);
+  return btoa(binary);
+}
+
 function makeStore(): VectorStoreSQLite {
   const store = new VectorStoreSQLite();
   (store as any).initialized = true;
@@ -107,6 +114,85 @@ function installIdentityAwareStub(modelId = 'multilingual-e5-base') {
 }
 
 describe('Plan 40B cache publication and single-flight', () => {
+  test('builds a normalized active-model projection without loading full-text fields', async () => {
+    const zotero = installIdentityAwareStub('multilingual-e5-base');
+    const rows = [{
+      itemPk: 1,
+      libraryKey: 'user',
+      itemKey: 'OLD00001',
+      chunkIndex: 0,
+      title: 'Projected title',
+      textSource: 'summary' as const,
+      embedding: encodeFloat32([3, 4]),
+      pageNumber: 2,
+      paragraphIndex: 1,
+    }];
+    const sqls: string[] = [];
+    zotero.DB = {
+      columnQueryAsync: async (sql: string, params: unknown[]) => {
+        sqls.push(sql);
+        assert.deepEqual(params, ['multilingual-e5-base']);
+        if (/SELECT c\.item_pk\s/i.test(sql)) return rows.map(row => row.itemPk);
+        if (/SELECT i\.library_key\s/i.test(sql)) return rows.map(row => row.libraryKey);
+        if (/SELECT i\.item_key\s/i.test(sql)) return rows.map(row => row.itemKey);
+        if (/SELECT c\.chunk_index\s/i.test(sql)) return rows.map(row => row.chunkIndex);
+        if (/SELECT i\.title\s/i.test(sql)) return rows.map(row => row.title);
+        if (/SELECT c\.text_source\s/i.test(sql)) return rows.map(row => row.textSource);
+        if (/SELECT c\.embedding\s/i.test(sql)) return rows.map(row => row.embedding);
+        if (/SELECT c\.page_number\s/i.test(sql)) return rows.map(row => row.pageNumber);
+        if (/SELECT c\.paragraph_index\s/i.test(sql)) return rows.map(row => row.paragraphIndex);
+        throw new Error(`Unexpected vector SQL: ${sql}`);
+      },
+    };
+    const store = makeStore();
+
+    const cached = await store.getAllCached();
+
+    assert.equal(cached.length, 1);
+    assert.equal(cached[0].modelId, 'multilingual-e5-base');
+    assert.ok(cached[0].embedding instanceof Float32Array);
+    assert.ok(Math.abs(cached[0].embedding[0] - 0.6) < 1e-6);
+    assert.ok(Math.abs(cached[0].embedding[1] - 0.8) < 1e-6);
+    assert.equal(cached[0].pageNumber, 2);
+    assert.equal(cached[0].paragraphIndex, 1);
+    assert.ok(sqls.every(sql => /c\.model_id = \?/i.test(sql)));
+    assert.ok(sqls.every(sql => !/chunk_text|abstract|section_paths|content_hash|indexed_at/i.test(sql)));
+  });
+
+  test('uses a new active-model cache identity when the preference changes', async () => {
+    const zotero = installIdentityAwareStub('multilingual-e5-base');
+    const byModel: Record<string, string> = {
+      'multilingual-e5-base': encodeFloat32([1, 0]),
+      'bge-m3': encodeFloat32([0, 1]),
+    };
+    let reads = 0;
+    zotero.DB = {
+      columnQueryAsync: async (sql: string, params: string[]) => {
+        reads++;
+        const modelId = params[0];
+        if (/SELECT c\.item_pk\s/i.test(sql)) return [1];
+        if (/SELECT i\.library_key\s/i.test(sql)) return ['user'];
+        if (/SELECT i\.item_key\s/i.test(sql)) return ['OLD00001'];
+        if (/SELECT c\.chunk_index\s/i.test(sql)) return [0];
+        if (/SELECT i\.title\s/i.test(sql)) return ['Model title'];
+        if (/SELECT c\.text_source\s/i.test(sql)) return ['summary'];
+        if (/SELECT c\.embedding\s/i.test(sql)) return [byModel[modelId]];
+        if (/SELECT c\.page_number|SELECT c\.paragraph_index/i.test(sql)) return [null];
+        throw new Error(`Unexpected vector SQL: ${sql}`);
+      },
+    };
+    const store = makeStore();
+
+    const first = await store.getAllCached();
+    zotero.Prefs.set('zotseek.embeddingModel', 'bge-m3');
+    const second = await store.getAllCached();
+
+    assert.equal(first[0].modelId, 'multilingual-e5-base');
+    assert.equal(second[0].modelId, 'bge-m3');
+    assert.notEqual(first, second);
+    assert.equal(reads, 18, 'each active model needs one nine-column projection');
+  });
+
   test('shares one lexical corpus build between concurrent cold searches', async () => {
     const zotero = installIdentityAwareStub();
     const gate = deferred();
@@ -345,7 +431,7 @@ describe('Plan 40B cache publication and single-flight', () => {
     const gate = deferred();
     const started = deferred();
     let reads = 0;
-    (store as any).getAll = async () => {
+    (store as any).buildVectorCache = async () => {
       reads++;
       started.resolve();
       await gate.promise;
@@ -374,7 +460,7 @@ describe('Plan 40B cache publication and single-flight', () => {
       generation: 0,
     };
     let reads = 0;
-    (store as any).getAll = async () => {
+    (store as any).buildVectorCache = async () => {
       reads++;
       return [vectorRow('NEW00002', [0, 1])];
     };
@@ -398,7 +484,7 @@ describe('Plan 40B cache publication and single-flight', () => {
     let blockFirstBuild = true;
     let rows = [vectorRow('OLD00001', [1, 0])];
     let reads = 0;
-    (store as any).getAll = async () => {
+    (store as any).buildVectorCache = async () => {
       reads++;
       const snapshot = rows.map(row => ({ ...row, embedding: [...row.embedding] }));
       if (blockFirstBuild) {
@@ -431,7 +517,7 @@ describe('Plan 40B cache publication and single-flight', () => {
     const started = [deferred(), deferred()];
     let reads = 0;
     let rows = [vectorRow('OLD00001', [1, 0])];
-    (store as any).getAll = async () => {
+    (store as any).buildVectorCache = async () => {
       const buildNumber = reads++;
       const snapshot = rows.map(row => ({ ...row, embedding: [...row.embedding] }));
       started[buildNumber]?.resolve();
@@ -464,7 +550,7 @@ describe('Plan 40B cache publication and single-flight', () => {
     installIdentityAwareStub();
     const store = makeStore();
     let reads = 0;
-    (store as any).getAll = async () => {
+    (store as any).buildVectorCache = async () => {
       reads++;
       if (reads === 1) throw new Error('synthetic read failure');
       return [vectorRow('NEW00002', [0, 1])];

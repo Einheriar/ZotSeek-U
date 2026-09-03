@@ -175,6 +175,52 @@ function stablePassageKey(result: HybridSearchResult): string {
   return `${stableRankingKey(result)}|chunk:${result.chunkIndex ?? 0}`;
 }
 
+interface ItemBatchEntry {
+  item: any | null;
+  failed: boolean;
+}
+
+/**
+ * Resolve items in one Zotero round trip while retaining per-id failure
+ * semantics.  The scalar fallback is only used when the batch API rejects;
+ * normal reads therefore avoid an N-round-trip loop without turning a batch
+ * failure into a result-wide failure.
+ */
+async function getItemsBatch(ids: number[]): Promise<Map<number, ItemBatchEntry>> {
+  const uniqueIds = [...new Set(ids.filter(id => Number.isFinite(id)))];
+  const entries = new Map<number, ItemBatchEntry>();
+  uniqueIds.forEach(id => entries.set(id, { item: null, failed: false }));
+  if (uniqueIds.length === 0) return entries;
+
+  try {
+    const resolved = await Zotero.Items.getAsync(uniqueIds);
+    const items = Array.isArray(resolved) ? resolved : (resolved ? [resolved] : []);
+    const requested = new Set(uniqueIds);
+    items.forEach((item: any, index: number) => {
+      if (!item) return;
+      const itemId = Number(item.id);
+      // Zotero normally returns item objects with ids.  The positional
+      // fallback keeps mocks and older runtimes usable when an id is absent.
+      const mappedId = requested.has(itemId)
+        ? itemId
+        : (items.length === uniqueIds.length ? uniqueIds[index] : undefined);
+      if (mappedId !== undefined) entries.set(mappedId, { item, failed: false });
+    });
+    return entries;
+  } catch {
+    await Promise.all(uniqueIds.map(async id => {
+      try {
+        const resolved = await Zotero.Items.getAsync(id);
+        const item = Array.isArray(resolved) ? (resolved[0] ?? null) : (resolved ?? null);
+        entries.set(id, { item, failed: false });
+      } catch {
+        entries.set(id, { item: null, failed: true });
+      }
+    }));
+    return entries;
+  }
+}
+
 /**
  * Hybrid Search Engine
  * Combines semantic and keyword search using Reciprocal Rank Fusion
@@ -539,17 +585,14 @@ export class HybridSearchEngine {
       // Filter out books if preference is set
       const excludeBooks = Zotero.Prefs.get('zotseek.excludeBooks', true) ?? true;
       if (excludeBooks) {
+        const itemsById = await getItemsBatch(filteredResults.map(r => r.itemId));
         const kept: typeof filteredResults = [];
         for (const r of filteredResults) {
-          try {
-            const item = await Zotero.Items.getAsync(r.itemId);
-            if (item && item.itemType !== 'book') {
-              kept.push(r);
-            }
-          } catch {
-            // If we can't get the item, include it anyway
-            kept.push(r);
-          }
+          const entry = itemsById.get(r.itemId);
+          // If an individual lookup failed, retain the previous fail-open
+          // behavior. A missing item still drops the result as before.
+          if (entry?.failed) kept.push(r);
+          else if (entry?.item && entry.item.itemType !== 'book') kept.push(r);
         }
         filteredResults = kept;
       }
@@ -640,10 +683,27 @@ export class HybridSearchEngine {
       // Score each result based on match quality
       const scoredResults = new Map<number, KeywordSearchHit>();
 
-      for (const itemId of itemIds.slice(0, opts.keywordTopK * 2)) { // Get more to allow reranking
+      const quicksearchItemIds = itemIds.slice(0, opts.keywordTopK * 2); // Get more to allow reranking
+      const matchedItems = await getItemsBatch(quicksearchItemIds);
+      const noteParentIds: number[] = [];
+      for (const itemId of quicksearchItemIds) {
+        const matchedItem = matchedItems.get(itemId)?.item;
         try {
-          const matchedItem = await Zotero.Items.getAsync(itemId);
-          if (!matchedItem) continue;
+          if (matchedItem?.isNote?.()) {
+            const parentID = Number(matchedItem.parentID);
+            if (Number.isFinite(parentID) && parentID > 0) noteParentIds.push(parentID);
+          }
+        } catch {
+          // The original per-item loop skipped this result if isNote failed.
+        }
+      }
+      const parentItems = await getItemsBatch(noteParentIds);
+
+      for (const itemId of quicksearchItemIds) {
+        try {
+          const matchedEntry = matchedItems.get(itemId);
+          if (!matchedEntry || matchedEntry.failed || !matchedEntry.item) continue;
+          const matchedItem = matchedEntry.item;
 
           const isNoteMatch = !!matchedItem.isNote?.();
           let item = matchedItem;
@@ -653,7 +713,9 @@ export class HybridSearchEngine {
             const parentID = Number(matchedItem.parentID);
             if (!Number.isFinite(parentID) || parentID <= 0) continue;
 
-            item = await Zotero.Items.getAsync(parentID);
+            const parentEntry = parentItems.get(parentID);
+            if (!parentEntry || parentEntry.failed) continue;
+            item = parentEntry.item;
             if (!item?.isRegularItem?.()) continue;
             noteText = noteHTMLToStructuredText(matchedItem.getNote?.() || '').filteredText;
           }
@@ -744,10 +806,17 @@ export class HybridSearchEngine {
       // Merge exact matches from the ZotSeek index. These hits already point
       // at the parent bibliographic item and carry the matched note passage.
       const indexedMatches = await indexedTextPromise;
+      const indexedItems = await getItemsBatch(
+        indexedMatches
+          .map(match => match.itemId)
+          .filter((itemId): itemId is number => itemId !== undefined),
+      );
       for (const match of indexedMatches) {
         if (match.itemId === undefined) continue;
         try {
-          const item = await Zotero.Items.getAsync(match.itemId);
+          const entry = indexedItems.get(match.itemId);
+          if (!entry || entry.failed) continue;
+          const item = entry.item;
           if (!item?.isRegularItem?.()) continue;
           if (excludeBooks && item.itemType === 'book') continue;
 
@@ -909,9 +978,12 @@ export class HybridSearchEngine {
    * Populate item metadata (title, creators, year) for results
    */
   private async populateItemMetadata(results: HybridSearchResult[]): Promise<void> {
+    const itemsById = await getItemsBatch(results.map(result => result.itemId));
     for (const result of results) {
       try {
-        const item = await Zotero.Items.getAsync(result.itemId);
+        const entry = itemsById.get(result.itemId);
+        if (entry?.failed) throw new Error(`Failed to resolve item ${result.itemId}`);
+        const item = entry?.item;
         if (item) {
           result.itemKey = item.key;
           result.libraryKey = identityFromItem(item)?.libraryKey ?? result.libraryKey;

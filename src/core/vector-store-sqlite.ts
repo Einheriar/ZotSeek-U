@@ -151,7 +151,6 @@ interface CachedEmbeddingRow {
   textSource: TextSourceType;
   modelId: string;
   embedding: Float32Array;
-  pdfAttachmentKey?: string;
   pageNumber?: number;
   paragraphIndex?: number;
 }
@@ -178,6 +177,7 @@ export class VectorStoreSQLite {
   private onConnectRegistered = false;
   private cache: {
     data: CachedEmbeddingRow[];
+    modelId: string;
     validAt: number;
     generation: number;
   } | null = null;
@@ -187,7 +187,7 @@ export class VectorStoreSQLite {
     index: T0BM25Index;
   } | null = null;
   private cacheGeneration = 0;
-  private vectorCacheBuilds = new Map<number, Promise<CachedEmbeddingRow[]>>();
+  private vectorCacheBuilds = new Map<string, Promise<CachedEmbeddingRow[]>>();
   private lexicalCacheBuilds = new Map<string, Promise<T0BM25Index>>();
   private cacheWarningAt = new Map<'vector' | 'lexical', number>();
 
@@ -2582,25 +2582,30 @@ export class VectorStoreSQLite {
     await this.ensureInit();
 
     for (let attempt = 0; attempt < 2; attempt++) {
+      const modelId = getActiveModelId();
       const generation = this.cacheGeneration;
       const now = Date.now();
-      if (this.cache && this.cache.generation === generation &&
+      if (this.cache && this.cache.modelId === modelId &&
+          this.cache.generation === generation &&
           (now - this.cache.validAt) < 5 * 60 * 1000) {
         this.logger.debug(`getAllCached(): Cache hit! Returning ${this.cache.data.length} cached embeddings`);
         return this.cache.data;
       }
 
-      const cachedData = await this.getOrStartVectorCacheBuild(generation);
-      if (this.cacheGeneration === generation && this.initialized) {
+      const cachedData = await this.getOrStartVectorCacheBuild(modelId, generation);
+      if (this.cacheGeneration === generation && this.initialized &&
+          getActiveModelId() === modelId) {
         // Joined callers can publish the same immutable build idempotently.
         // Do not reuse an older TTL-expired cache merely because its mutation
         // generation is unchanged.
-        this.cache = { data: cachedData, validAt: Date.now(), generation };
-        this.logger.debug(`getAllCached(): Cached ${cachedData.length} embeddings at generation ${generation}`);
+        this.cache = { data: cachedData, modelId, validAt: Date.now(), generation };
+        this.logger.debug(`getAllCached(): Cached ${cachedData.length} embeddings ` +
+          `model=${modelId} at generation ${generation}`);
         return cachedData;
       }
 
-      this.logger.debug(`getAllCached(): Discarded stale generation ${generation}`);
+      this.logger.debug(`getAllCached(): Discarded stale model/generation ` +
+        `model=${modelId} generation=${generation}`);
       if (!this.initialized) throw new Error('Vector store closed during cache build');
     }
 
@@ -2611,56 +2616,160 @@ export class VectorStoreSQLite {
     throw new Error('Vector cache changed during both build attempts');
   }
 
-  private async getOrStartVectorCacheBuild(generation: number): Promise<CachedEmbeddingRow[]> {
-    const existing = this.vectorCacheBuilds.get(generation);
+  private async getOrStartVectorCacheBuild(
+    modelId: string,
+    generation: number,
+  ): Promise<CachedEmbeddingRow[]> {
+    const key = `${modelId}\u0000${generation}`;
+    const existing = this.vectorCacheBuilds.get(key);
     if (existing) {
-      this.logger.debug(`getAllCached(): Joining generation ${generation} build`);
+      this.logger.debug(`getAllCached(): Joining model=${modelId} generation=${generation} build`);
       return existing;
     }
 
-    this.logger.debug(`getAllCached(): Cache miss at generation ${generation}, fetching from database...`);
-    const build = this.buildVectorCache();
-    this.vectorCacheBuilds.set(generation, build);
+    this.logger.debug(`getAllCached(): Cache miss at model=${modelId} generation=${generation}, ` +
+      'fetching from database...');
+    const build = this.buildVectorCache(modelId);
+    this.vectorCacheBuilds.set(key, build);
     try {
       return await build;
     } finally {
-      if (this.vectorCacheBuilds.get(generation) === build) {
-        this.vectorCacheBuilds.delete(generation);
+      if (this.vectorCacheBuilds.get(key) === build) {
+        this.vectorCacheBuilds.delete(key);
       }
     }
   }
 
-  private async buildVectorCache(): Promise<CachedEmbeddingRow[]> {
-    const embeddings = await this.getAll();
-    return embeddings.map(e => {
-      const float32Embedding = new Float32Array(e.embedding);
-      let norm = 0;
-      for (let i = 0; i < float32Embedding.length; i++) {
-        norm += float32Embedding[i] * float32Embedding[i];
-      }
-      norm = Math.sqrt(norm);
-      if (norm > 0) {
-        for (let i = 0; i < float32Embedding.length; i++) {
-          float32Embedding[i] /= norm;
-        }
+  /**
+   * Build the semantic cache from a narrow, active-model-only projection.
+   *
+   * Keep this separate from getAll(): that public bulk method intentionally
+   * retains its complete cross-model PaperEmbedding contract. The cache only
+   * needs fields consumed by vector scoring/result location, and decodes the
+   * stored vector directly to Float32Array to avoid a temporary number[].
+   */
+  private async buildVectorCache(modelId: string): Promise<CachedEmbeddingRow[]> {
+    const fromWhere = `
+      FROM ${DB_NAME}.chunks c
+      INNER JOIN ${DB_NAME}.items i ON c.item_pk = i.item_pk
+      WHERE i.library_key != 'orphan' AND c.model_id = ?
+      ORDER BY c.item_pk, c.chunk_index
+    `;
+    const params = [modelId];
+    let pks: number[] = [];
+    let libraryKeys: string[] = [];
+    let itemKeys: string[] = [];
+    let chunkIndexes: number[] = [];
+    let titles: string[] = [];
+    let textSources: string[] = [];
+    let embeddings: string[] = [];
+    let pageNumbers: (number | null)[] = [];
+    let paragraphIndexes: (number | null)[] = [];
+
+    try {
+      // Keep the parallel single-column form: Zotero 8 can return an empty
+      // result for otherwise valid multi-column SELECT statements.
+      [pks, libraryKeys, itemKeys, chunkIndexes, titles, textSources, embeddings,
+        pageNumbers, paragraphIndexes] = await Promise.all([
+        Zotero.DB.columnQueryAsync(`SELECT c.item_pk ${fromWhere}`, params)
+          .then((r: any) => (r || []).map(Number)),
+        Zotero.DB.columnQueryAsync(`SELECT i.library_key ${fromWhere}`, params)
+          .then((r: any) => r || []),
+        Zotero.DB.columnQueryAsync(`SELECT i.item_key ${fromWhere}`, params)
+          .then((r: any) => r || []),
+        Zotero.DB.columnQueryAsync(`SELECT c.chunk_index ${fromWhere}`, params)
+          .then((r: any) => (r || []).map(Number)),
+        Zotero.DB.columnQueryAsync(`SELECT i.title ${fromWhere}`, params)
+          .then((r: any) => r || []),
+        Zotero.DB.columnQueryAsync(`SELECT c.text_source ${fromWhere}`, params)
+          .then((r: any) => r || []),
+        Zotero.DB.columnQueryAsync(`SELECT c.embedding ${fromWhere}`, params)
+          .then((r: any) => r || []),
+        Zotero.DB.columnQueryAsync(`SELECT c.page_number ${fromWhere}`, params)
+          .then((r: any) => r || []),
+        Zotero.DB.columnQueryAsync(`SELECT c.paragraph_index ${fromWhere}`, params)
+          .then((r: any) => r || []),
+      ]);
+    } catch (e) {
+      this.logger.error(`buildVectorCache(${modelId}): narrow batch failed: ${e}`);
+      return [];
+    }
+
+    if (pks.length === 0) return [];
+
+    const identities = pks.map((_, i) => ({
+      libraryKey: libraryKeys[i],
+      itemKey: itemKeys[i],
+    }));
+    const idMap = bulkResolve(identities);
+    const localLibraryIds = new Map<string, number | undefined>();
+    const result: CachedEmbeddingRow[] = [];
+
+    for (let i = 0; i < pks.length; i++) {
+      const libraryKey = String(libraryKeys[i]);
+      const itemKey = String(itemKeys[i]);
+      const lookupKey = `${libraryKey}|${itemKey}`;
+      if (!localLibraryIds.has(libraryKey)) {
+        localLibraryIds.set(libraryKey, localLibraryIDFromKey(libraryKey) ?? undefined);
       }
 
-      return {
-        itemPk: e.itemPk!,
-        libraryKey: e.libraryKey,
-        itemKey: e.itemKey,
-        itemId: e.itemId ?? -1,
-        libraryId: e.libraryId,
-        chunkIndex: e.chunkIndex,
-        title: e.title,
-        textSource: e.textSource,
-        modelId: e.modelId,
-        embedding: float32Embedding,
-        pdfAttachmentKey: e.pdfAttachmentKey,
-        pageNumber: e.pageNumber,
-        paragraphIndex: e.paragraphIndex,
-      };
-    });
+      const embedding = this.base64ToFloat32Embedding(embeddings[i]);
+      let norm = 0;
+      for (let j = 0; j < embedding.length; j++) norm += embedding[j] * embedding[j];
+      norm = Math.sqrt(norm);
+      if (norm > 0) {
+        for (let j = 0; j < embedding.length; j++) embedding[j] /= norm;
+      }
+
+      result.push({
+        itemPk: pks[i],
+        libraryKey,
+        itemKey,
+        itemId: idMap.get(lookupKey) ?? -1,
+        libraryId: localLibraryIds.get(libraryKey),
+        chunkIndex: chunkIndexes[i],
+        title: titles[i] || '',
+        textSource: (textSources[i] as TextSourceType) || 'abstract',
+        modelId,
+        embedding,
+        pageNumber: pageNumbers[i] != null ? Number(pageNumbers[i]) : undefined,
+        paragraphIndex: paragraphIndexes[i] != null ? Number(paragraphIndexes[i]) : undefined,
+      });
+    }
+
+    this.logger.debug(`buildVectorCache(${modelId}): returning ${result.length} embeddings`);
+    return result;
+  }
+
+  /** Decode base64 or legacy JSON directly to a mutable Float32Array. */
+  private base64ToFloat32Embedding(data: string): Float32Array {
+    if (!data) {
+      this.logger.error('base64ToFloat32Embedding received null/undefined data');
+      return new Float32Array(0);
+    }
+
+    try {
+      if (data.startsWith('[')) {
+        const parsed = JSON.parse(data);
+        if (!Array.isArray(parsed)) {
+          this.logger.error('base64ToFloat32Embedding: JSON parsed to non-array');
+          return new Float32Array(0);
+        }
+        return new Float32Array(parsed);
+      }
+
+      const binary = atob(data);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      if (bytes.byteLength % Float32Array.BYTES_PER_ELEMENT !== 0) {
+        this.logger.error(`base64ToFloat32Embedding: invalid byte length ${bytes.byteLength}`);
+        return new Float32Array(0);
+      }
+      return new Float32Array(bytes.buffer);
+    } catch (e) {
+      this.logger.error(`base64ToFloat32Embedding failed: ${e}`);
+      return new Float32Array(0);
+    }
   }
 
   /**

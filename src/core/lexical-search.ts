@@ -44,15 +44,28 @@ function utf8ByteLength(value: string): number {
   return bytes;
 }
 
+// Segmenter construction is relatively expensive compared with iterating a
+// chunk.  Keep one instance for the lifetime of this module while preserving
+// the existing no-Segmenter fallback.
+let zhHansWordSegmenter: any | null | undefined;
+
+function getZhHansWordSegmenter(): any | null {
+  if (zhHansWordSegmenter !== undefined) return zhHansWordSegmenter;
+  const Segmenter = (Intl as any).Segmenter;
+  zhHansWordSegmenter = typeof Segmenter === 'function'
+    ? new Segmenter('zh-Hans', { granularity: 'word' })
+    : null;
+  return zhHansWordSegmenter;
+}
+
 export function normalizeLexicalText(value: string): string {
   return String(value ?? '').normalize('NFC').toLocaleLowerCase('und');
 }
 
 function naturalTerms(normalized: string): Map<string, number> {
   const terms = new Map<string, number>();
-  const Segmenter = (Intl as any).Segmenter;
-  if (typeof Segmenter === 'function') {
-    const segmenter = new Segmenter('zh-Hans', { granularity: 'word' });
+  const segmenter = getZhHansWordSegmenter();
+  if (segmenter) {
     for (const part of segmenter.segment(normalized)) {
       const term = String(part.segment ?? '').trim();
       if (part.isWordLike && term && /[\p{L}\p{N}]/u.test(term)) increment(terms, term);

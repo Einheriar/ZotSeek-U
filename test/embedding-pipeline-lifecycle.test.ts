@@ -128,3 +128,125 @@ test('reset and synchronous postMessage failures release pending timers', async 
   assert.equal(activeTimers.size, 0);
   assert.equal((pipeline as any).pendingJobs.size, 0);
 });
+
+test('concurrent identical query embeddings share one in-flight job and clean up after success', async () => {
+  const pipeline = new EmbeddingPipeline();
+  (pipeline as any).ready = true;
+  (pipeline as any).model = { id: 'model-a' };
+
+  let calls = 0;
+  let resolveEmbedding: ((result: any) => void) | undefined;
+  (pipeline as any).embed = () => {
+    calls++;
+    return new Promise(resolve => { resolveEmbedding = resolve; });
+  };
+
+  const first = pipeline.embedQuery('exact query');
+  const second = pipeline.embedQuery('exact query');
+  await Promise.resolve();
+  assert.equal(calls, 1);
+  assert.equal((pipeline as any).queryEmbeddingsInFlight.size, 1);
+
+  const result = { embedding: [1, 0], modelId: 'model-a', processingTimeMs: 1 };
+  resolveEmbedding!(result);
+  assert.deepEqual(await first, result);
+  assert.deepEqual(await second, result);
+  assert.equal((pipeline as any).queryEmbeddingsInFlight.size, 0);
+});
+
+test('failed query embedding is removed so a later identical query retries', async () => {
+  const pipeline = new EmbeddingPipeline();
+  (pipeline as any).ready = true;
+  (pipeline as any).model = { id: 'model-a' };
+
+  let calls = 0;
+  (pipeline as any).embed = async () => {
+    calls++;
+    if (calls === 1) throw new Error('query failed');
+    return { embedding: [1, 0], modelId: 'model-a', processingTimeMs: 1 };
+  };
+
+  await assert.rejects(pipeline.embedQuery('retry query'), /query failed/);
+  assert.equal((pipeline as any).queryEmbeddingsInFlight.size, 0);
+  assert.deepEqual(await pipeline.embedQuery('retry query'), {
+    embedding: [1, 0], modelId: 'model-a', processingTimeMs: 1,
+  });
+  assert.equal(calls, 2);
+});
+
+test('reset and model change prevent stale query cleanup from deleting a newer flight', async () => {
+  const pipeline = new EmbeddingPipeline();
+  (pipeline as any).ready = true;
+  (pipeline as any).model = { id: 'model-a' };
+
+  let calls = 0;
+  const resolvers: Array<(result: any) => void> = [];
+  (pipeline as any).embed = () => {
+    calls++;
+    return new Promise(resolve => { resolvers.push(resolve); });
+  };
+
+  const oldQuery = pipeline.embedQuery('same query');
+  await Promise.resolve();
+  assert.equal((pipeline as any).queryEmbeddingsInFlight.size, 1);
+
+  pipeline.reset();
+  (pipeline as any).model = { id: 'model-b' };
+  (pipeline as any).ready = true;
+  const newQuery = pipeline.embedQuery('same query');
+  await Promise.resolve();
+  assert.equal(calls, 2);
+  assert.deepEqual([...((pipeline as any).queryEmbeddingsInFlight as Map<string, Promise<unknown>>).keys()], [
+    'model-b\u0000same query',
+  ]);
+
+  resolvers[0]({ embedding: [1, 0], modelId: 'model-a', processingTimeMs: 1 });
+  await oldQuery;
+  assert.equal((pipeline as any).queryEmbeddingsInFlight.size, 1);
+  resolvers[1]({ embedding: [0, 1], modelId: 'model-b', processingTimeMs: 1 });
+  await newQuery;
+  assert.equal((pipeline as any).queryEmbeddingsInFlight.size, 0);
+});
+
+test('reset during query initialization invalidates the pre-reset registration', async () => {
+  const pipeline = new EmbeddingPipeline();
+  (pipeline as any).model = { id: 'model-a' };
+
+  let resolveOldInit: (() => void) | undefined;
+  let initCalls = 0;
+  (pipeline as any).init = () => {
+    initCalls++;
+    if (initCalls === 1) {
+      return new Promise<void>(resolve => { resolveOldInit = resolve; });
+    }
+    return Promise.resolve();
+  };
+
+  let embedCalls = 0;
+  let resolveEmbedding: ((result: any) => void) | undefined;
+  (pipeline as any).embed = () => {
+    embedCalls++;
+    return new Promise(resolve => { resolveEmbedding = resolve; });
+  };
+
+  const preResetQuery = pipeline.embedQuery('same query');
+  await Promise.resolve();
+  pipeline.reset();
+  (pipeline as any).model = { id: 'model-b' };
+  const currentQuery = pipeline.embedQuery('same query');
+  await Promise.resolve();
+  assert.equal(embedCalls, 1);
+  assert.deepEqual([...((pipeline as any).queryEmbeddingsInFlight as Map<string, Promise<unknown>>).keys()], [
+    'model-b\u0000same query',
+  ]);
+
+  resolveOldInit!();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(embedCalls, 1);
+  const result = { embedding: [0, 1], modelId: 'model-b', processingTimeMs: 1 };
+  resolveEmbedding!(result);
+  assert.deepEqual(await preResetQuery, result);
+  assert.deepEqual(await currentQuery, result);
+  assert.equal((pipeline as any).queryEmbeddingsInFlight.size, 0);
+});

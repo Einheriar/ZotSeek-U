@@ -1,5 +1,6 @@
 import { selfTest, scenario, assertEq, assertTrue } from '../self-test';
 import { vectorStoreSQLite } from '../../core/vector-store-sqlite';
+import { getActiveModelId } from '../../core/model-registry';
 
 declare const Zotero: any;
 
@@ -33,13 +34,19 @@ selfTest.register('task-37c-model-aware-store', async () => {
          WHERE i.library_key = ? AND i.item_key = ?`, [LK, IK]);
       assertEq(Number(n), 2);
     }),
-    await scenario('getAllCached surfaces modelId for the chunk', async () => {
-      const all = await (vectorStoreSQLite as any).getAllCached();
+    await scenario('getAll preserves both model partitions', async () => {
+      const all = await vectorStoreSQLite.getAll();
       const mine = all.filter((e: any) => e.itemKey === IK);
-      assertTrue(mine.length >= 2, 'both model chunks present in cache');
+      assertTrue(mine.length >= 2, 'both model chunks present in getAll()');
       const models = new Set(mine.map((e: any) => e.modelId));
       assertTrue(models.has('nomic-embed-text-v1.5') && models.has('bge-m3'),
-        'getAllCached exposes per-chunk modelId');
+        'getAll() exposes both model partitions');
+    }),
+    await scenario('getAllCached returns only the active model partition', async () => {
+      const activeModelId = getActiveModelId();
+      const all = await (vectorStoreSQLite as any).getAllCached();
+      assertTrue(all.every((e: any) => e.modelId === activeModelId),
+        `cache rows must use active model ${activeModelId}`);
     }),
     await scenario('coverage counts items per model', async () => {
       const cov = await vectorStoreSQLite.getCoverage('bge-m3');
@@ -66,7 +73,9 @@ selfTest.register('task-37c-model-aware-store', async () => {
     }),
     await scenario('getStats reports the active short model id', async () => {
       const stats = await vectorStoreSQLite.getStats();
-      assertEq(stats.modelId, 'nomic-embed-text-v1.5');
+      // The suite does not choose a model; getStats must reflect the current
+      // operational preference rather than a synthetic partition.
+      assertEq(stats.modelId, getActiveModelId());
     }),
     await scenario('cleanup', async () => {
       await vectorStoreSQLite.deleteItem(LK, IK);
