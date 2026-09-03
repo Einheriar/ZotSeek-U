@@ -327,11 +327,9 @@ zotseek-indexing-rebuildTitle = ZotSeek-Index neu erstellen
 zotseek-indexing-rebuildConfirmTitle = ZotSeek-Index neu erstellen
 zotseek-indexing-rebuildConfirmMsg = Dadurch werden alle gespeicherten Embeddings gelöscht und der Index mit den aktuellen Einstellungen neu erstellt.
 zotseek-indexing-rebuildConfirmButton = Index neu erstellen
-zotseek-indexing-chunkStrategyRebuildRequired = ZotSeek hat erkannt, dass der Index des aktuellen Modells eine ältere Chunk-Strategie verwendet. Der vorhandene Index bleibt durchsuchbar, aber inkrementelle Hintergrundaktualisierungen sind pausiert, um eine Mischung alter und neuer Chunks zu vermeiden. Verwenden Sie in den Einstellungen „Index neu erstellen“, um den Index vollständig neu aufzubauen. Wenn Sie diesen Hinweis schließen, wird kein Neuaufbau gestartet und der vorhandene Index nicht geändert.
-
-    Dies kann je nach Bibliotheksgröße mehrere Minuten dauern.
-
-    Fortfahren?
+zotseek-indexing-chunkStrategyRebuildRequired = ZotSeek hat erkannt, dass der Index des aktuellen Modells eine ältere Chunk-Strategie verwendet.
+    Der vorhandene Index bleibt durchsuchbar, aber inkrementelle Hintergrundaktualisierungen sind pausiert, um eine Mischung alter und neuer Chunks zu vermeiden. Verwenden Sie in den Einstellungen „Index neu erstellen“, um den Index vollständig neu aufzubauen. Das Schließen dieses Hinweises startet keinen Neuaufbau und ändert den vorhandenen Index nicht.
+    Je nach Bibliotheksgröße und Indexierungsstrategie kann der Neuaufbau zwischen mehreren zehn Minuten und mehreren Stunden dauern.
 zotseek-indexing-rebuildingTitle = ZotSeek-Index wird neu erstellt
 zotseek-indexing-clearingExisting = Vorhandener Index wird gelöscht…
 zotseek-indexing-existingCleared = ✓ Vorhandener Index gelöscht

@@ -317,11 +317,9 @@ zotseek-indexing-rebuildTitle = ZotSeekインデックスを再構築
 zotseek-indexing-rebuildConfirmTitle = ZotSeekインデックスを再構築
 zotseek-indexing-rebuildConfirmMsg = 保存されているすべての埋め込みを削除し、現在の設定でインデックスを再構築します。
 zotseek-indexing-rebuildConfirmButton = インデックスを再構築
-zotseek-indexing-chunkStrategyRebuildRequired = 現在のモデルのインデックスが古いチャンク戦略を使用していることをZotSeekが検出しました。既存のインデックスは検索できますが、古いチャンクと新しいチャンクの混在を避けるため、バックグラウンドの増分更新を一時停止しています。設定の「インデックスを再構築」を使って完全に再構築してください。この通知を閉じても再構築は開始されず、既存のインデックスも変更されません。
-
-    ライブラリのサイズによっては数分かかる場合があります。
-
-    続行しますか？
+zotseek-indexing-chunkStrategyRebuildRequired = 現在のモデルのインデックスが古いチャンク戦略を使用していることをZotSeekが検出しました。
+    既存のインデックスは検索できますが、古いチャンクと新しいチャンクの混在を避けるため、バックグラウンドの増分更新を一時停止しています。設定の「インデックスを再構築」を使って完全に再構築してください。この通知を閉じても再構築は開始されず、既存のインデックスも変更されません。
+    ライブラリの規模とインデックス戦略によっては、再構築に数十分から数時間かかる場合があります。
 zotseek-indexing-rebuildingTitle = ZotSeekインデックスを再構築中
 zotseek-indexing-clearingExisting = 既存のインデックスを消去中…
 zotseek-indexing-existingCleared = ✓ 既存のインデックスを消去しました

@@ -327,11 +327,9 @@ zotseek-indexing-rebuildTitle = 重建 ZotSeek 索引
 zotseek-indexing-rebuildConfirmTitle = 重建 ZotSeek 索引
 zotseek-indexing-rebuildConfirmMsg = 这将删除所有存储的嵌入向量并使用当前设置重建索引。
 zotseek-indexing-rebuildConfirmButton = 重建索引
-zotseek-indexing-chunkStrategyRebuildRequired = ZotSeek 检测到当前模型的索引使用旧版分块策略。旧索引仍可搜索，但后台增量更新已暂停，以避免新旧分块混合。请在设置中使用“重建索引”完成全量重建。关闭此提示不会启动重建或修改现有索引。
-
-    根据文献库大小，这可能需要几分钟。
-
-    继续？
+zotseek-indexing-chunkStrategyRebuildRequired = ZotSeek 检测到当前模型的索引使用旧版分块策略。
+    旧索引仍可搜索，但后台增量更新已暂停，以避免新旧分块混合。请在设置中使用 “重建索引” 完成全量重建。关闭此提示不会启动重建或修改现有索引。
+    根据文献库大小和索引策略，可能需要数十分钟至几小时不等。
 zotseek-indexing-rebuildingTitle = 正在重建 ZotSeek 索引
 zotseek-indexing-clearingExisting = 正在清除现有索引…
 zotseek-indexing-existingCleared = ✓ 现有索引已清除

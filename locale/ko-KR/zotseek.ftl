@@ -317,11 +317,9 @@ zotseek-indexing-rebuildTitle = ZotSeek 색인 재구성
 zotseek-indexing-rebuildConfirmTitle = ZotSeek 색인 재구성
 zotseek-indexing-rebuildConfirmMsg = 저장된 모든 임베딩을 삭제하고 현재 설정으로 색인을 다시 구성합니다.
 zotseek-indexing-rebuildConfirmButton = 색인 재구성
-zotseek-indexing-chunkStrategyRebuildRequired = ZotSeek가 현재 모델의 색인이 이전 청크 전략을 사용하고 있음을 감지했습니다. 기존 색인은 검색할 수 있지만 이전 청크와 새 청크가 섞이지 않도록 백그라운드 증분 업데이트를 일시 중지했습니다. 설정에서 “색인 재구성”을 사용해 전체 재구성을 실행하세요. 이 알림을 닫아도 재구성이 시작되거나 기존 색인이 변경되지 않습니다.
-
-    라이브러리 크기에 따라 몇 분 정도 걸릴 수 있습니다.
-
-    계속하시겠습니까?
+zotseek-indexing-chunkStrategyRebuildRequired = ZotSeek가 현재 모델의 색인이 이전 청크 전략을 사용하고 있음을 감지했습니다.
+    기존 색인은 검색할 수 있지만 이전 청크와 새 청크가 섞이지 않도록 백그라운드 증분 업데이트를 일시 중지했습니다. 설정에서 “색인 재구성”을 사용해 전체 재구성을 실행하세요. 이 알림을 닫아도 재구성이 시작되거나 기존 색인이 변경되지 않습니다.
+    라이브러리 크기와 색인 전략에 따라 재구성에 수십 분에서 몇 시간이 걸릴 수 있습니다.
 zotseek-indexing-rebuildingTitle = ZotSeek 색인 재구성 중
 zotseek-indexing-clearingExisting = 기존 색인 지우는 중…
 zotseek-indexing-existingCleared = ✓ 기존 색인을 지웠습니다

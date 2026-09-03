@@ -327,11 +327,9 @@ zotseek-indexing-rebuildTitle = Reconstruction de l’index ZotSeek
 zotseek-indexing-rebuildConfirmTitle = Reconstruire l’index ZotSeek
 zotseek-indexing-rebuildConfirmMsg = Cette action supprimera tous les embeddings enregistrés et reconstruira l’index avec vos réglages actuels.
 zotseek-indexing-rebuildConfirmButton = Reconstruire l’index
-zotseek-indexing-chunkStrategyRebuildRequired = ZotSeek a détecté que l’index du modèle actuel utilise une ancienne stratégie de segmentation. L’index existant reste interrogeable, mais les mises à jour incrémentielles en arrière-plan sont suspendues afin d’éviter de mélanger d’anciens et de nouveaux segments. Utilisez « Reconstruire l’index » dans les paramètres pour effectuer une reconstruction complète. Fermer cette notification ne lance pas de reconstruction et ne modifie pas l’index existant.
-
-    Cette opération peut prendre plusieurs minutes selon la taille de la bibliothèque.
-
-    Continuer ?
+zotseek-indexing-chunkStrategyRebuildRequired = ZotSeek a détecté que l’index du modèle actuel utilise une ancienne stratégie de segmentation.
+    L’index existant reste interrogeable, mais les mises à jour incrémentielles en arrière-plan sont suspendues afin d’éviter de mélanger d’anciens et de nouveaux segments. Utilisez « Reconstruire l’index » dans les paramètres pour effectuer une reconstruction complète. Fermer cette notification ne lance pas de reconstruction et ne modifie pas l’index existant.
+    Selon la taille de la bibliothèque et la stratégie d’indexation, la reconstruction peut prendre de plusieurs dizaines de minutes à plusieurs heures.
 zotseek-indexing-rebuildingTitle = Reconstruction de l’index ZotSeek
 zotseek-indexing-clearingExisting = Effacement de l’index existant…
 zotseek-indexing-existingCleared = ✓ Index existant effacé

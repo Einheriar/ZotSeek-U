@@ -327,11 +327,9 @@ zotseek-indexing-rebuildTitle = Reconstruir el índice de ZotSeek
 zotseek-indexing-rebuildConfirmTitle = Reconstruir el índice de ZotSeek
 zotseek-indexing-rebuildConfirmMsg = Esto eliminará todos los embeddings almacenados y reconstruirá el índice con tus ajustes actuales.
 zotseek-indexing-rebuildConfirmButton = Reconstruir índice
-zotseek-indexing-chunkStrategyRebuildRequired = ZotSeek ha detectado que el índice del modelo actual utiliza una estrategia de fragmentación anterior. El índice existente sigue disponible para búsquedas, pero las actualizaciones incrementales en segundo plano se han pausado para evitar mezclar fragmentos antiguos y nuevos. Usa «Reconstruir índice» en Ajustes para realizar una reconstrucción completa. Cerrar este aviso no inicia una reconstrucción ni modifica el índice existente.
-
-    Esto puede tardar varios minutos según el tamaño de la biblioteca.
-
-    ¿Continuar?
+zotseek-indexing-chunkStrategyRebuildRequired = ZotSeek ha detectado que el índice del modelo actual utiliza una estrategia de fragmentación anterior.
+    El índice existente sigue disponible para búsquedas, pero las actualizaciones incrementales en segundo plano se han pausado para evitar mezclar fragmentos antiguos y nuevos. Usa «Reconstruir índice» en Ajustes para realizar una reconstrucción completa. Cerrar este aviso no inicia una reconstrucción ni modifica el índice existente.
+    Según el tamaño de la biblioteca y la estrategia de indexación, la reconstrucción puede tardar desde varias decenas de minutos hasta varias horas.
 zotseek-indexing-rebuildingTitle = Reconstruyendo el índice de ZotSeek
 zotseek-indexing-clearingExisting = Borrando el índice existente…
 zotseek-indexing-existingCleared = ✓ Índice existente borrado

@@ -313,11 +313,9 @@ zotseek-indexing-rebuildTitle = 重建 ZotSeek 索引
 zotseek-indexing-rebuildConfirmTitle = 重建 ZotSeek 索引
 zotseek-indexing-rebuildConfirmMsg = 這會刪除所有已儲存的 Embedding，並以目前設定重建索引。
 zotseek-indexing-rebuildConfirmButton = 重建索引
-zotseek-indexing-chunkStrategyRebuildRequired = ZotSeek 偵測到目前模型的索引使用舊版分塊策略。現有索引仍可搜尋，但背景增量更新已暫停，以免混用新舊分塊。請在「設定」中使用「重建索引」執行完整重建。關閉此通知不會開始重建或修改現有索引。
-
-    視文獻庫大小而定，這可能需要幾分鐘。
-
-    要繼續嗎？
+zotseek-indexing-chunkStrategyRebuildRequired = ZotSeek 偵測到目前模型的索引使用舊版分塊策略。
+    現有索引仍可搜尋，但背景增量更新已暫停，以免混用新舊分塊。請在「設定」中使用「重建索引」執行完整重建。關閉此通知不會開始重建或修改現有索引。
+    視文獻庫大小與索引策略而定，可能需要數十分鐘至數小時。
 zotseek-indexing-rebuildingTitle = 正在重建 ZotSeek 索引
 zotseek-indexing-clearingExisting = 正在清除現有索引…
 zotseek-indexing-existingCleared = ✓ 已清除現有索引
