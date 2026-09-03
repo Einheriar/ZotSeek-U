@@ -723,6 +723,12 @@ heuristic of approximately 1.3 tokens per whitespace-separated word:
 | 800 | ~615 words, ~2400 chars |
 | 2000 | ~1540 words, ~6000 chars |
 
+Cloud models do not claim exact local token counts. Their conservative
+preflight estimate keeps the same 1.3 ratio for whitespace-separated non-CJK
+words and counts Han, Hiragana, Katakana and Hangul characters as two tokens
+each. This estimate controls chunk granularity; the provider remains the final
+authority on its real tokenizer and context limit.
+
 All models use an independent 8000-character upstream chunk split threshold.
 Oversized chunks are split into consecutive pieces without dropping their
 tails. Exhausting `maxChunksPerPaper`, or exceeding Full mode's 30-Note source
@@ -1168,7 +1174,7 @@ Issue #42 adds a second `runtime` to `ModelConfig` alongside the in-process Chro
 
 ### Cloud Embeddings
 
-Cloud is a third, independent `ModelConfig.runtime`. The first provider is Alibaba Cloud Model Studio (Bailian), using the OpenAI-compatible `POST /embeddings` endpoint at `https://dashscope.aliyuncs.com/compatible-mode/v1`. The preset starts with `qwen3.7-text-embedding`, 1024 dimensions, a 128000-token input limit and batches of 20, while model name, dimensions and model-input parameters remain user-configurable. Recommended chunk tokens are derived as `min(3000, floor(maxInputTokens * 0.85))`. ZotSeek sends HTTP directly and does not depend on the OpenAI SDK. The menu persists `cloud-slot`; provider, model name and dimensions derive the current vector-space identity, preserving `cloud:alibaba-bailian:qwen3.7-text-embedding:1024` for the default preset.
+Cloud is a third, independent `ModelConfig.runtime`. The first provider is Alibaba Cloud Model Studio (Bailian), using the OpenAI-compatible `POST /embeddings` endpoint at `https://dashscope.aliyuncs.com/compatible-mode/v1`. The preset starts with `qwen3.7-text-embedding`, 1024 dimensions, a 128000-token input limit and batches of 20, while model name, dimensions and model-input parameters remain user-configurable. Recommended chunk tokens are derived as `min(3000, floor(maxInputTokens * 0.85))`. In the absence of a local provider tokenizer, Cloud uses the conservative multilingual estimate described above to apply that recommendation; the estimator version is part of the Cloud-only index policy fingerprint so old and new chunk boundaries cannot silently mix. ZotSeek sends HTTP directly and does not depend on the OpenAI SDK. The menu persists `cloud-slot`; provider, model name and dimensions derive the current vector-space identity, preserving `cloud:alibaba-bailian:qwen3.7-text-embedding:1024` for the default preset.
 
 Local Server and Cloud configuration are separate collapsed Settings sections; Cloud has a second collapsed advanced-parameter section. Selecting the Bailian provider supplies its default Base URL, which remains editable for an allowlisted workspace endpoint. The URL must use HTTPS, may not contain credentials, query parameters or fragments, and is invalidated for use until a direct embedding probe succeeds. Redirects are rejected. The probe submits one full configured batch of fixed strings, and responses are accepted only when every input has one unique indexed vector containing exactly the configured number of finite values. Network errors, 429 and 5xx responses use bounded retries; deterministic 4xx responses fail immediately. Provider response bodies are reduced to a bounded safe error code, so text, queries and credentials are never copied into logs or user errors.
 

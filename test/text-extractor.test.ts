@@ -45,6 +45,33 @@ function bodyPage(pageNumber: number, header: string) {
 }
 
 describe('TextExtractor PDF main-text production chain', () => {
+  test('selects the conservative counter only for Cloud runtime', async () => {
+    installZoteroStub({ 'zotseek.embeddingModel': 'cloud-slot' });
+    const cloudOptions = await (new TextExtractor() as any).resolveChunkOptions(undefined);
+    assert.equal(cloudOptions.tokenCounter('中文'), 4);
+
+    installZoteroStub({ 'zotseek.embeddingModel': 'nomic-embed-text-v1.5' });
+    const nomicOptions = await (new TextExtractor() as any).resolveChunkOptions(undefined);
+    assert.equal(nomicOptions.tokenCounter, undefined);
+
+    installZoteroStub({
+      'zotseek.embeddingModel': 'server-slot',
+      'zotseek.serverModels': JSON.stringify([{
+        id: 'server:test',
+        label: 'Test',
+        baseUrl: 'http://127.0.0.1:1234',
+        serverModelName: 'test',
+        dimensions: 768,
+        maxInputTokens: 8192,
+        recommendedChunkTokens: 2000,
+        queryPrefix: '',
+        docPrefix: '',
+      }]),
+    });
+    const serverOptions = await (new TextExtractor() as any).resolveChunkOptions(undefined);
+    assert.equal(serverOptions.tokenCounter, undefined);
+  });
+
   test('keeps metadata when selector abstains and never calls a legacy PDF fallback', async () => {
     installZoteroStub();
     const extractor = new TextExtractor();

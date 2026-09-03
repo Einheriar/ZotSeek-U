@@ -17,6 +17,7 @@ import {
   chunkDocumentWithPagesEx,
   chunkNoteTexts,
   combineFullModeChunks,
+  estimateCloudTokens,
   getChunkOptionsFromPrefs,
   getIndexingMode
 } from '../utils/chunker';
@@ -91,7 +92,9 @@ export class TextExtractor {
     const tokenCounter = options?.tokenCounter
       ?? (policy.supportsExactTokenCount
         ? await tokenizerService.getDocumentTokenCounter()
-        : undefined);
+        : policy.runtime === 'cloud'
+          ? estimateCloudTokens
+          : undefined);
 
     return {
       ...base,

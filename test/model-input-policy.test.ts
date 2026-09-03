@@ -67,5 +67,14 @@ describe('model input policy resolution', () => {
       docPrefix: 'document: ',
     }));
     assert.notEqual(cloudFirst, cloudChanged);
+    assert.match(cloudFirst, /:estimated:estimate=cloud-multilingual-v1:doc=/);
+    assert.doesNotMatch(first, /cloud-multilingual/);
+  });
+
+  test('Cloud estimator version does not change local model fingerprints', () => {
+    const nomic = modelInputPolicyFingerprint(
+      resolveModelInputPolicy(getModel('nomic-embed-text-v1.5')!),
+    );
+    assert.equal(nomic, 'v1:nomic-embed-text-v1.5:2000:8192:8000:estimated');
   });
 });

@@ -1,6 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  estimateCloudTokens,
   estimateTokens,
   chunkDocument,
   chunkDocumentEx,
@@ -49,6 +50,40 @@ describe('estimateTokens', () => {
 
   test('collapses runs of whitespace rather than counting them as words', () => {
     assert.equal(estimateTokens('a    b\n\n\tc'), estimateTokens('a b c'));
+  });
+});
+
+describe('estimateCloudTokens', () => {
+  test('preserves the historical English estimate', () => {
+    const text = 'one two three four five';
+    assert.equal(estimateCloudTokens(text), estimateTokens(text));
+  });
+
+  test('counts contiguous CJK text conservatively without whitespace', () => {
+    assert.equal(estimateCloudTokens('中文かなカナ한글'), 16);
+  });
+
+  test('adds English words and CJK characters in mixed text', () => {
+    assert.equal(estimateCloudTokens('cloud 中文 embedding'), 7);
+    assert.equal(estimateCloudTokens('   \n\n  '), 0);
+  });
+
+  test('splits unpunctuated Cloud CJK input against the estimated target', () => {
+    const result = chunkDocumentEx(
+      'Cloud 文献',
+      '连续中文摘要内容'.repeat(40),
+      null,
+      'abstract',
+      {
+        maxTokens: 40,
+        maxChunks: 100,
+        maxChars: 8000,
+        tokenCounter: estimateCloudTokens,
+      },
+    );
+
+    assert.ok(result.chunks.length > 1);
+    assert.ok(result.chunks.every(chunk => estimateCloudTokens(chunk.text) <= 40));
   });
 });
 

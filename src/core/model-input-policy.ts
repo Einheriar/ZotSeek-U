@@ -4,6 +4,7 @@ import { requiresInstructionPrefix, type ModelConfig } from './model-registry';
 import { getModelInputConfig } from './model-input-config';
 
 export const MODEL_INPUT_POLICY_VERSION = 1;
+export const CLOUD_TOKEN_ESTIMATOR_VERSION = 1;
 
 export interface ResolvedModelInputPolicy {
   modelId: string;
@@ -69,6 +70,11 @@ export function modelInputPolicyFingerprint(policy: ResolvedModelInputPolicy): s
     policy.maxChunkChars,
     policy.supportsExactTokenCount ? 'exact' : 'estimated',
   ];
+  // Only Cloud changes chunk boundaries under Plan 47. Keep every other
+  // model's existing fingerprint stable to avoid unrelated rebuild prompts.
+  if (policy.runtime === 'cloud' && !policy.supportsExactTokenCount) {
+    parts.push(`estimate=cloud-multilingual-v${CLOUD_TOKEN_ESTIMATOR_VERSION}`);
+  }
   // Remote document prefixes are user-editable input-contract data. A change
   // alters every stored document vector and must be visible to reconciliation.
   if (policy.runtime === 'server' || policy.runtime === 'cloud') {

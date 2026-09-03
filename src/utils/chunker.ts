@@ -51,7 +51,8 @@ export interface ChunkOptions {
   maxChunks?: number;      // Max chunks per paper (default: 100)
   maxChars?: number;       // Lossless per-chunk split threshold; inference does not truncate by chars
   totalPages?: number;     // Total pages from Zotero.Fulltext.getPages() for calibrated estimation
-  tokenCounter?: TokenCounter; // Exact prefixed-input counter for supported multilingual models
+  /** Prefixed-input measurement: exact for supported local models, conservative for Cloud. */
+  tokenCounter?: TokenCounter;
   noteSoftMinTokens?: number; // Model recommendation / 4; grouping target, never a hard minimum
   modelIdSnapshot?: string; // Internal batch snapshot; ignored by pure chunking logic
   /** Historical replay only. Production preprocessed pages must pass `off`. */
@@ -129,6 +130,32 @@ export function estimateTokens(text: string): number {
   if (!text) return 0;
   const words = text.split(/\s+/).filter(w => w.length > 0);
   return Math.ceil(words.length * 1.3);
+}
+
+const CLOUD_CJK_CHARACTER =
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+
+/**
+ * Conservative Cloud-only estimate for multilingual text when the provider's
+ * tokenizer is unavailable locally. English keeps the historical 1.3 ratio;
+ * CJK characters use the conservative end of Bailian's published guidance.
+ */
+export function estimateCloudTokens(text: string): number {
+  if (!text) return 0;
+
+  let cjkCharacters = 0;
+  let nonCjkText = '';
+  for (const character of text) {
+    if (CLOUD_CJK_CHARACTER.test(character)) {
+      cjkCharacters++;
+      nonCjkText += ' ';
+    } else {
+      nonCjkText += character;
+    }
+  }
+
+  const nonCjkWords = nonCjkText.split(/\s+/).filter(word => word.length > 0).length;
+  return Math.ceil(cjkCharacters * 2 + nonCjkWords * 1.3);
 }
 
 /**
@@ -744,22 +771,23 @@ export function chunkDocumentEx(
   };
 }
 
-interface ExactTextPart {
+interface MeasuredTextPart {
   text: string;
   tokenCount: number;
 }
 
 /**
  * Split one unpunctuated unit by original Unicode character offsets. The
- * tokenizer is the authority, while binary search keeps calls logarithmic.
+ * selected token measurement is the authority for this split, while binary
+ * search keeps calls logarithmic.
  */
-function splitExactUnitByCharacters(
+function splitMeasuredUnitByCharacters(
   unit: string,
   countBody: (body: string) => number,
   maxTokens: number
-): ExactTextPart[] {
+): MeasuredTextPart[] {
   const characters = Array.from(unit);
-  const parts: ExactTextPart[] = [];
+  const parts: MeasuredTextPart[] = [];
   let offset = 0;
 
   while (offset < characters.length) {
@@ -807,13 +835,13 @@ function splitExactUnitByCharacters(
 }
 
 /** Split an oversized body at sentence boundaries, then characters if needed. */
-function splitExactBodyBySentences(
+function splitMeasuredBodyBySentences(
   body: string,
   countBody: (body: string) => number,
   maxTokens: number
-): ExactTextPart[] {
+): MeasuredTextPart[] {
   const sentences = body.match(/[^.!?。！？]+[.!?。！？]+|[^.!?。！？]+$/gu) || [body];
-  const parts: ExactTextPart[] = [];
+  const parts: MeasuredTextPart[] = [];
   let current = '';
 
   const flush = () => {
@@ -833,7 +861,7 @@ function splitExactBodyBySentences(
     if (countBody(sentence) <= maxTokens) {
       current = sentence;
     } else {
-      parts.push(...splitExactUnitByCharacters(sentence, countBody, maxTokens));
+      parts.push(...splitMeasuredUnitByCharacters(sentence, countBody, maxTokens));
     }
   }
 
@@ -841,20 +869,20 @@ function splitExactBodyBySentences(
   return parts;
 }
 
-function splitChunkByExactTokenLimit(
+function splitChunkByTokenLimit(
   chunk: Chunk,
   maxTokens: number,
-  tokenCounter: TokenCounter,
+  measureTokens: TokenCounter,
 ): Chunk[] {
-  const exactCount = tokenCounter(chunk.text);
-  if (exactCount <= maxTokens) return [{ ...chunk, tokenCount: exactCount }];
+  const measuredCount = measureTokens(chunk.text);
+  if (measuredCount <= maxTokens) return [{ ...chunk, tokenCount: measuredCount }];
 
   const separatorIndex = chunk.text.indexOf('\n\n');
   const titlePrefix = separatorIndex >= 0 ? chunk.text.substring(0, separatorIndex) : '';
   const body = separatorIndex >= 0 ? chunk.text.substring(separatorIndex + 2) : chunk.text;
   const buildText = (part: string) => titlePrefix ? `${titlePrefix}\n\n${part}` : part;
-  const countBody = (part: string) => tokenCounter(buildText(part));
-  const parts = splitExactBodyBySentences(body, countBody, maxTokens);
+  const countBody = (part: string) => measureTokens(buildText(part));
+  const parts = splitMeasuredBodyBySentences(body, countBody, maxTokens);
 
   return parts.map((part, index) => ({
     ...chunk,
@@ -864,7 +892,7 @@ function splitChunkByExactTokenLimit(
   }));
 }
 
-/** Apply exact token limits first, then the independent lossless character split. */
+/** Apply the selected token measurement first, then the lossless character split. */
 function enforceInputLimitsEx(
   chunks: Chunk[],
   options: Required<Pick<ChunkOptions, 'maxTokens' | 'maxChunks' | 'maxChars'>> & Pick<ChunkOptions, 'tokenCounter'>,
@@ -875,7 +903,7 @@ function enforceInputLimitsEx(
 
   for (const chunk of chunks) {
     const parts = options.tokenCounter
-      ? splitChunkByExactTokenLimit(chunk, options.maxTokens, options.tokenCounter)
+      ? splitChunkByTokenLimit(chunk, options.maxTokens, options.tokenCounter)
       : [chunk];
     for (const part of parts) {
       if (tokenLimited.length >= maxChunks) {
@@ -893,7 +921,7 @@ function enforceInputLimitsEx(
     const verified: Chunk[] = [];
     let verificationTruncated = false;
     for (const chunk of charLimited.chunks) {
-      const parts = splitChunkByExactTokenLimit(chunk, options.maxTokens, options.tokenCounter);
+      const parts = splitChunkByTokenLimit(chunk, options.maxTokens, options.tokenCounter);
       for (const part of parts) {
         if (verified.length >= maxChunks) {
           verificationTruncated = true;
@@ -1817,8 +1845,8 @@ export function chunkDocumentWithPagesEx(
         ? opts.tokenCounter(paraInput)
         : estimateTokens(para);
 
-      // The whitespace estimator is useful for English noise filtering but is
-      // not meaningful for CJK. Exact multilingual paths rely on char length.
+      // Without a model-aware measurement, the whitespace estimator remains
+      // useful only for English noise filtering and is not meaningful for CJK.
       if (!opts.tokenCounter && paraTokens < MIN_PARA_TOKENS) {
         flushGroup();
         paragraphIdx++;
