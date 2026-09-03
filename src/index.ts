@@ -972,6 +972,13 @@ class ZotSeekPlugin {
       return;
     }
 
+    // Remove entries created by older builds before the idempotency check.
+    // This also handles in-process plugin reloads where the existing XUL nodes
+    // can outlive the code that originally registered them.
+    for (const obsoleteId of ['zotseek-open-dialog', 'zotseek-index-library']) {
+      doc.getElementById(obsoleteId)?.remove();
+    }
+
     // Check if already registered
     if (doc.getElementById('zotseek-find-similar')) {
       this.logger.debug('Context menu already registered');
@@ -988,23 +995,11 @@ class ZotSeekPlugin {
     findSimilarItem.setAttribute('label', getString('menu-findSimilar'));
     findSimilarItem.addEventListener('command', () => this.onFindSimilar());
 
-    // Create "Open ZotSeek" menu item for general search
-    const openSearchItem = doc.createXULElement('menuitem');
-    openSearchItem.id = 'zotseek-open-dialog';
-    openSearchItem.setAttribute('label', getString('menu-openZotSeek'));
-    openSearchItem.addEventListener('command', () => searchDialogWithVTable.open());
-
     // Create "Index Selected" menu item
     const indexSelectedItem = doc.createXULElement('menuitem');
     indexSelectedItem.id = 'zotseek-index-selected';
     indexSelectedItem.setAttribute('label', getString('menu-indexSelected'));
     indexSelectedItem.addEventListener('command', () => this.onIndexSelected());
-
-    // Create "Index Library" menu item
-    const indexLibraryItem = doc.createXULElement('menuitem');
-    indexLibraryItem.id = 'zotseek-index-library';
-    indexLibraryItem.setAttribute('label', getString('menu-updateLibrary'));
-    indexLibraryItem.addEventListener('command', () => this.onIndexLibrary());
 
     // Create "Remove from Index" menu item
     const removeFromIndexItem = doc.createXULElement('menuitem');
@@ -1014,9 +1009,7 @@ class ZotSeekPlugin {
 
     itemMenu.appendChild(separator);
     itemMenu.appendChild(findSimilarItem);
-    itemMenu.appendChild(openSearchItem);
     itemMenu.appendChild(indexSelectedItem);
-    itemMenu.appendChild(indexLibraryItem);
     itemMenu.appendChild(removeFromIndexItem);
 
     this.logger.info('Context menu registered successfully');
