@@ -294,22 +294,34 @@
 
     <html:details class="zotseek-model-settings" id="zotseek-cloud-advanced-settings" style="margin-top:10px;">
       <html:summary data-l10n-id="zotseek-pref-cloudAdvanced" style="cursor:pointer;">Advanced model parameters</html:summary>
-      <html:div style="display:grid;grid-template-columns:160px minmax(220px,1fr);gap:7px 10px;align-items:center;margin-top:8px;">
-        <html:span data-l10n-id="zotseek-pref-cloudMaxInputTokens">Maximum input Tokens</html:span>
-        <html:input id="zotseek-cloud-max-input-tokens" type="number" min="1" step="1" style="width:100%;box-sizing:border-box;"/>
-        <html:span data-l10n-id="zotseek-pref-cloudRecommendedChunkTokens">Recommended Chunk Tokens</html:span>
-        <html:input id="zotseek-cloud-recommended-chunk-tokens" type="number" readonly="readonly" style="width:100%;box-sizing:border-box;"/>
-        <html:span data-l10n-id="zotseek-pref-cloudQueryPrefix">Query Prefix</html:span>
-        <html:input id="zotseek-cloud-query-prefix" type="text" style="width:100%;box-sizing:border-box;"/>
-        <html:span data-l10n-id="zotseek-pref-cloudDocumentPrefix">Document Prefix</html:span>
-        <html:input id="zotseek-cloud-doc-prefix" type="text" style="width:100%;box-sizing:border-box;"/>
-        <html:span data-l10n-id="zotseek-pref-cloudBatchSize">Maximum inputs per batch</html:span>
-        <html:input id="zotseek-cloud-batch-size" type="number" min="1" max="256" step="1" style="width:100%;box-sizing:border-box;"/>
+      <html:div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);row-gap:10px;column-gap:28px;align-items:start;margin-top:8px;">
+        <html:div style="display:grid;grid-template-columns:150px minmax(0,1fr);gap:7px 10px;align-items:start;min-width:0;">
+          <html:span data-l10n-id="zotseek-pref-cloudMaxInputTokens" style="padding-top:5px;">Maximum input Tokens</html:span>
+          <html:input id="zotseek-cloud-max-input-tokens" type="number" min="1" step="1" style="width:100%;box-sizing:border-box;min-width:0;"/>
+        </html:div>
+        <html:div style="display:grid;grid-template-columns:180px minmax(0,1fr);gap:7px 10px;align-items:start;min-width:0;">
+          <html:span data-l10n-id="zotseek-pref-cloudRecommendedChunkTokens" style="padding-top:5px;">Recommended Chunk Tokens</html:span>
+          <html:div style="min-width:0;">
+            <html:input id="zotseek-cloud-recommended-chunk-tokens" type="number" readonly="readonly" style="width:100%;box-sizing:border-box;min-width:0;"/>
+            <html:p data-l10n-id="zotseek-pref-cloudRecommendedChunkDesc"
+                    style="color: var(--zotseek-text-secondary); font-size:11px; margin:4px 0 0 0;">
+              Auto-calculated at 85% of the model input limit, up to 3000 Tokens.
+            </html:p>
+          </html:div>
+        </html:div>
+        <html:div style="display:grid;grid-template-columns:150px minmax(0,1fr);gap:7px 10px;align-items:start;min-width:0;">
+          <html:span data-l10n-id="zotseek-pref-cloudQueryPrefix" style="padding-top:5px;">Query Prefix</html:span>
+          <html:input id="zotseek-cloud-query-prefix" type="text" style="width:100%;box-sizing:border-box;min-width:0;"/>
+        </html:div>
+        <html:div style="display:grid;grid-template-columns:180px minmax(0,1fr);gap:7px 10px;align-items:start;min-width:0;">
+          <html:span data-l10n-id="zotseek-pref-cloudDocumentPrefix" style="padding-top:5px;">Document Prefix</html:span>
+          <html:input id="zotseek-cloud-doc-prefix" type="text" style="width:100%;box-sizing:border-box;min-width:0;"/>
+        </html:div>
+        <html:div style="display:grid;grid-template-columns:150px minmax(0,1fr);gap:7px 10px;align-items:start;min-width:0;">
+          <html:span data-l10n-id="zotseek-pref-cloudBatchSize" style="padding-top:5px;">Maximum inputs per batch</html:span>
+          <html:input id="zotseek-cloud-batch-size" type="number" min="1" max="256" step="1" style="width:100%;box-sizing:border-box;min-width:0;"/>
+        </html:div>
       </html:div>
-      <html:p data-l10n-id="zotseek-pref-cloudRecommendedChunkDesc"
-              style="color: var(--zotseek-text-secondary); font-size:11px; margin:6px 0 0 170px;">
-        Automatically uses 85% of the model limit, capped at 3000 Tokens.
-      </html:p>
     </html:details>
 
     <hbox align="center" style="margin-top:8px;">
@@ -328,34 +340,6 @@
     </html:p>
   </groupbox>
 </html:details>
-
-<!-- Chunking and model input -->
-<groupbox style="margin-top: 12px;">
-  <label><html:h2 data-l10n-id="zotseek-pref-modelInputSettings">Chunking and Model Input</html:h2></label>
-
-  <html:div class="zotseek-settings-box" style="border-radius: 6px; padding: 12px; border-width: 1px; border-style: solid;">
-    <html:div style="display: grid; grid-template-columns: 180px 100px minmax(0, 1fr) auto; gap: 10px 12px; align-items: center;">
-      <html:label data-l10n-id="zotseek-pref-maxTokens" for="zotseek-pref-maxTokens" style="color: var(--zotseek-text-primary);">Max tokens per chunk</html:label>
-      <html:input type="number"
-                  id="zotseek-pref-maxTokens"
-                  class="zotseek-input"
-                  min="50" max="8192" step="10"
-                  style="width: 100%; box-sizing: border-box; padding: 4px 8px; border-radius: 4px; border-width: 1px; border-style: solid;" />
-      <html:span id="zotseek-pref-maxTokensPolicy" style="font-size: 11px; color: var(--zotseek-text-secondary);"></html:span>
-      <button id="zotseek-pref-resetMaxTokens" data-l10n-id="zotseek-pref-resetMaxTokens" />
-
-      <html:label data-l10n-id="zotseek-pref-maxChunks" for="zotseek-pref-maxChunksPerPaper" style="color: var(--zotseek-text-primary);">Max chunks per paper</html:label>
-      <html:input type="number"
-                  id="zotseek-pref-maxChunksPerPaper"
-                  class="zotseek-input"
-                  min="1" max="200" step="10"
-                  value="100"
-                  style="width: 100%; box-sizing: border-box; padding: 4px 8px; border-radius: 4px; border-width: 1px; border-style: solid;" />
-      <html:span data-l10n-id="zotseek-pref-maxChunksDesc" style="font-size: 11px; color: var(--zotseek-text-secondary);">Limit for long documents (1-200)</html:span>
-      <html:span></html:span>
-    </html:div>
-  </html:div>
-</groupbox>
 
 </html:details>
 
@@ -451,6 +435,34 @@
   <html:p style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 4px 0 0 24px;">
     <html:span data-l10n-id="zotseek-pref-autoIndexDesc">Checks the selected library scope at startup, updates added or changed items, removes records for items deleted from Zotero or now excluded by indexing rules, and shows progress in the lower-right corner.</html:span>
   </html:p>
+</groupbox>
+
+<!-- Chunking and model input -->
+<groupbox style="margin-top: 12px;">
+  <label><html:h2 data-l10n-id="zotseek-pref-modelInputSettings">Chunking and Model Input</html:h2></label>
+
+  <html:div class="zotseek-settings-box" style="border-radius: 6px; padding: 12px; border-width: 1px; border-style: solid;">
+    <html:div style="display: grid; grid-template-columns: 180px 100px minmax(0, 1fr) auto; gap: 10px 12px; align-items: center;">
+      <html:label data-l10n-id="zotseek-pref-maxTokens" for="zotseek-pref-maxTokens" style="color: var(--zotseek-text-primary);">Max tokens per chunk</html:label>
+      <html:input type="number"
+                  id="zotseek-pref-maxTokens"
+                  class="zotseek-input"
+                  min="50" max="8192" step="10"
+                  style="width: 100%; box-sizing: border-box; padding: 4px 8px; border-radius: 4px; border-width: 1px; border-style: solid;" />
+      <html:span id="zotseek-pref-maxTokensPolicy" style="font-size: 11px; color: var(--zotseek-text-secondary);"></html:span>
+      <button id="zotseek-pref-resetMaxTokens" data-l10n-id="zotseek-pref-resetMaxTokens" />
+
+      <html:label data-l10n-id="zotseek-pref-maxChunks" for="zotseek-pref-maxChunksPerPaper" style="color: var(--zotseek-text-primary);">Max chunks per paper</html:label>
+      <html:input type="number"
+                  id="zotseek-pref-maxChunksPerPaper"
+                  class="zotseek-input"
+                  min="1" max="200" step="10"
+                  value="100"
+                  style="width: 100%; box-sizing: border-box; padding: 4px 8px; border-radius: 4px; border-width: 1px; border-style: solid;" />
+      <html:span data-l10n-id="zotseek-pref-maxChunksDesc" style="font-size: 11px; color: var(--zotseek-text-secondary);">Limit for long documents (1-200)</html:span>
+      <html:span></html:span>
+    </html:div>
+  </html:div>
 </groupbox>
 
 <!-- Exclusions -->
@@ -611,7 +623,7 @@
            is="zotero-text-link"
            role="link"
            href="https://github.com/Einheriar/ZotSeek-CHS"
-           value="GitHub Fork Repository"
+           value="GitHub Repository"
            data-l10n-id="zotseek-pref-githubRepo" />
   </hbox>
 </groupbox>
