@@ -96,6 +96,7 @@ export class TextExtractor {
     return {
       ...base,
       maxTokens: policy.effectiveChunkTokens,
+      modelMaxInputTokens: policy.maxInputTokens ?? undefined,
       maxChars: policy.maxChunkChars,
       tokenCounter,
       noteSoftMinTokens: Math.floor(policy.recommendedChunkTokens / 4),

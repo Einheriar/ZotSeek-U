@@ -47,6 +47,7 @@ export type TokenCounter = (text: string) => number;
 
 export interface ChunkOptions {
   maxTokens?: number;      // Resolved active-model limit
+  modelMaxInputTokens?: number; // Hard model input ceiling; breadcrumbs use only remaining room
   maxChunks?: number;      // Max chunks per paper (default: 100)
   maxChars?: number;       // Lossless per-chunk split threshold; inference does not truncate by chars
   totalPages?: number;     // Total pages from Zotero.Fulltext.getPages() for calibrated estimation
@@ -80,7 +81,7 @@ export interface ChunkResult {
 export type IndexingMode = 'abstract' | 'notes' | 'full';
 
 /** Bump whenever persisted chunk text, boundaries, or structure semantics change. */
-export const CHUNK_STRATEGY_VERSION = 7;
+export const CHUNK_STRATEGY_VERSION = 8;
 
 /** Full-mode source provenance contract; scoped through freshness fingerprints. */
 export const PDF_SOURCE_IDENTITY_VERSION = 1;
@@ -1230,12 +1231,47 @@ function chunkPlainNote(
   return chunks;
 }
 
+function prependNoteTitleBreadcrumb(
+  title: string,
+  noteInput: string,
+  countTokens: TokenCounter,
+  hardTokenLimit: number | undefined,
+  maxChars: number,
+): string {
+  const normalizedTitle = String(title ?? '').replace(/\s+/g, ' ').trim();
+  if (!normalizedTitle) return noteInput;
+  const render = (value: string) => `文献：${value}\n${noteInput}`;
+  const fits = (value: string) =>
+    value.length <= maxChars &&
+    (hardTokenLimit === undefined || countTokens(value) <= hardTokenLimit);
+  const complete = render(normalizedTitle);
+  if (fits(complete)) return complete;
+
+  // Preserve the already-split faithful body and shorten only the artificial
+  // title context when an exceptional title consumes the model's hard margin.
+  const characters = Array.from(normalizedTitle);
+  let low = 1;
+  let high = characters.length;
+  let best = '';
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const candidate = `${characters.slice(0, middle).join('')}…`;
+    if (fits(render(candidate))) {
+      best = candidate;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return best ? render(best) : noteInput;
+}
+
 /**
  * Split normalized child-note texts into chunks that belong to their parent
  * bibliographic item. Note chunks intentionally carry no PDF location data.
  */
 export function chunkNoteTexts(
-  _title: string,
+  title: string,
   noteTexts: NoteTextInput[],
   options: ChunkOptions = {},
   startIndex: number = 0
@@ -1288,9 +1324,20 @@ export function chunkNoteTexts(
     if (wasTruncated) break;
   }
 
+  // R1 adds the parent title only after the faithful Note body has completed
+  // its existing split. It therefore does not consume the recommended body
+  // budget or alter chunk boundaries, and it never enters stored chunk_text.
   rawChunks.forEach((chunk, index) => {
     chunk.index = startIndex + index;
-    chunk.tokenCount = countTokens(chunk.embedText ?? chunk.text);
+    const noteInput = chunk.embedText ?? chunk.text;
+    chunk.embedText = prependNoteTitleBreadcrumb(
+      title,
+      noteInput,
+      countTokens,
+      options.modelMaxInputTokens,
+      opts.maxChars,
+    );
+    chunk.tokenCount = countTokens(chunk.embedText);
     chunk.pageNumber = undefined;
     chunk.paragraphIndex = undefined;
     chunk.startChar = undefined;

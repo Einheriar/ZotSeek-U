@@ -1,0 +1,59 @@
+import { describe, test } from 'node:test';
+import assert from 'node:assert/strict';
+import { T0BM25Index, tokenizeT0 } from '../src/core/lexical-search';
+import type { LexicalDocument } from '../src/core/lexical-search';
+
+function doc(
+  itemPk: number,
+  itemKey: string,
+  chunkIndex: number,
+  chunkText: string,
+  textSource: LexicalDocument['textSource'],
+  libraryKey = 'user',
+): LexicalDocument {
+  return { itemPk, itemKey, itemId: itemPk, libraryKey, chunkIndex, chunkText, textSource };
+}
+
+describe('Plan 24C T0 production lexical search', () => {
+  test('combines Intl natural terms with CJK bigrams using max TF', () => {
+    const terms = tokenizeT0('研究研究 Hybrid Search');
+    assert.ok((terms.get('研究') ?? 0) >= 1);
+    assert.ok(terms.has('hybrid'));
+    assert.ok(terms.has('search'));
+    assert.equal(terms.get('研究'), 2, 'natural/bigram overlap must not sum duplicate TF');
+  });
+
+  test('ranks the strongest BM25 chunk and aggregates to one row per paper', () => {
+    const index = new T0BM25Index([
+      doc(1, 'AAAA0001', 0, 'neural synchrony hyperscanning', 'summary'),
+      doc(1, 'AAAA0001', 1, 'unrelated note', 'note'),
+      doc(2, 'BBBB0002', 0, 'neural methods', 'summary'),
+      doc(3, 'CCCC0003', 0, 'social interaction', 'summary'),
+    ]);
+    const results = index.search('neural synchrony', { limit: 10 });
+    assert.equal(results[0].itemKey, 'AAAA0001');
+    assert.equal(results[0].score, 1);
+    assert.ok(results.every(result => result.score >= 0 && result.score <= 1));
+    assert.equal(results.filter(result => result.itemKey === 'AAAA0001').length, 1);
+  });
+
+  test('isolates metadata/Notes and PDF corpora before computing BM25', () => {
+    const index = new T0BM25Index([
+      doc(1, 'NOTE0001', 0, 'shared phrase in note', 'note'),
+      doc(2, 'PDF00002', 0, 'shared phrase in pdf', 'content'),
+      doc(3, 'GROUP003', 0, 'shared phrase elsewhere', 'note', 'group:3'),
+    ]);
+    assert.deepEqual(
+      index.search('shared phrase', { textSources: ['note'] }).map(row => row.itemKey),
+      ['GROUP003', 'NOTE0001'],
+    );
+    assert.deepEqual(
+      index.search('shared phrase', { textSources: ['content'] }).map(row => row.itemKey),
+      ['PDF00002'],
+    );
+    assert.deepEqual(
+      index.search('shared phrase', { textSources: ['note'], libraryKey: 'user' }).map(row => row.itemKey),
+      ['NOTE0001'],
+    );
+  });
+});

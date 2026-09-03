@@ -237,8 +237,8 @@ describe('preference reading', () => {
 });
 
 describe('persisted chunk strategy state', () => {
-  test('uses strategy 7 for prioritized Full-mode source allocation', () => {
-    assert.equal(CHUNK_STRATEGY_VERSION, 7);
+  test('uses strategy 8 for R1 Note embedding breadcrumbs', () => {
+    assert.equal(CHUNK_STRATEGY_VERSION, 8);
   });
 
   test('initializes an empty partition even when it has no marker', () => {
@@ -385,9 +385,10 @@ describe('exact token-aware note chunking', () => {
 
     assert.ok(chunks.length > 1, 'long Chinese note was split');
     assert.equal(wasTruncated, false);
-    assert.ok(chunks.every(chunk => exactCounter(chunk.embedText ?? chunk.text) <= 120));
+    assert.ok(chunks.every(chunk => exactCounter(chunk.text) <= 120));
     assert.ok(chunks.every(chunk => chunk.tokenCount === exactCounter(chunk.embedText ?? chunk.text)));
     assert.ok(chunks.every(chunk => !chunk.text.includes('测试文献')));
+    assert.ok(chunks.every(chunk => (chunk.embedText ?? '').startsWith('文献：测试文献\n')));
 
     const recovered = chunks.map(chunk => chunk.text).join('');
     assert.equal(recovered, note, 'all original Chinese characters survive');
@@ -552,7 +553,7 @@ describe('exact token-aware note chunking', () => {
       '<h3>问题</h3><p>本研究检验发展路径。</p>',
       '<h2>核心发现</h2><h3>结果</h3><p>路径系数显著。</p>',
     ].join(''));
-    const { chunks } = chunkNoteTexts('不应进入嵌入的论文标题', [note], {
+    const { chunks } = chunkNoteTexts('应只进入嵌入的论文标题', [note], {
       maxTokens: 220,
       maxChunks: 100,
       maxChars: 8000,
@@ -565,9 +566,9 @@ describe('exact token-aware note chunking', () => {
       ['研究背景', '问题'],
     ]);
     assert.deepEqual(chunks[1].sectionPaths, [['核心发现', '结果']]);
-    assert.match(chunks[0].embedText ?? '', /^章节：研究背景/u);
-    assert.ok(chunks.every(chunk => !(chunk.embedText ?? '').includes('不应进入嵌入')));
-    assert.ok(chunks.every(chunk => exactCounter(chunk.embedText ?? chunk.text) <= 220));
+    assert.match(chunks[0].embedText ?? '', /^文献：应只进入嵌入的论文标题\n章节：研究背景/u);
+    assert.ok(chunks.every(chunk => !chunk.text.includes('应只进入嵌入的论文标题')));
+    assert.ok(chunks.every(chunk => exactCounter(chunk.text) <= 220));
   });
 
   test('does not merge two distinct h2 occurrences that happen to share a title', () => {
@@ -598,7 +599,8 @@ describe('exact token-aware note chunking', () => {
 
     assert.equal(note.onlyGenericRoot, true);
     assert.deepEqual(chunks[0].sectionPaths, []);
-    assert.equal(chunks[0].embedText, '只有随手记录的正文。');
+    assert.equal(chunks[0].embedText, '文献：Parent title\n只有随手记录的正文。');
+    assert.equal(chunks[0].text, '只有随手记录的正文。');
   });
 
   test('bounds keyword Note evidence around the query without splitting Unicode characters', () => {
@@ -610,7 +612,7 @@ describe('exact token-aware note chunking', () => {
     assert.match(snippet, /…$/u);
   });
 
-  test('keeps pathological long headings under the final embedding limit', () => {
+  test('keeps pathological long headings within the body budget before adding R1', () => {
     const longHeading = '过长章节标题'.repeat(80);
     const note = noteHTMLToStructuredText(
       `<h1>简报</h1><h2>${longHeading}</h2><p>仍然需要保留的正文证据。</p>`,
@@ -623,8 +625,24 @@ describe('exact token-aware note chunking', () => {
     });
 
     assert.ok(chunks.length > 1);
-    assert.ok(chunks.every(chunk => exactCounter(chunk.embedText ?? chunk.text) <= 120));
+    assert.ok(chunks.every(chunk => exactCounter(chunk.text) <= 120));
+    assert.ok(chunks.every(chunk => (chunk.embedText ?? '').startsWith('文献：Parent title\n')));
     assert.ok(chunks.every(chunk => chunk.sectionPaths?.[0]?.[0] === longHeading));
+  });
+
+  test('shortens only an exceptional parent-title breadcrumb at the model hard limit', () => {
+    const body = '正文证据保持完整。';
+    const { chunks } = chunkNoteTexts('极长父标题'.repeat(100), [body], {
+      maxTokens: 120,
+      modelMaxInputTokens: 150,
+      maxChunks: 100,
+      maxChars: 8000,
+      tokenCounter: exactCounter,
+    });
+
+    assert.equal(chunks[0].text, body);
+    assert.match(chunks[0].embedText ?? '', /^文献：.+…\n正文证据保持完整。$/u);
+    assert.ok(exactCounter(chunks[0].embedText ?? '') <= 150);
   });
 
   test('splits a long multilingual summary with exact final-input counts', () => {

@@ -48,7 +48,11 @@ export interface IVectorStore {
   needsReindex(itemId: number, contentHash: string): Promise<boolean>;
   getIndexStatusMap(itemIds: number[]): Promise<Map<number, import('./vector-store-sqlite').ItemIndexStatus>>;
   getByLibrary(libraryId: number): Promise<import('./vector-store-sqlite').PaperEmbedding[]>;
-  searchText(query: string, options?: { limit?: number; libraryId?: number }): Promise<import('./vector-store-sqlite').IndexedTextMatch[]>;
+  searchText(query: string, options?: {
+    limit?: number;
+    libraryId?: number;
+    textSources?: import('./vector-store-sqlite').TextSourceType[];
+  }): Promise<import('./vector-store-sqlite').IndexedTextMatch[]>;
 
   // Model-scoped helpers
   getItemsMissingModel(modelId: string): Promise<Array<{ libraryKey: string; itemKey: string }>>;

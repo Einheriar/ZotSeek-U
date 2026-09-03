@@ -45,10 +45,11 @@ export interface SearchOptions {
   minSimilarity?: number;
   libraryId?: number;
   excludeItemIds?: number[];
+  textSources?: TextSourceType[];
   returnAllChunks?: boolean;  // If true, return all matching chunks instead of MaxSim aggregation
 }
 
-const DEFAULT_OPTIONS: Required<Omit<SearchOptions, 'libraryId' | 'excludeItemIds'>> = {
+const DEFAULT_OPTIONS: Required<Omit<SearchOptions, 'libraryId' | 'excludeItemIds' | 'textSources'>> = {
   topK: 20,
   minSimilarity: 0.7,
   returnAllChunks: false,
@@ -123,13 +124,14 @@ export class SearchEngine {
   /** Exact lexical search over ZotSeek's stored chunk text, without model I/O. */
   async searchIndexedText(
     query: string,
-    options: { topK?: number; libraryId?: number } = {}
+    options: { topK?: number; libraryId?: number; textSources?: TextSourceType[] } = {}
   ): Promise<IndexedTextMatch[]> {
     const store = this.getStore();
     if (!store.isReady()) await store.init();
     return store.searchText(query, {
       limit: options.topK,
       libraryId: options.libraryId,
+      textSources: options.textSources,
     });
   }
 
@@ -194,6 +196,10 @@ export class SearchEngine {
     // This prevents dimension mismatches when the user switches models.
     const activeModelId = getActiveModelId();
     embeddings = embeddings.filter((e: any) => e.modelId === activeModelId);
+    if (opts.textSources?.length) {
+      const allowedSources = new Set(opts.textSources);
+      embeddings = embeddings.filter(e => allowedSources.has(e.textSource));
+    }
 
     // Filter out excluded items (by resolved local itemId; orphans are never excluded here)
     if (opts.excludeItemIds && opts.excludeItemIds.length > 0) {
@@ -214,7 +220,8 @@ export class SearchEngine {
     }
 
     // Sort by similarity (descending) and take top K
-    results.sort((a, b) => b.similarity - a.similarity);
+    results.sort((a, b) => b.similarity - a.similarity ||
+      a.libraryKey.localeCompare(b.libraryKey) || a.itemKey.localeCompare(b.itemKey));
     const topResults = results.slice(0, opts.topK);
 
     // Enrich the visible results with the matched chunk's text (for snippet display).
@@ -336,6 +343,10 @@ export class SearchEngine {
     // This prevents dimension mismatches when the user switches models.
     const activeModelId = getActiveModelId();
     embeddings = embeddings.filter((e: any) => e.modelId === activeModelId);
+    if (opts.textSources?.length) {
+      const allowedSources = new Set(opts.textSources);
+      embeddings = embeddings.filter(e => allowedSources.has(e.textSource));
+    }
 
     this.logger.info(`Retrieved ${embeddings.length} embedding chunks from store`);
 
@@ -347,7 +358,6 @@ export class SearchEngine {
       if (e.itemId !== undefined && e.itemId >= 0 && excludeSet.has(e.itemId)) return false;
       return true;
     });
-
     // Filter out invalid embeddings (shouldn't happen with cached data)
     const validEmbeddings = embeddings.filter(e => e.embedding && e.embedding.length > 0);
 
@@ -414,7 +424,8 @@ export class SearchEngine {
       }
     }
 
-    results.sort((a, b) => b.similarity - a.similarity);
+    results.sort((a, b) => b.similarity - a.similarity ||
+      a.libraryKey.localeCompare(b.libraryKey) || a.itemKey.localeCompare(b.itemKey));
     const topResults = results.slice(0, opts.topK);
 
     this.logger.info(`Found ${topResults.length} similar papers`);
@@ -458,15 +469,18 @@ export class SearchEngine {
     });
 
     // Filter valid embeddings
+    const allowedSources = opts.textSources?.length ? new Set(opts.textSources) : null;
     const validEmbeddings = embeddings.filter(e =>
-      e.embedding && Array.isArray(e.embedding) && e.embedding.length > 0
+      e.embedding && Array.isArray(e.embedding) && e.embedding.length > 0 &&
+      (!allowedSources || allowedSources.has(e.textSource))
     );
 
     // Use MaxSim aggregation
     const results = this.computeMaxSimResults(sourceEmbedding, validEmbeddings, opts.minSimilarity);
 
     // Sort and return top K
-    results.sort((a, b) => b.similarity - a.similarity);
+    results.sort((a, b) => b.similarity - a.similarity ||
+      a.libraryKey.localeCompare(b.libraryKey) || a.itemKey.localeCompare(b.itemKey));
     return results.slice(0, opts.topK);
   }
 

@@ -9,6 +9,7 @@ function cachedChunk(
   itemKey: string,
   libraryId: number,
   embedding: [number, number],
+  textSource: 'note' | 'content' | 'summary' = 'note',
 ) {
   return {
     itemPk,
@@ -18,7 +19,7 @@ function cachedChunk(
     libraryId,
     chunkIndex: 0,
     title: itemKey,
-    textSource: 'note' as const,
+    textSource,
     modelId: getActiveModelId(),
     embedding: new Float32Array(embedding),
   };
@@ -88,6 +89,37 @@ describe('library-scoped semantic search cache', () => {
     const results = await engine.search('test', { topK: 10, minSimilarity: 0 });
 
     assert.deepEqual(results.map(r => r.itemKey), ['USER0001', 'GROUP001']);
+  });
+
+  test('filters semantic candidates by specialist text source before MaxSim', async () => {
+    const store = {
+      isReady: () => true,
+      getAllCached: async () => [
+        cachedChunk(1, 'NOTE0001', 1, [0.8, 0.6], 'note'),
+        cachedChunk(2, 'PDF00002', 1, [1, 0], 'content'),
+        cachedChunk(3, 'META0003', 1, [0.9, 0.1], 'summary'),
+      ],
+    };
+    const pipeline = {
+      isReady: () => true,
+      embedQuery: async () => ({ embedding: [1, 0] }),
+    };
+    const engine = new SearchEngine(pipeline as any);
+    (engine as any).store = store;
+
+    const notes = await engine.search('test', {
+      topK: 10,
+      minSimilarity: 0,
+      textSources: ['summary', 'note'],
+    });
+    const pdf = await engine.search('test', {
+      topK: 10,
+      minSimilarity: 0,
+      textSources: ['content'],
+    });
+
+    assert.deepEqual(notes.map(result => result.itemKey), ['META0003', 'NOTE0001']);
+    assert.deepEqual(pdf.map(result => result.itemKey), ['PDF00002']);
   });
 
   test('reuses the same cache for library-scoped similar-paper search', async () => {

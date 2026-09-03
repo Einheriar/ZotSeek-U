@@ -23,6 +23,7 @@ import {
   bulkResolve,
   libraryKeyFromLocalID,
 } from './identity-resolver';
+import { LexicalDocument, T0BM25Index } from './lexical-search';
 
 declare const Zotero: any;
 declare const PathUtils: any;
@@ -175,6 +176,7 @@ export class VectorStoreSQLite {
     }>;
     validAt: number;  // timestamp
   } | null = null;
+  private lexicalCache: { modelId: string; index: T0BM25Index } | null = null;
 
   constructor() {
     this.logger = new Logger('VectorStoreSQLite');
@@ -2638,112 +2640,91 @@ export class VectorStoreSQLite {
       this.logger.debug('invalidateCache(): Cache invalidated');
       this.cache = null;
     }
+    this.lexicalCache = null;
   }
 
   /**
    * Search the text already stored in ZotSeek's chunk index.
    *
-   * This is intentionally independent of the embedding model: exact keyword
-   * matches must keep working for Chinese notes and while switching models.
-   * Only the matching text columns are read, so large embedding blobs are not
-   * decoded or added to the in-memory vector cache.
+   * Builds the frozen T0 BM25 contract over faithful chunk text. For each item,
+   * the active model partition is preferred; a deterministic fallback partition
+   * keeps lexical search available while a model migration is incomplete. Large
+   * embedding blobs are never decoded. The cache is invalidated together with
+   * the vector cache after every index mutation.
    */
   async searchText(
     query: string,
-    options: { limit?: number; libraryId?: number } = {}
+    options: { limit?: number; libraryId?: number; textSources?: TextSourceType[] } = {}
   ): Promise<IndexedTextMatch[]> {
     await this.ensureInit();
-
-    const normalizedQuery = query.trim().toLocaleLowerCase();
-    if (!normalizedQuery) return [];
-
-    const terms = Array.from(new Set([
-      normalizedQuery,
-      ...normalizedQuery.split(/\s+/).filter(term => term.length > 1),
-    ]));
-    const escapeLike = (value: string) => value.replace(/[\\%_]/g, '\\$&');
-    const textPredicates = terms.map(() => `LOWER(c.chunk_text) LIKE ? ESCAPE '\\'`);
-    const params: any[] = terms.map(term => `%${escapeLike(term)}%`);
-    const activeModelId = getActiveModelId();
-    params.push(activeModelId, activeModelId);
-
-    let libraryPredicate = '';
-    if (options.libraryId !== undefined) {
-      const libraryKey = libraryKeyFromLocalID(options.libraryId);
-      if (!libraryKey) return [];
-      libraryPredicate = ' AND i.library_key = ?';
-      params.push(libraryKey);
-    }
-
-    const fromWhere = `
-      FROM ${DB_NAME}.chunks c
-      INNER JOIN ${DB_NAME}.items i ON c.item_pk = i.item_pk
-      WHERE i.library_key != 'orphan'
-        AND c.chunk_text IS NOT NULL
-        AND (${textPredicates.join(' OR ')})
-        AND (c.model_id = ? OR NOT EXISTS (
-          SELECT 1 FROM ${DB_NAME}.chunks active
-          WHERE active.item_pk = c.item_pk AND active.model_id = ?
-        ))
-        ${libraryPredicate}
-      ORDER BY c.item_pk, c.chunk_index
-    `;
-
     try {
-      const [pks, libraryKeys, itemKeys, chunkIndexes, chunkTexts, sectionPaths, pdfAttachmentKeys, textSources, modelIds] = await Promise.all([
-        Zotero.DB.columnQueryAsync(`SELECT c.item_pk ${fromWhere}`, params),
-        Zotero.DB.columnQueryAsync(`SELECT i.library_key ${fromWhere}`, params),
-        Zotero.DB.columnQueryAsync(`SELECT i.item_key ${fromWhere}`, params),
-        Zotero.DB.columnQueryAsync(`SELECT c.chunk_index ${fromWhere}`, params),
-        Zotero.DB.columnQueryAsync(`SELECT c.chunk_text ${fromWhere}`, params),
-        Zotero.DB.columnQueryAsync(`SELECT c.section_paths ${fromWhere}`, params),
-        Zotero.DB.columnQueryAsync(`SELECT c.pdf_attachment_key ${fromWhere}`, params),
-        Zotero.DB.columnQueryAsync(`SELECT c.text_source ${fromWhere}`, params),
-        Zotero.DB.columnQueryAsync(`SELECT c.model_id ${fromWhere}`, params),
-      ]);
-
-      const identities = (pks || []).map((_: any, index: number) => ({
-        libraryKey: libraryKeys[index],
-        itemKey: itemKeys[index],
-      }));
-      const idMap = bulkResolve(identities);
-      const bestByItem = new Map<number, IndexedTextMatch>();
-      const bestUsesActiveModel = new Map<number, boolean>();
-
-      for (let index = 0; index < (pks || []).length; index++) {
-        const text = String(chunkTexts[index] || '');
-        const textLower = text.toLocaleLowerCase();
-        const matchedTerms = terms.filter(term => textLower.includes(term)).length;
-        const score = textLower.includes(normalizedQuery)
-          ? 1
-          : 0.65 + 0.3 * (matchedTerms / terms.length);
-        const itemPk = Number(pks[index]);
-        const libraryKey = String(libraryKeys[index]);
-        const itemKey = String(itemKeys[index]);
-        const match: IndexedTextMatch = {
-          itemPk,
-          libraryKey,
-          itemKey,
-          itemId: idMap.get(`${libraryKey}|${itemKey}`),
-          chunkIndex: Number(chunkIndexes[index]),
-          chunkText: text,
-          sectionPaths: this.sectionPathsFromJSON(sectionPaths[index]),
-          pdfAttachmentKey: pdfAttachmentKeys[index] || undefined,
-          textSource: (textSources[index] as TextSourceType) || 'content',
-          score,
-        };
-        const previous = bestByItem.get(itemPk);
-        const usesActiveModel = String(modelIds[index]) === activeModelId;
-        if (!previous || match.score > previous.score ||
-            (match.score === previous.score && usesActiveModel && !bestUsesActiveModel.get(itemPk))) {
-          bestByItem.set(itemPk, match);
-          bestUsesActiveModel.set(itemPk, usesActiveModel);
-        }
+      const activeModelId = getActiveModelId();
+      if (!this.lexicalCache || this.lexicalCache.modelId !== activeModelId) {
+        const params = [activeModelId, activeModelId];
+        const fromWhere = `
+          FROM ${DB_NAME}.chunks c
+          INNER JOIN ${DB_NAME}.items i ON c.item_pk = i.item_pk
+          WHERE i.library_key != 'orphan'
+            AND c.chunk_text IS NOT NULL
+            AND (
+              c.model_id = ?
+              OR (
+                NOT EXISTS (
+                  SELECT 1 FROM ${DB_NAME}.chunks active
+                  WHERE active.item_pk = c.item_pk AND active.model_id = ?
+                )
+                AND c.model_id = (
+                  SELECT MIN(fallback.model_id)
+                  FROM ${DB_NAME}.chunks fallback
+                  WHERE fallback.item_pk = c.item_pk
+                )
+              )
+            )
+          ORDER BY c.item_pk, c.chunk_index
+        `;
+        const [pks, libraryKeys, itemKeys, chunkIndexes, chunkTexts, sectionPaths, pdfAttachmentKeys, textSources] = await Promise.all([
+          Zotero.DB.columnQueryAsync(`SELECT c.item_pk ${fromWhere}`, params),
+          Zotero.DB.columnQueryAsync(`SELECT i.library_key ${fromWhere}`, params),
+          Zotero.DB.columnQueryAsync(`SELECT i.item_key ${fromWhere}`, params),
+          Zotero.DB.columnQueryAsync(`SELECT c.chunk_index ${fromWhere}`, params),
+          Zotero.DB.columnQueryAsync(`SELECT c.chunk_text ${fromWhere}`, params),
+          Zotero.DB.columnQueryAsync(`SELECT c.section_paths ${fromWhere}`, params),
+          Zotero.DB.columnQueryAsync(`SELECT c.pdf_attachment_key ${fromWhere}`, params),
+          Zotero.DB.columnQueryAsync(`SELECT c.text_source ${fromWhere}`, params),
+        ]);
+        const identities = (pks || []).map((_: any, index: number) => ({
+          libraryKey: String(libraryKeys[index]),
+          itemKey: String(itemKeys[index]),
+        }));
+        const idMap = bulkResolve(identities);
+        const documents: LexicalDocument[] = (pks || []).map((value: any, index: number) => {
+          const libraryKey = String(libraryKeys[index]);
+          const itemKey = String(itemKeys[index]);
+          return {
+            itemPk: Number(value),
+            libraryKey,
+            itemKey,
+            itemId: idMap.get(`${libraryKey}|${itemKey}`),
+            chunkIndex: Number(chunkIndexes[index]),
+            chunkText: String(chunkTexts[index] || ''),
+            sectionPaths: this.sectionPathsFromJSON(sectionPaths[index]),
+            pdfAttachmentKey: pdfAttachmentKeys[index] || undefined,
+            textSource: (textSources[index] as TextSourceType) || 'content',
+          };
+        });
+        this.lexicalCache = { modelId: activeModelId, index: new T0BM25Index(documents) };
+        this.logger.info(`Built T0 BM25 cache for ${documents.length} chunks`);
       }
 
-      return Array.from(bestByItem.values())
-        .sort((a, b) => b.score - a.score)
-        .slice(0, options.limit ?? 50);
+      const libraryKey = options.libraryId === undefined
+        ? undefined
+        : libraryKeyFromLocalID(options.libraryId) ?? undefined;
+      if (options.libraryId !== undefined && !libraryKey) return [];
+      return this.lexicalCache.index.search(query, {
+        limit: options.limit,
+        libraryKey,
+        textSources: options.textSources,
+      });
     } catch (error) {
       this.logger.error(`searchText failed: ${error}`);
       return [];

@@ -19,6 +19,7 @@ import { identityFromItem } from '../core/identity-resolver';
 import { noteHTMLFirstHeading, noteHTMLToStructuredText } from '../utils/note-text';
 import { PdfReadResult, ZoteroAPI } from '../utils/zotero-api';
 import { OPEN_PATH } from './open-endpoint';
+import { normalizeProductIndexingMode } from '../core/search-policy';
 
 declare const Zotero: any;
 
@@ -183,15 +184,6 @@ function prefMinSimilarity(): number {
   return 0.3;
 }
 
-/** The auto-adjust-weights preference, as the UI reads it (default true). */
-function prefAutoAdjustWeights(): boolean {
-  try {
-    return Zotero.Prefs.get('extensions.zotero.zotseek.hybridSearch.autoAdjustWeights', true) !== false;
-  } catch {
-    return true;
-  }
-}
-
 function round3(n: number): number {
   return Math.round(n * 1000) / 1000;
 }
@@ -214,6 +206,15 @@ function libraryKeyForItemId(itemId: number | undefined): string | null {
     return item ? (identityFromItem(item)?.libraryKey ?? null) : null;
   } catch {
     return null;
+  }
+}
+
+/** The auto-adjust-weights preference, shared with the search dialog. */
+function prefAutoAdjustWeights(): boolean {
+  try {
+    return Zotero.Prefs.get('extensions.zotero.zotseek.hybridSearch.autoAdjustWeights', true) !== false;
+  } catch {
+    return true;
   }
 }
 
@@ -351,7 +352,7 @@ async function buildLinks(
 }
 
 async function mapHybridResult(r: HybridSearchResult): Promise<ToolResultItem> {
-  const libraryKey = libraryKeyForItemId(r.itemId);
+  const libraryKey = r.libraryKey || libraryKeyForItemId(r.itemId);
   const metadata = buildBibliographicMetadata(getLocalItem(r.itemId));
   return {
     itemKey: r.itemKey,
@@ -519,14 +520,15 @@ export async function runSearchTool(args: SearchToolArgs): Promise<{ results: To
       ? clampFloat(args.min_similarity, 0, 1, prefMinSimilarity())
       : prefMinSimilarity();
   const libraryId = resolveLibraryId(args.library_key);
-  const options: any = { mode, finalTopK, returnAllChunks, minSimilarity };
+  const indexingMode = normalizeProductIndexingMode(
+    Zotero.Prefs.get('zotseek.indexingMode', true)
+  );
+  const options: any = { mode, finalTopK, returnAllChunks, minSimilarity, indexingMode };
   if (libraryId !== undefined) {
     options.libraryId = libraryId;
   }
-  // Mirror the UI (search-dialog-vtable): hybrid mode with the auto-adjust
-  // pref uses smartSearch, which analyzes the query and tunes the
-  // semantic/keyword weight. Without this, MCP/REST hybrid ran a fixed
-  // 50/50 fusion and ranked differently from the ZotSeek dialog (#38).
+  // UI, MCP and REST share the same indexing-mode-aware product policy and
+  // the same optional query-weight analysis inside the Notes H1 specialist.
   const query = args.query.trim();
   const results =
     mode === 'hybrid' && prefAutoAdjustWeights()

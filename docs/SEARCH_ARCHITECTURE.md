@@ -98,7 +98,25 @@ The plugin offers three search modes, each optimized for different use cases:
 
 ### 🔗 Hybrid (Recommended)
 
-Combines semantic understanding with exact keyword matching for best results.
+Hybrid is the product-default entry point. It first performs metadata-only
+identity navigation for exact DOI/title, unique distinctive title fragments and
+author collections, then selects a content strategy from the stable indexing
+mode. A Latin title fragment needs at least three words and 12 characters; a
+continuous CJK fragment needs at least six characters. Weaker or ambiguous
+fragments abstain and keep the semantic/content path:
+
+| Indexing mode | Default content strategy |
+|---------------|--------------------------|
+| `abstract` | semantic-only |
+| `notes` | R1 Metadata + Notes semantic and T0 BM25, RRF (`k=60`) |
+| `full` | first two papers from the Notes H1 specialist, then PDF semantic results |
+
+The Full result allocation is source-aware: it de-duplicates papers, lets PDF
+fill the tail, and falls back to remaining Notes results only when PDF cannot
+fill the requested result count. For `topK=10` this is the finalized product `2+8`
+contract. Other result counts keep at most two Notes head slots. Passage mode
+uses the same positional rule but has not received the paper-level Plan 37
+paired validation.
 
 | Query Type | Pure Semantic | Pure Keyword | Hybrid |
 |------------|---------------|--------------|--------|
@@ -600,10 +618,16 @@ The production strategy is:
 1. Remove conservative “基本信息” and reference-list subtrees before fingerprinting, quota allocation and chunking. A citation/title preamble between a generic brief `h1` and the first meaningful heading is removed for the same reason. A skipped subtree ends at the next heading of the same or a higher level.
 2. Split oversized sections at paragraph, sentence and Unicode-character boundaries under the model's hard input ceiling.
 3. Greedily combine adjacent small sections using `recommendedChunkTokens / 4` as a soft minimum, but never merge across an `h2` boundary or across different Zotero Child Notes.
-4. Store faithful evidence in `chunk_text`. The embedding-only input may add a deterministic `章节：...` breadcrumb; this artificial prefix is not shown as quoted evidence.
+4. Store faithful evidence in `chunk_text`. After the Note body has completed its existing split, R1 adds `文献：<父文献标题>` and, when available, `章节：...` only to `embedText`; these artificial prefixes are not shown as quoted evidence and do not enter BM25.
 5. Persist all represented paths as `sectionPaths: string[][]`, because one compact chunk may contain several adjacent subsections.
 
-The bibliographic paper title and the brief's “基本信息” section are not repeated in Note embeddings; stable item metadata already supplies that context. The selected strategy is versioned. If an existing model partition contains old chunks without the current strategy marker, ZotSeek keeps it searchable but pauses writes and background reconciliation until the user explicitly rebuilds the index.
+The parent title breadcrumb is added after body chunking, so it does not consume
+the recommended Note body budget or change boundaries. The model hard limit
+still governs the final inference input. The brief's filtered “基本信息” section
+is not restored. The selected strategy is versioned; strategy 8 introduces R1.
+If an existing model partition contains old chunks without the current strategy
+marker, ZotSeek keeps it searchable but pauses writes and background
+reconciliation until the user explicitly rebuilds the index.
 
 ### PDF Main-Text Preprocessing
 
@@ -712,7 +736,7 @@ tokenizer's automatic behavior with a ZotSeek error.
 
 Currently, there is **no overlap** between chunks. Each paragraph belongs to exactly one chunk.
 
-The paper title remains part of Summary/PDF embedding context where the existing chunker adds it. Child Note chunks instead use their own section breadcrumb and do not repeat the bibliographic title.
+The paper title remains part of Summary/PDF embedding context where the existing chunker adds it. R1 Child Note embeddings also prepend the parent title after body chunking, followed by their section breadcrumb when one is reliable; faithful Note evidence remains unchanged.
 
 **Why no overlap?**
 - Keeps index size predictable
@@ -1099,7 +1123,10 @@ Schema v12 adds nullable `chunks.pdf_attachment_key`. New Full-mode PDF chunks s
 
 ## Query Analysis
 
-The plugin automatically adjusts semantic vs keyword weights based on query characteristics:
+When automatic weight adjustment is enabled, query analysis tunes only the
+semantic/lexical share inside the Notes H1 specialist. It does not change the
+Full 2+N source allocation, and Abstract content search remains semantic after
+metadata identity navigation:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -1140,7 +1167,23 @@ The plugin automatically adjusts semantic vs keyword weights based on query char
 
 ### Keyword Scoring
 
-For keyword-only results, we calculate relevance scores based on:
+Stored faithful chunk text is ranked by the frozen T0 contract:
+
+- `Intl.Segmenter('zh-Hans', { granularity: 'word' })` natural terms;
+- shared CJK bigrams;
+- maximum TF when natural and bigram channels produce the same term;
+- BM25 `k1=1.2`, `b=0.75`, with no library-term patch.
+
+The first lexical query builds a lightweight in-memory cache. For each paper,
+chunks from the active model are preferred; if that paper has not yet been
+rebuilt for the active model, one deterministic fallback model partition keeps
+lexical retrieval available during migration without mixing two copies of the
+same paper. Index mutations, clearing, model changes and database reattachment
+invalidate the cache. Semantic vectors are not decoded while building it.
+Source-restricted specialists calculate corpus statistics after restricting to
+their Metadata/Notes or PDF source set.
+
+Zotero quick search remains the metadata fallback. Its local score uses:
 
 ```
 Base score: 0.50 (any match)
@@ -1163,16 +1206,16 @@ Maximum: 1.00 (100%)
 | Preference | Default | Description |
 |------------|---------|-------------|
 | `hybridSearch.mode` | `"hybrid"` | `"hybrid"`, `"semantic"`, or `"keyword"` |
-| `hybridSearch.semanticWeightPercent` | `50` | Balance (0=keyword, 100=semantic) |
+| `hybridSearch.semanticWeightPercent` | `50` | H1 balance when automatic adjustment is disabled |
 | `hybridSearch.rrfK` | `60` | RRF constant (higher = more weight to top ranks) |
-| `hybridSearch.autoAdjustWeights` | `true` | Auto-adjust based on query analysis |
+| `hybridSearch.autoAdjustWeights` | `true` | Tune the Notes H1 semantic/lexical share; never changes Full's 2+N allocation |
 
 ### Chunking Settings
 
 | Preference | Default | Description |
 |------------|---------|-------------|
-| `indexingMode` | `"full"` | `"abstract"` or `"full"` |
-| `maxTokens` | `2000` | Max tokens per chunk |
+| `indexingMode` | `"full"` | `"abstract"`, `"notes"`, or `"full"` |
+| `maxTokens` | model-aware | Recommended body tokens, clamped by the model policy |
 | `maxChunksPerPaper` | `100` | Max chunks per paper |
 
 ### Chunk Size Trade-offs (Empirical Analysis)

@@ -59,10 +59,9 @@ const TOOL_DEFINITIONS = [
           enum: ['hybrid', 'semantic', 'keyword'],
           default: 'hybrid',
           description:
-            'hybrid = semantic + keyword fused with RRF, honoring the user\'s ' +
-            'ZotSeek preferences including automatic weight adjustment (same ' +
-            'results as the ZotSeek dialog); semantic = embeddings only; ' +
-            'keyword = Zotero keyword search only',
+            'hybrid = the indexing-mode-aware ZotSeek product default (same ' +
+            'results as the ZotSeek dialog: Abstract semantic, Notes fixed RRF, ' +
+            'Full Notes-2 + PDF-tail); semantic and keyword are explicit overrides',
         },
         min_similarity: {
           type: 'number',

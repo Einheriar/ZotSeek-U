@@ -52,7 +52,15 @@ Any other MCP client that supports the HTTP transport works the same way (for ex
 | `find_similar` | `item_key` *(required, 8-character Zotero key)*; `library_key` (`user` or `group:<groupID>`, default `user`); `max_results` (1–100, default 10) | Papers similar to a known library item, by its stored embeddings |
 | `index_status` | *(none)* | `{ready, modelLoaded, indexedPapers, totalChunks, modelId, activeModel, coverage, configurationError?, lastIndexed, storageUsedBytes}` |
 
-`mode` mirrors the ZotSeek UI: **hybrid** fuses semantic and keyword results with RRF, honoring your ZotSeek preferences including automatic weight adjustment, so it returns the same ranking you see in the ZotSeek dialog; **semantic** uses embeddings only (same code path as the [JS API](API.md)'s `search()`); **keyword** uses Zotero's keyword search only. `granularity` controls whether you get one result per paper (`papers`, best-matching chunk) or every matching chunk as its own result (`passages`).
+`mode` mirrors the ZotSeek UI. **hybrid** uses the current indexing mode's
+product default: Abstract performs metadata identity navigation then semantic;
+Metadata + Notes uses RRF over semantic and T0 BM25, honoring the same optional
+query-weight adjustment as the UI; Full reserves
+the first two paper results for that Notes specialist and fills the remaining
+positions from PDF semantic search. **semantic** and **keyword** are explicit
+overrides and bypass that mode-aware default. `granularity` controls whether
+you get one result per paper (`papers`, best-matching chunk) or every matching
+chunk as its own result (`passages`).
 
 If the fixed Server model slot is selected but its profile JSON template is `NONE` or `UNKNOWN`, semantic/hybrid `search` and `find_similar` return a configuration error containing the template path; keyword-only search remains available. `index_status` remains callable and reports `ready: false`, zero usable coverage and the same text in `configurationError`. This state never falls back to a local model.
 
@@ -97,7 +105,7 @@ Notes on the shape:
 - `authors` is a formatted string for `search` results and an array of strings for `find_similar` results.
 - `matchedChunk` is `null` when no excerpt or page is available; `page`, `textSource`, `sectionPaths`, and `pdfAttachmentKey` may be absent within it. `pdfAttachmentKey` is present on newly indexed Full-mode PDF chunks and identifies the exact attachment that produced the hit; copy it into `get_item.pdf_attachment_key`. Old Full indexes remain searchable but return no exact PDF key until refreshed.
 - Child Note keyword fallbacks return a query-centred excerpt capped at 1200 Unicode characters, never the complete long Note. When the stored index has the matching chunk, its faithful chunk text and `sectionPaths` take precedence.
-- `score` is a relevance score (RRF score for `search`, cosine similarity for `find_similar`), rounded to three decimals. RRF scores are small by construction (typically 0.005-0.03) and only meaningful for ranking within a single result set; don't read them as percentages. Cosine scores (semantic mode, `find_similar`) range 0-1.
+- `score` is a rank score for `search` and cosine similarity for `find_similar`, rounded to three decimals. Ordinary Hybrid results use RRF. Full-mode Hybrid reassigns an RRF-shaped rank-only score after Notes-head/PDF-tail allocation, so its specialist `semanticScore`/keyword evidence remains diagnostic rather than directly comparable across channels. These small rank scores are only meaningful within one result set; don't read them as percentages. Cosine scores (semantic mode, `find_similar`) range 0-1.
 
 ### `get_item` result and PDF behavior
 

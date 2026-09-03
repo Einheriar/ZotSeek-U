@@ -16,12 +16,24 @@ import { Logger } from '../utils/logger';
 import { SearchEngine, SearchResult } from './search-engine';
 import { TextSourceType } from './vector-store-sqlite';
 import { boundedTextSnippet, noteHTMLToStructuredText } from '../utils/note-text';
+import { identityFromItem } from './identity-resolver';
+import {
+  FULL_NOTES_HEAD_SLOTS,
+  METADATA_NOTE_SOURCES,
+  PDF_SOURCES,
+  ProductIndexingMode,
+  allocatePrimaryWithAlternateTail,
+  classifyMetadataIdentity,
+  normalizeProductIndexingMode,
+  resolveProductHybridPolicy,
+} from './search-policy';
 
 declare const Zotero: any;
 
 export interface HybridSearchResult {
   itemId: number;
   itemKey: string;
+  libraryKey?: string;
   title: string;
   creators: string;
   year: number;
@@ -39,6 +51,10 @@ export interface HybridSearchResult {
 
   // Source indicator: 'both' | 'semantic' | 'keyword'
   source: 'both' | 'semantic' | 'keyword';
+
+  // Internal product-policy channel. This lets UI-level multi-query merging
+  // preserve Full's Notes-head/PDF-tail allocation after combining scores.
+  policyChannel?: 'identity' | 'notes' | 'pdf';
 
   // Original text source from semantic search (e.g., 'methods', 'findings', 'summary')
   textSource?: TextSourceType;
@@ -83,11 +99,28 @@ export interface HybridSearchOptions {
   // Search mode override
   mode?: 'hybrid' | 'semantic' | 'keyword';
 
+  // Stable indexing mode used to choose the product-default hybrid policy.
+  indexingMode?: ProductIndexingMode;
+
+  // Internal specialist source constraints.
+  semanticTextSources?: TextSourceType[];
+  keywordTextSources?: TextSourceType[];
+
   // Return all chunks instead of MaxSim aggregation (for location-level results)
   returnAllChunks?: boolean;  // Default: false
 }
 
-const DEFAULT_OPTIONS: Required<Omit<HybridSearchOptions, 'collectionId' | 'libraryId' | 'mode'>> = {
+type ResolvedHybridSearchOptions = Required<Omit<
+  HybridSearchOptions,
+  'collectionId' | 'libraryId' | 'mode' | 'indexingMode' |
+  'semanticTextSources' | 'keywordTextSources'
+>> & HybridSearchOptions;
+
+const DEFAULT_OPTIONS: Required<Omit<
+  HybridSearchOptions,
+  'collectionId' | 'libraryId' | 'mode' | 'indexingMode' |
+  'semanticTextSources' | 'keywordTextSources'
+>> = {
   semanticTopK: 50,
   keywordTopK: 50,
   finalTopK: 20,
@@ -105,11 +138,41 @@ export interface QueryAnalysis {
 
 interface KeywordSearchHit {
   itemId: number;
+  libraryKey?: string;
+  itemKey?: string;
   score: number;
   textSource?: TextSourceType;
   chunkText?: string;
   sectionPaths?: string[][];
   pdfAttachmentKey?: string;
+}
+
+interface SemanticSearchHit {
+  itemId: number;
+  libraryKey: string;
+  itemKey: string;
+  score: number;
+  textSource?: TextSourceType;
+  chunkIndex?: number;
+  chunkText?: string;
+  sectionPaths?: string[][];
+  pdfAttachmentKey?: string;
+  pageNumber?: number;
+  paragraphIndex?: number;
+}
+
+function stableRankingKey(result: {
+  itemId: number;
+  libraryKey?: string;
+  itemKey?: string;
+}): string {
+  return result.libraryKey && result.itemKey
+    ? `${result.libraryKey}|${result.itemKey}`
+    : `local:${result.itemId}`;
+}
+
+function stablePassageKey(result: HybridSearchResult): string {
+  return `${stableRankingKey(result)}|chunk:${result.chunkIndex ?? 0}`;
 }
 
 /**
@@ -140,7 +203,45 @@ export class HybridSearchEngine {
       return this.keywordOnlySearch(query, opts);
     }
 
-    // Run both searches in parallel
+    const indexingMode = this.resolveIndexingMode(opts.indexingMode);
+    const policy = resolveProductHybridPolicy(indexingMode, 'hybrid');
+    this.logger.info(`Product hybrid policy: ${policy} (indexingMode=${indexingMode})`);
+
+    const identityResults = await this.identityNavigationSearch(query, opts);
+    if (identityResults.length > 0) return identityResults;
+
+    if (policy === 'abstract-identity-semantic') {
+      return this.semanticOnlySearch(query, opts);
+    }
+    if (policy === 'notes-identity-h1') {
+      return this.fixedHybridSearch(query, {
+        ...opts,
+        semanticTextSources: METADATA_NOTE_SOURCES,
+        keywordTextSources: METADATA_NOTE_SOURCES,
+      });
+    }
+    if (policy === 'full-identity-notes2-pdf') {
+      return this.fullSourceAwareSearch(query, opts);
+    }
+
+    return this.fixedHybridSearch(query, opts);
+  }
+
+  private resolveIndexingMode(override?: ProductIndexingMode): ProductIndexingMode {
+    if (override) return normalizeProductIndexingMode(override);
+    try {
+      return normalizeProductIndexingMode(Zotero.Prefs.get('zotseek.indexingMode', true));
+    } catch {
+      return 'abstract';
+    }
+  }
+
+  /** H1: frozen RRF structure over semantic and T0 BM25 ranks. */
+  private async fixedHybridSearch(
+    query: string,
+    opts: ResolvedHybridSearchOptions,
+    populateMetadata = true,
+  ): Promise<HybridSearchResult[]> {
     const [semanticResults, keywordResults] = await Promise.all([
       this.semanticSearchQuery(query, opts),
       this.keywordSearchQuery(query, opts),
@@ -156,10 +257,151 @@ export class HybridSearchEngine {
     );
 
     // Populate metadata for top results
-    await this.populateItemMetadata(fusedResults.slice(0, opts.finalTopK));
+    if (populateMetadata) {
+      await this.populateItemMetadata(fusedResults.slice(0, opts.finalTopK));
+    }
 
     // Return top K
     return fusedResults.slice(0, opts.finalTopK);
+  }
+
+  /** Full product default: Notes H1 owns two head slots; PDF semantic owns the tail. */
+  private async fullSourceAwareSearch(
+    query: string,
+    opts: ResolvedHybridSearchOptions,
+  ): Promise<HybridSearchResult[]> {
+    const specialistTopK = Math.max(opts.finalTopK, opts.semanticTopK, opts.keywordTopK);
+    const [notesResults, pdfResults] = await Promise.all([
+      this.fixedHybridSearch(query, {
+        ...opts,
+        finalTopK: specialistTopK,
+        semanticTextSources: METADATA_NOTE_SOURCES,
+        keywordTextSources: METADATA_NOTE_SOURCES,
+      }, false),
+      this.semanticOnlySearch(query, {
+        ...opts,
+        finalTopK: specialistTopK,
+        semanticTopK: specialistTopK,
+        semanticTextSources: PDF_SOURCES,
+      }, false),
+    ]);
+
+    const taggedNotes = notesResults.map(result => ({ ...result, policyChannel: 'notes' as const }));
+    const taggedPdf = pdfResults.map(result => ({ ...result, policyChannel: 'pdf' as const }));
+    const identity = opts.returnAllChunks ? stablePassageKey : stableRankingKey;
+    const allocated = allocatePrimaryWithAlternateTail(
+      taggedNotes,
+      taggedPdf,
+      opts.finalTopK,
+      FULL_NOTES_HEAD_SLOTS,
+      identity,
+    ).map((result, index) => ({
+      ...result,
+      // Hybrid scores remain rank-only values. The specialist's native
+      // semanticScore/keywordScore fields retain the useful diagnostics.
+      rrfScore: 1 / (opts.rrfK + index + 1),
+    }));
+
+    await this.populateItemMetadata(allocated);
+    return allocated;
+  }
+
+  /**
+   * Metadata-only navigation. Exact identity and author collections return
+   * directly, so author/title lookup does not depend on Note/PDF contents.
+   */
+  private async identityNavigationSearch(
+    query: string,
+    opts: ResolvedHybridSearchOptions,
+  ): Promise<HybridSearchResult[]> {
+    try {
+      const search = new Zotero.Search();
+      if (opts.libraryId !== undefined) search.libraryID = opts.libraryId;
+      if (opts.collectionId) {
+        search.addCondition('collectionID', 'is', opts.collectionId.toString());
+      }
+      const doiQuery = /(?:^|doi(?:\.org)?[/:\s])10\.\d{4,9}\//i.test(query);
+      search.addCondition(
+        doiQuery ? 'quicksearch-everything' : 'quicksearch-titleCreatorYear',
+        'contains',
+        query,
+      );
+      search.addCondition('itemType', 'isNot', 'attachment');
+      search.addCondition('itemType', 'isNot', 'note');
+      const itemIds = await search.search().catch(() => []);
+      const excludeBooks = Zotero.Prefs.get('zotseek.excludeBooks', true) ?? true;
+      const candidates: Array<{
+        id: string;
+        title: string;
+        doi?: string;
+        year?: string;
+        creators: Array<{ firstName?: string; lastName?: string; name?: string }>;
+        item: any;
+      }> = [];
+      // Identity and author-set semantics require the complete metadata match
+      // set. Bulk resolution avoids an N-round-trip loop and lets the final
+      // author collection be sorted deterministically instead of depending on
+      // Zotero Search's unspecified result order.
+      const resolvedItems = itemIds.length > 0
+        ? await Zotero.Items.getAsync(itemIds)
+        : [];
+      for (const item of (Array.isArray(resolvedItems) ? resolvedItems : [resolvedItems])) {
+        if (!item?.isRegularItem?.()) continue;
+        if (excludeBooks && item.itemType === 'book') continue;
+        const date = String(item.getField('date') || '');
+        candidates.push({
+          id: String(item.id),
+          title: String(item.getField('title') || ''),
+          doi: String(item.getField('DOI') || ''),
+          year: date.match(/\b\d{4}\b/)?.[0],
+          creators: (item.getCreators?.() || []).map((creator: any) => ({
+            firstName: creator.firstName,
+            lastName: creator.lastName,
+            name: creator.name,
+          })),
+          item,
+        });
+      }
+
+      const match = classifyMetadataIdentity(query, candidates);
+      if (!match) return [];
+      const matchedCandidates = [...match.candidates];
+      const candidateIdentity = (candidate: typeof matchedCandidates[number]) => {
+        const stable = identityFromItem(candidate.item);
+        return stable ? `${stable.libraryKey}|${stable.itemKey}` : `local:${candidate.item.id}`;
+      };
+      if (match.kind === 'author-set' || match.kind === 'author-year-set') {
+        matchedCandidates.sort((left, right) =>
+          String(right.year ?? '').localeCompare(String(left.year ?? '')) ||
+          left.title.localeCompare(right.title) ||
+          candidateIdentity(left).localeCompare(candidateIdentity(right)));
+      } else {
+        matchedCandidates.sort((left, right) =>
+          candidateIdentity(left).localeCompare(candidateIdentity(right)));
+      }
+      const results = matchedCandidates.slice(0, opts.finalTopK).map((candidate, index) => ({
+        libraryKey: identityFromItem(candidate.item)?.libraryKey,
+        itemId: candidate.item.id,
+        itemKey: candidate.item.key || '',
+        title: candidate.title || 'Untitled',
+        creators: '',
+        year: Number(candidate.year || 0),
+        semanticScore: null,
+        keywordScore: 1,
+        rrfScore: 1 / (opts.rrfK + index + 1),
+        semanticRank: null,
+        keywordRank: index + 1,
+        source: 'keyword' as const,
+        policyChannel: 'identity' as const,
+        textSource: 'summary' as TextSourceType,
+      }));
+      await this.populateItemMetadata(results);
+      this.logger.info(`Identity navigation: ${match.kind}, ${results.length} result(s)`);
+      return results;
+    } catch (error) {
+      this.logger.debug(`Identity navigation abstained after metadata error: ${error}`);
+      return [];
+    }
   }
 
   /**
@@ -167,13 +409,15 @@ export class HybridSearchEngine {
    */
   private async semanticOnlySearch(
     query: string,
-    opts: Required<Omit<HybridSearchOptions, 'collectionId' | 'libraryId' | 'mode'>> & HybridSearchOptions
+    opts: ResolvedHybridSearchOptions,
+    populateMetadata = true,
   ): Promise<HybridSearchResult[]> {
     const results = await this.semanticSearchQuery(query, opts);
 
     const hybridResults: HybridSearchResult[] = results.map((r, index) => ({
       itemId: r.itemId,
-      itemKey: '',
+      libraryKey: r.libraryKey,
+      itemKey: r.itemKey,
       title: '',
       creators: '',
       year: 0,
@@ -192,7 +436,9 @@ export class HybridSearchEngine {
       paragraphIndex: r.paragraphIndex,
     }));
 
-    await this.populateItemMetadata(hybridResults.slice(0, opts.finalTopK));
+    if (populateMetadata) {
+      await this.populateItemMetadata(hybridResults.slice(0, opts.finalTopK));
+    }
     return hybridResults.slice(0, opts.finalTopK);
   }
 
@@ -201,13 +447,14 @@ export class HybridSearchEngine {
    */
   private async keywordOnlySearch(
     query: string,
-    opts: Required<Omit<HybridSearchOptions, 'collectionId' | 'libraryId' | 'mode'>> & HybridSearchOptions
+    opts: ResolvedHybridSearchOptions
   ): Promise<HybridSearchResult[]> {
     const results = await this.keywordSearchQuery(query, opts);
 
     const hybridResults: HybridSearchResult[] = results.map((r, index) => ({
       itemId: r.itemId,
-      itemKey: '',
+      libraryKey: r.libraryKey,
+      itemKey: r.itemKey || '',
       title: '',
       creators: '',
       year: 0,
@@ -232,8 +479,8 @@ export class HybridSearchEngine {
    */
   private async semanticSearchQuery(
     query: string,
-    opts: Required<Omit<HybridSearchOptions, 'collectionId' | 'libraryId' | 'mode'>> & HybridSearchOptions
-  ): Promise<Array<{ itemId: number; score: number; textSource?: TextSourceType; chunkIndex?: number; chunkText?: string; sectionPaths?: string[][]; pdfAttachmentKey?: string; pageNumber?: number; paragraphIndex?: number }>> {
+    opts: ResolvedHybridSearchOptions
+  ): Promise<SemanticSearchHit[]> {
     try {
       // Initialize search engine if needed
       if (!this.semanticSearch.isReady()) {
@@ -244,6 +491,7 @@ export class HybridSearchEngine {
         topK: opts.returnAllChunks ? opts.semanticTopK * 3 : opts.semanticTopK, // Get more chunks when returning all
         minSimilarity: opts.minSimilarity,
         libraryId: opts.libraryId,
+        textSources: opts.semanticTextSources,
         returnAllChunks: opts.returnAllChunks,
       });
 
@@ -273,6 +521,8 @@ export class HybridSearchEngine {
 
       return filteredResults.map((r) => ({
         itemId: r.itemId,
+        libraryKey: r.libraryKey,
+        itemKey: r.itemKey,
         score: r.similarity,
         textSource: r.textSource,
         chunkIndex: r.chunkIndex,
@@ -299,7 +549,7 @@ export class HybridSearchEngine {
    */
   private async keywordSearchQuery(
     query: string,
-    opts: Required<Omit<HybridSearchOptions, 'collectionId' | 'libraryId' | 'mode'>> & HybridSearchOptions
+    opts: ResolvedHybridSearchOptions
   ): Promise<KeywordSearchHit[]> {
     try {
       // Search ZotSeek's own stored chunks as well as Zotero metadata. This is
@@ -308,6 +558,7 @@ export class HybridSearchEngine {
       const indexedTextPromise = this.semanticSearch.searchIndexedText(query, {
         topK: opts.keywordTopK,
         libraryId: opts.libraryId,
+        textSources: opts.keywordTextSources,
       }).catch((error: any) => {
         this.logger.debug(`Indexed text search failed: ${error?.message || error}`);
         return [];
@@ -315,7 +566,7 @@ export class HybridSearchEngine {
 
       // Use Zotero's quick search
       const search = new Zotero.Search();
-      search.libraryID = opts.libraryId || Zotero.Libraries.userLibraryID;
+      if (opts.libraryId !== undefined) search.libraryID = opts.libraryId;
 
       // Add collection constraint if specified
       if (opts.collectionId) {
@@ -324,7 +575,11 @@ export class HybridSearchEngine {
 
       // Quick search searches title, creators, year, tags, etc.
       // This is the same search used in Zotero's search bar
-      search.addCondition('quicksearch-everything', 'contains', query);
+      search.addCondition(
+        opts.keywordTextSources ? 'quicksearch-titleCreatorYear' : 'quicksearch-everything',
+        'contains',
+        query,
+      );
 
       // Attachments are not standalone search results. Notes are deliberately
       // included and mapped to their parent bibliographic item below.
@@ -434,6 +689,8 @@ export class HybridSearchEngine {
 
           const hit: KeywordSearchHit = {
             itemId: item.id,
+            libraryKey: identityFromItem(item)?.libraryKey,
+            itemKey: item.key,
             score,
             textSource: isNoteMatch ? 'note' : undefined,
             chunkText: isNoteMatch ? boundedTextSnippet(noteText, query) : undefined,
@@ -466,6 +723,8 @@ export class HybridSearchEngine {
 
           const hit: KeywordSearchHit = {
             itemId: match.itemId,
+            libraryKey: match.libraryKey,
+            itemKey: match.itemKey,
             score: match.score,
             textSource: match.textSource,
             chunkText: match.chunkText,
@@ -483,7 +742,8 @@ export class HybridSearchEngine {
 
       // Sort by score descending
       const sortedResults = Array.from(scoredResults.values())
-        .sort((a, b) => b.score - a.score);
+        .sort((a, b) => b.score - a.score ||
+          stableRankingKey(a).localeCompare(stableRankingKey(b)));
 
       // Return top K with normalized scores
       return sortedResults.slice(0, opts.keywordTopK);
@@ -509,9 +769,9 @@ export class HybridSearchEngine {
    * @param opts - Options including rrfK and semanticWeight
    */
   private reciprocalRankFusion(
-    semanticResults: Array<{ itemId: number; score: number; textSource?: TextSourceType; chunkIndex?: number; chunkText?: string; sectionPaths?: string[][]; pdfAttachmentKey?: string; pageNumber?: number; paragraphIndex?: number }>,
+    semanticResults: SemanticSearchHit[],
     keywordResults: KeywordSearchHit[],
-    opts: Required<Omit<HybridSearchOptions, 'collectionId' | 'libraryId' | 'mode'>>
+    opts: ResolvedHybridSearchOptions
   ): HybridSearchResult[] {
     const k = opts.rrfK;
     const semanticWeight = opts.semanticWeight;
@@ -522,30 +782,20 @@ export class HybridSearchEngine {
     const useChunkKey = opts.returnAllChunks;
 
     // Build maps for quick lookup
-    // Key is either "itemId" or "itemId-chunkIndex" depending on mode
-    const semanticMap = new Map<string, { itemId: number; chunkIndex?: number; chunkText?: string; sectionPaths?: string[][]; pdfAttachmentKey?: string; rank: number; score: number; textSource?: TextSourceType; pageNumber?: number; paragraphIndex?: number }>();
+    // Key is either stable paper identity or stable identity + chunk index.
+    const semanticMap = new Map<string, SemanticSearchHit & { rank: number }>();
     semanticResults.forEach((r, index) => {
-      const key = useChunkKey ? `${r.itemId}-${r.chunkIndex ?? 0}` : String(r.itemId);
+      const baseKey = stableRankingKey(r);
+      const key = useChunkKey ? `${baseKey}|chunk:${r.chunkIndex ?? 0}` : baseKey;
       // In all-chunks mode, keep all entries; in MaxSim mode, keep only first (best) per item
       if (!semanticMap.has(key)) {
-        semanticMap.set(key, {
-          itemId: r.itemId,
-          chunkIndex: r.chunkIndex,
-          chunkText: r.chunkText,
-          sectionPaths: r.sectionPaths,
-          pdfAttachmentKey: r.pdfAttachmentKey,
-          rank: index + 1,
-          score: r.score,
-          textSource: r.textSource,
-          pageNumber: r.pageNumber,
-          paragraphIndex: r.paragraphIndex,
-        });
+        semanticMap.set(key, { ...r, rank: index + 1 });
       }
     });
 
     const keywordMap = new Map<string, KeywordSearchHit & { rank: number }>();
     keywordResults.forEach((r, index) => {
-      const key = String(r.itemId);
+      const key = stableRankingKey(r);
       if (!keywordMap.has(key)) {
         keywordMap.set(key, { ...r, rank: index + 1 });
       }
@@ -554,7 +804,7 @@ export class HybridSearchEngine {
     // Get all unique keys from both result sets
     const allKeys = new Set<string>([
       ...semanticMap.keys(),
-      ...keywordResults.map(r => String(r.itemId)),
+      ...keywordMap.keys(),
     ]);
 
     // Calculate RRF score for each unique entry
@@ -562,9 +812,12 @@ export class HybridSearchEngine {
 
     for (const key of allKeys) {
       const semantic = semanticMap.get(key);
-      // For keyword, always use itemId (keyword search doesn't have chunks)
-      const itemId = semantic?.itemId ?? parseInt(key.split('-')[0]);
-      const keyword = keywordMap.get(String(itemId));
+      // Keyword results are paper-level, even when semantic results are passages.
+      const baseKey = useChunkKey ? key.replace(/\|chunk:\d+$/, '') : key;
+      const keyword = keywordMap.get(baseKey);
+      const representative = semantic ?? keyword;
+      if (!representative) continue;
+      const itemId = representative.itemId;
 
       // RRF formula with weights:
       // RRF(d) = semanticWeight / (k + semantic_rank) + keywordWeight / (k + keyword_rank)
@@ -588,7 +841,8 @@ export class HybridSearchEngine {
 
       fusedResults.push({
         itemId,
-        itemKey: '',  // Will be populated later
+        libraryKey: representative.libraryKey,
+        itemKey: representative.itemKey || '',
         title: '',
         creators: '',
         year: 0,
@@ -609,7 +863,9 @@ export class HybridSearchEngine {
     }
 
     // Sort by RRF score descending (highest score first)
-    fusedResults.sort((a, b) => b.rrfScore - a.rrfScore);
+    fusedResults.sort((a, b) => b.rrfScore - a.rrfScore ||
+      stableRankingKey(a).localeCompare(stableRankingKey(b)) ||
+      (a.chunkIndex ?? 0) - (b.chunkIndex ?? 0));
 
     return fusedResults;
   }
@@ -623,6 +879,7 @@ export class HybridSearchEngine {
         const item = await Zotero.Items.getAsync(result.itemId);
         if (item) {
           result.itemKey = item.key;
+          result.libraryKey = identityFromItem(item)?.libraryKey ?? result.libraryKey;
           result.title = item.getField('title') || 'Untitled';
 
           // Get year from date field
@@ -747,7 +1004,6 @@ export class HybridSearchEngine {
   async smartSearch(query: string, options: HybridSearchOptions = {}): Promise<HybridSearchResult[]> {
     const analysis = this.analyzeQuery(query);
     this.logger.info(`Query analysis: weight=${analysis.semanticWeight.toFixed(2)}, ${analysis.reasoning}`);
-
     return this.search(query, {
       ...options,
       semanticWeight: analysis.semanticWeight,

@@ -8,6 +8,10 @@
 import { SearchResultsTable } from './results-table';
 import { SearchEngine, searchEngine, SearchResult } from '../core/search-engine';
 import { HybridSearchEngine, HybridSearchResult, SearchMode } from '../core/hybrid-search';
+import {
+  FULL_NOTES_HEAD_SLOTS,
+  allocatePrimaryWithAlternateTail,
+} from '../core/search-policy';
 import { ZoteroAPI } from '../utils/zotero-api';
 import { Logger } from '../utils/logger';
 import { getZotero } from '../utils/zotero-helper';
@@ -98,14 +102,14 @@ export class ZotSeekDialogVTable {
         this.logger.info(`Result limits: topK=${this.userTopK}, minSimilarity=${this.userMinSimilarity}`);
 
         // Load indexing mode to determine if granularity toggle should be shown
-        const indexMode = Z.Prefs.get('extensions.zotero.zotseek.indexingMode', true);
+        const indexMode = Z.Prefs.get('zotseek.indexingMode', true);
         this.logger.info(`Loaded indexingMode preference: "${indexMode}" (type: ${typeof indexMode})`);
         if (indexMode === 'abstract' || indexMode === 'notes' || indexMode === 'full') {
           this.indexingMode = indexMode;
         } else {
-          // Default to showing the toggle (full mode) if preference is unclear
-          this.indexingMode = 'full';
-          this.logger.warn(`Unknown indexingMode "${indexMode}", defaulting to "full"`);
+          // Unknown machine values fail closed to the narrowest content mode.
+          this.indexingMode = 'abstract';
+          this.logger.warn(`Unknown indexingMode "${indexMode}", defaulting to "abstract"`);
         }
       }
     } catch (e) {
@@ -461,12 +465,14 @@ export class ZotSeekDialogVTable {
   ): Promise<void> {
     this.setStatus(getString('search-finding', { mode: modeLabel }));
 
-    // Use smart search (auto-adjusts weights) or regular search based on preference
+    // Query analysis may tune the Notes H1 semantic/lexical share. It never
+    // changes Full's frozen Notes-head/PDF-tail result allocation.
     if (this.searchMode === 'hybrid' && this.autoAdjustWeights) {
       this.rawResults = await this.hybridSearch.smartSearch(query, {
         finalTopK: this.userTopK,
         minSimilarity: this.userMinSimilarity,
         mode: this.searchMode,
+        indexingMode: this.indexingMode,
         returnAllChunks,
       });
     } else {
@@ -474,6 +480,7 @@ export class ZotSeekDialogVTable {
         finalTopK: this.userTopK,
         minSimilarity: this.userMinSimilarity,
         mode: this.searchMode,
+        indexingMode: this.indexingMode,
         returnAllChunks,
       });
     }
@@ -497,6 +504,7 @@ export class ZotSeekDialogVTable {
           finalTopK: 100,  // Get more results for combining
           minSimilarity: 0.15,  // Lower threshold, combination will filter
           mode: this.searchMode,
+          indexingMode: this.indexingMode,
           returnAllChunks,
         });
       } else {
@@ -504,6 +512,7 @@ export class ZotSeekDialogVTable {
           finalTopK: 100,
           minSimilarity: 0.15,
           mode: this.searchMode,
+          indexingMode: this.indexingMode,
           returnAllChunks,
         });
       }
@@ -563,33 +572,41 @@ export class ZotSeekDialogVTable {
       return results;
     }
 
-    // Section mode: Aggregate by itemId, keep best match per item
-    const bestByItem = new Map<number, HybridSearchResult>();
+    // Section mode: aggregate by stable paper identity.
+    const bestByItem = new Map<string, HybridSearchResult>();
 
     for (const result of results) {
-      const existing = bestByItem.get(result.itemId);
+      const paperKey = result.libraryKey && result.itemKey
+        ? `${result.libraryKey}|${result.itemKey}`
+        : `local:${result.itemId}`;
+      const existing = bestByItem.get(paperKey);
       if (!existing) {
-        bestByItem.set(result.itemId, result);
+        bestByItem.set(paperKey, result);
       } else {
         // Keep the one with higher score (use rrfScore for hybrid, semanticScore for semantic)
         const existingScore = existing.rrfScore ?? existing.semanticScore ?? 0;
         const newScore = result.rrfScore ?? result.semanticScore ?? 0;
         if (newScore > existingScore) {
-          bestByItem.set(result.itemId, result);
+          bestByItem.set(paperKey, result);
         }
       }
     }
 
     // Return aggregated results, maintaining original order
-    const itemOrder = new Map<number, number>();
+    const itemOrder = new Map<string, number>();
     results.forEach((r, i) => {
-      if (!itemOrder.has(r.itemId)) {
-        itemOrder.set(r.itemId, i);
+      const paperKey = r.libraryKey && r.itemKey
+        ? `${r.libraryKey}|${r.itemKey}`
+        : `local:${r.itemId}`;
+      if (!itemOrder.has(paperKey)) {
+        itemOrder.set(paperKey, i);
       }
     });
 
     return Array.from(bestByItem.values()).sort((a, b) => {
-      return (itemOrder.get(a.itemId) ?? 0) - (itemOrder.get(b.itemId) ?? 0);
+      const aKey = a.libraryKey && a.itemKey ? `${a.libraryKey}|${a.itemKey}` : `local:${a.itemId}`;
+      const bKey = b.libraryKey && b.itemKey ? `${b.libraryKey}|${b.itemKey}` : `local:${b.itemId}`;
+      return (itemOrder.get(aKey) ?? 0) - (itemOrder.get(bKey) ?? 0);
     });
   }
   
@@ -717,11 +734,18 @@ export class ZotSeekDialogVTable {
    */
   private buildQueryCacheKey(): string {
     const queries = this.getActiveQueries();
-    if (queries.length === 1) {
-      return queries[0];
-    }
-    // Include operator in key so changing AND/OR triggers re-search
-    return `${queries.join('|')}:${this.combineOperator}`;
+    const queryPart = queries.length === 1
+      ? queries[0]
+      : `${queries.join('|')}:${this.combineOperator}:${this.andFormula}`;
+    return [
+      queryPart,
+      this.searchMode,
+      this.indexingMode,
+      this.granularity,
+      this.autoAdjustWeights ? 'auto' : 'fixed',
+      this.userTopK,
+      this.userMinSimilarity,
+    ].join(':');
   }
 
   /**
@@ -878,8 +902,9 @@ export class ZotSeekDialogVTable {
     allResults: HybridSearchResult[][],
     queries: string[]
   ): HybridSearchResult[] {
-    // Build map: itemId -> scores from each query
-    const itemScores = new Map<number, {
+    // Build map using stable identity so local Zotero IDs never become part of
+    // the cross-query result contract.
+    const itemScores = new Map<string, {
       results: (HybridSearchResult | null)[],
       scores: (number | null)[]
     }>();
@@ -887,16 +912,23 @@ export class ZotSeekDialogVTable {
     // Collect all results by itemId
     allResults.forEach((results, queryIndex) => {
       for (const result of results) {
-        if (!itemScores.has(result.itemId)) {
-          itemScores.set(result.itemId, {
+        let paperKey = result.libraryKey && result.itemKey
+          ? `${result.libraryKey}|${result.itemKey}`
+          : `local:${result.itemId}`;
+        if (this.granularity === 'location') {
+          paperKey = `${paperKey}|chunk:${result.chunkIndex ?? 0}`;
+        }
+        if (!itemScores.has(paperKey)) {
+          itemScores.set(paperKey, {
             results: new Array(queries.length).fill(null),
             scores: new Array(queries.length).fill(null)
           });
         }
-        const entry = itemScores.get(result.itemId)!;
+        const entry = itemScores.get(paperKey)!;
         entry.results[queryIndex] = result;
-        // Use semanticScore for combination (more meaningful than RRF for cross-query)
-        entry.scores[queryIndex] = result.semanticScore ?? result.rrfScore ?? 0;
+        // Prefer a specialist-native score. Metadata identity and lexical-only
+        // hits have no semantic score and must not be reduced to tiny RRF ranks.
+        entry.scores[queryIndex] = result.semanticScore ?? result.keywordScore ?? result.rrfScore ?? 0;
       }
     });
 
@@ -907,7 +939,7 @@ export class ZotSeekDialogVTable {
     // "OR" requires at least one sub-score to clear the bar (combined = max).
     const minThreshold = this.userMinSimilarity;
 
-    for (const [itemId, { results, scores }] of itemScores) {
+    for (const { results, scores } of itemScores.values()) {
       const validScores = scores.filter((s): s is number => s !== null);
 
       if (validScores.length === 0) continue;
@@ -947,6 +979,26 @@ export class ZotSeekDialogVTable {
 
     // Sort by combined score descending
     combinedResults.sort((a, b) => (b.semanticScore ?? 0) - (a.semanticScore ?? 0));
+
+    if (this.searchMode === 'hybrid' && this.indexingMode === 'full') {
+      const notesResults = combinedResults.filter(result => result.policyChannel !== 'pdf');
+      const pdfResults = combinedResults.filter(result => result.policyChannel === 'pdf');
+      const identity = (result: HybridSearchResult) => {
+        const paperKey = result.libraryKey && result.itemKey
+          ? `${result.libraryKey}|${result.itemKey}`
+          : `local:${result.itemId}`;
+        return this.granularity === 'location'
+          ? `${paperKey}|chunk:${result.chunkIndex ?? 0}`
+          : paperKey;
+      };
+      return allocatePrimaryWithAlternateTail(
+        notesResults,
+        pdfResults,
+        this.userTopK,
+        FULL_NOTES_HEAD_SLOTS,
+        identity,
+      );
+    }
 
     return combinedResults.slice(0, this.userTopK);
   }
