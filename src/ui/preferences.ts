@@ -16,6 +16,8 @@ import {
   getActiveModelId,
   getActiveModelSelectionId,
   getModel,
+  CLOUD_SLOT_SELECTION_ID,
+  DEFAULT_MODEL_ID,
   SERVER_SLOT_SELECTION_ID,
   setActiveModelId,
 } from '../core/model-registry';
@@ -44,6 +46,20 @@ import {
   openManualModelDownloadGuide,
   openModelDownloadChoicePrompt,
 } from './model-download-prompt';
+import {
+  CLOUD_PROVIDER_OPTIONS,
+  getCloudModelSettings,
+  hasCurrentCloudConsent,
+  isCloudAutoIndexAllowed,
+  isCloudConnectionVerified,
+  recordCurrentCloudConsent,
+  setCloudAutoIndexAllowed,
+  setCloudConnectionVerified,
+  setCloudModelSettings,
+} from '../core/cloud-model-config';
+import { CloudEmbeddingClient } from '../core/cloud-embedding-client';
+import { cloudCredentialStore, maskCloudApiKey } from '../core/cloud-credential-store';
+import { confirmCloudDisclosure, promptForCloudApiKey } from './cloud-model-prompt';
 
 declare const Services: any;
 declare const Zotero: any;
@@ -60,13 +76,184 @@ function docAlive(doc: any): boolean {
   try { return !!doc && !!doc.getElementById; } catch { return false; }
 }
 
+function setCloudStatus(doc: any, message: string): void {
+  const status = doc.getElementById('zotseek-cloud-status');
+  if (status) status.textContent = message;
+}
+
+async function renderCloudSettings(doc: any): Promise<void> {
+  const settings = getCloudModelSettings();
+  const provider = doc.getElementById('zotseek-cloud-provider') as HTMLSelectElement | null;
+  const model = doc.getElementById('zotseek-cloud-model') as HTMLInputElement | null;
+  const dimensions = doc.getElementById('zotseek-cloud-dimensions') as HTMLInputElement | null;
+  const baseUrl = doc.getElementById('zotseek-cloud-base-url') as HTMLInputElement | null;
+  const maxInputTokens = doc.getElementById('zotseek-cloud-max-input-tokens') as HTMLInputElement | null;
+  const recommended = doc.getElementById('zotseek-cloud-recommended-chunk-tokens') as HTMLInputElement | null;
+  const queryPrefix = doc.getElementById('zotseek-cloud-query-prefix') as HTMLInputElement | null;
+  const docPrefix = doc.getElementById('zotseek-cloud-doc-prefix') as HTMLInputElement | null;
+  const batchSize = doc.getElementById('zotseek-cloud-batch-size') as HTMLInputElement | null;
+  const autoIndex = doc.getElementById('zotseek-cloud-auto-index') as any;
+  const preview = doc.getElementById('zotseek-cloud-key-preview');
+  if (provider) {
+    if (provider.options.length === 0) {
+      for (const option of CLOUD_PROVIDER_OPTIONS) {
+        const element = doc.createElementNS('http://www.w3.org/1999/xhtml', 'option');
+        element.value = option.id;
+        element.textContent = option.label;
+        provider.appendChild(element);
+      }
+    }
+    provider.value = settings.provider;
+  }
+  if (model) model.value = settings.modelName;
+  if (dimensions) dimensions.value = String(settings.dimensions);
+  if (baseUrl) baseUrl.value = settings.baseUrl;
+  if (maxInputTokens) maxInputTokens.value = String(settings.maxInputTokens);
+  if (recommended) recommended.value = String(settings.recommendedChunkTokens);
+  if (queryPrefix) queryPrefix.value = settings.queryPrefix;
+  if (docPrefix) docPrefix.value = settings.docPrefix;
+  if (batchSize) batchSize.value = String(settings.batchSize);
+  if (autoIndex) autoIndex.checked = isCloudAutoIndexAllowed();
+  if (preview) {
+    try {
+      const apiKey = await cloudCredentialStore.get();
+      preview.textContent = apiKey
+        ? maskCloudApiKey(apiKey)
+        : getString('pref-cloudApiKeyMissing');
+    } catch (error: any) {
+      preview.textContent = getString('pref-cloudSecureStorageError', {
+        error: error?.message || error,
+      });
+    }
+  }
+  setCloudStatus(
+    doc,
+    isCloudConnectionVerified()
+      ? getString('pref-cloudConnectionVerified')
+      : getString('pref-cloudConnectionNotVerified'),
+  );
+}
+
+function saveCloudSettingsFromUI(doc: any): ReturnType<typeof getCloudModelSettings> | null {
+  const provider = doc.getElementById('zotseek-cloud-provider') as HTMLSelectElement | null;
+  const baseUrl = doc.getElementById('zotseek-cloud-base-url') as HTMLInputElement | null;
+  const model = doc.getElementById('zotseek-cloud-model') as HTMLInputElement | null;
+  const dimensions = doc.getElementById('zotseek-cloud-dimensions') as HTMLInputElement | null;
+  const maxInputTokens = doc.getElementById('zotseek-cloud-max-input-tokens') as HTMLInputElement | null;
+  const queryPrefix = doc.getElementById('zotseek-cloud-query-prefix') as HTMLInputElement | null;
+  const docPrefix = doc.getElementById('zotseek-cloud-doc-prefix') as HTMLInputElement | null;
+  const batchSize = doc.getElementById('zotseek-cloud-batch-size') as HTMLInputElement | null;
+  if (!provider || !baseUrl || !model || !dimensions || !maxInputTokens ||
+      !queryPrefix || !docPrefix || !batchSize) return null;
+  try {
+    const settings = setCloudModelSettings({
+      provider: provider.value,
+      baseUrl: baseUrl.value,
+      modelName: model.value,
+      dimensions: Number(dimensions.value),
+      maxInputTokens: Number(maxInputTokens.value),
+      queryPrefix: queryPrefix.value,
+      docPrefix: docPrefix.value,
+      batchSize: Number(batchSize.value),
+    });
+    baseUrl.value = settings.baseUrl;
+    model.value = settings.modelName;
+    dimensions.value = String(settings.dimensions);
+    maxInputTokens.value = String(settings.maxInputTokens);
+    batchSize.value = String(settings.batchSize);
+    const recommended = doc.getElementById('zotseek-cloud-recommended-chunk-tokens') as HTMLInputElement | null;
+    if (recommended) recommended.value = String(settings.recommendedChunkTokens);
+    return settings;
+  } catch (error: any) {
+    setCloudStatus(doc, getString('pref-cloudInvalidConfig', { error: error?.message || error }));
+    return null;
+  }
+}
+
+async function promptAndSaveCloudApiKey(doc: any): Promise<boolean> {
+  const apiKey = promptForCloudApiKey(
+    Services.prompt,
+    doc.defaultView || null,
+    getString('pref-cloudApiKeyPromptTitle'),
+    getString('pref-cloudApiKeyPromptMessage'),
+  );
+  if (!apiKey) return false;
+  try {
+    await cloudCredentialStore.set(apiKey);
+    setCloudConnectionVerified(false);
+    await renderCloudSettings(doc);
+    return true;
+  } catch (error: any) {
+    setCloudStatus(doc, getString('pref-cloudSecureStorageError', {
+      error: error?.message || error,
+    }));
+    return false;
+  }
+}
+
+async function testCloudConnection(doc: any): Promise<boolean> {
+  const settings = saveCloudSettingsFromUI(doc);
+  if (!settings) return false;
+  setCloudStatus(doc, getString('pref-cloudTesting'));
+  try {
+    const apiKey = await cloudCredentialStore.get();
+    if (!apiKey) {
+      setCloudStatus(doc, getString('pref-cloudApiKeyMissing'));
+      return false;
+    }
+    const client = new CloudEmbeddingClient({
+      baseUrl: settings.baseUrl,
+      modelName: settings.modelName,
+      dimensions: settings.dimensions,
+      apiKey,
+      batchSize: settings.batchSize,
+    });
+    await client.probe();
+    setCloudConnectionVerified(true);
+    if (getActiveModelSelectionId() === CLOUD_SLOT_SELECTION_ID) embeddingPipeline.reset();
+    setCloudStatus(doc, getString('pref-cloudConnectionVerified'));
+    return true;
+  } catch (error: any) {
+    setCloudConnectionVerified(false);
+    setCloudStatus(doc, getString('pref-cloudTestFailed', { error: error?.message || error }));
+    return false;
+  }
+}
+
+async function prepareCloudSelection(doc: any): Promise<boolean> {
+  if (!hasCurrentCloudConsent()) {
+    const accepted = confirmCloudDisclosure(
+      Services.prompt,
+      doc.defaultView || null,
+      getString('pref-cloudConsentTitle'),
+      getString('pref-cloudConsentMessage'),
+    );
+    if (!accepted) return false;
+    recordCurrentCloudConsent();
+  }
+  let hasKey = false;
+  try { hasKey = await cloudCredentialStore.has(); } catch (error: any) {
+    setCloudStatus(doc, getString('pref-cloudSecureStorageError', { error: error?.message || error }));
+    return false;
+  }
+  if (!hasKey && !await promptAndSaveCloudApiKey(doc)) return false;
+  if (!isCloudConnectionVerified() && !await testCloudConnection(doc)) return false;
+  return true;
+}
+
 async function maybePromptReindex(doc: any, modelId: string): Promise<void> {
   const { covered, total } = await vectorStoreSQLite.getCoverage(modelId);
   if (total === 0 || covered >= total) return;
   const missing = total - covered;
-  const yes = Services.prompt.confirm(null, 'Index remaining items',
-    `This model covers ${covered} of ${total} items. Index the remaining ${missing} `
-    + `in the background now? You can keep using Zotero while it runs.`);
+  const cloud = getModel(modelId)?.runtime === 'cloud';
+  const yes = Services.prompt.confirm(
+    doc.defaultView || null,
+    cloud ? getString('pref-cloudRebuildTitle') : 'Index remaining items',
+    cloud
+      ? getString('pref-cloudRebuildMessage', { count: missing })
+      : `This model covers ${covered} of ${total} items. Index the remaining ${missing} `
+        + `in the background now? You can keep using Zotero while it runs.`,
+  );
   if (yes) {
     const zs = (typeof Zotero !== 'undefined') ? (Zotero as any).ZotSeek : null;
     if (zs && zs.api && typeof zs.api.reindexForActiveModel === 'function') {
@@ -89,7 +276,7 @@ async function populateModelMenu(doc: any): Promise<void> {
   if (!popup) return;
   popup.replaceChildren();
   for (const m of getAllModels()) {
-    if (m.runtime === 'server') continue;
+    if (m.runtime !== 'onnx') continue;
     const onDisk = m.bundled || await isModelOnDisk(m);
     const state = getLocalModelMenuState(m, onDisk);
     const status = state === 'bundled'
@@ -109,10 +296,22 @@ async function populateModelMenu(doc: any): Promise<void> {
   const serverItem = doc.createXULElement('menuitem');
   serverItem.setAttribute('value', SERVER_SLOT_SELECTION_ID);
   const serverLabel = serverConfig?.kind === 'ready' && serverConfig.model
-    ? `Server (${serverConfig.model.serverModelName})`
-    : `Server (${serverConfig?.kind === 'unknown' ? 'UNKNOWN' : 'NONE'})`;
+    ? getString('pref-localServerReady', { model: serverConfig.model.serverModelName })
+    : getString('pref-localServerState', {
+        state: serverConfig?.kind === 'unknown' ? 'UNKNOWN' : 'NONE',
+      });
   serverItem.setAttribute('label', serverLabel);
   popup.appendChild(serverItem);
+
+  const cloudItem = doc.createXULElement('menuitem');
+  cloudItem.setAttribute('value', CLOUD_SLOT_SELECTION_ID);
+  cloudItem.setAttribute(
+    'label',
+    isCloudConnectionVerified()
+      ? getString('pref-cloudSlotReady', { model: getCloudModelSettings().modelName })
+      : getString('pref-cloudSlotSetup'),
+  );
+  popup.appendChild(cloudItem);
 
   const active = getActiveModelSelectionId();
   const items = popup.querySelectorAll('menuitem');
@@ -186,10 +385,6 @@ function refreshModelInputPolicy(doc: any): void {
     status.textContent = getString('pref-modelInputPolicy', {
       limit: policy.maxInputTokens ?? getString('pref-modelInputUnknown'),
       recommended: policy.recommendedChunkTokens,
-      effective: policy.effectiveChunkTokens,
-      prefix: policy.requiresInstructionPrefix
-        ? getString('pref-modelInputPrefixRequired')
-        : getString('pref-modelInputPrefixNone'),
     });
   }
 }
@@ -202,6 +397,12 @@ async function renderCoverage(doc: any): Promise<void> {
   if (getActiveModelSelectionId() === SERVER_SLOT_SELECTION_ID &&
       getLastServerModelConfigLoadResult()?.kind !== 'ready') {
     text.textContent = getString('pref-serverModelIncomplete');
+    el.appendChild(text);
+    return;
+  }
+  if (getActiveModelSelectionId() === CLOUD_SLOT_SELECTION_ID &&
+      !isCloudConnectionVerified()) {
+    text.textContent = getString('pref-cloudConnectionNotVerified');
     el.appendChild(text);
     return;
   }
@@ -245,13 +446,15 @@ async function renderManageModels(doc: any): Promise<void> {
   const statsByModel = new Map(
     (await vectorStoreSQLite.getPerModelStats()).map(s => [s.modelId, s]));
   for (const m of getAllModels()) {
+    // Cloud configuration and credentials have their own settings card below.
+    if (m.runtime === 'cloud') continue;
     if (m.runtime !== 'server') {
       const onDisk = m.bundled || await isModelOnDisk(m);
       if (!onDisk) continue;
     }
     const label = doc.createElement('span');
     const labelText = m.runtime === 'server'
-      ? `${m.label} · ${m.dimensions}d · via server (${m.baseUrl})`
+      ? `${m.label.replace(/^Server/, 'Local Server')} · ${m.dimensions}d · via local server (${m.baseUrl})`
       : `${m.label} · ${m.dimensions}d`;
     label.textContent = labelText;
     label.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
@@ -294,7 +497,7 @@ async function renderManageModels(doc: any): Promise<void> {
     host.append(label, statsEl, reason, btn);
   }
   const note = doc.createElement('div');
-  note.textContent = 'Remove deletes an installed local model and its embeddings. Server entries are managed in the JSON template.';
+  note.textContent = 'Remove deletes an installed local model and its embeddings. Local Server entries are managed in the JSON template; Cloud is configured below.';
   note.style.cssText = 'font-size:11px;opacity:.6;margin-top:8px;grid-column: 1 / -1;';
   host.appendChild(note);
 }
@@ -328,7 +531,9 @@ const DEFAULT_OPEN_GROUPS = new Set(['zotseek-group-status', 'zotseek-group-mode
 let prefsSearchCleanup: (() => void) | null = null;
 
 function applyDefaultGroupStates(doc: any): void {
-  const groups = doc.querySelectorAll('details.zotseek-prefs-group');
+  const groups = doc.querySelectorAll(
+    'details.zotseek-prefs-group, details.zotseek-model-settings',
+  );
   for (const g of groups) {
     if (DEFAULT_OPEN_GROUPS.has(g.id)) g.setAttribute('open', '');
     else g.removeAttribute('open');
@@ -353,7 +558,9 @@ function initPrefsGroupSearchSync(doc: any): void {
         if (!docAlive(doc)) return;
         const term = String(searchBox.value || '').trim();
         if (term) {
-          const groups = doc.querySelectorAll('details.zotseek-prefs-group');
+          const groups = doc.querySelectorAll(
+            'details.zotseek-prefs-group, details.zotseek-model-settings',
+          );
           for (const g of groups) g.setAttribute('open', '');
         } else {
           applyDefaultGroupStates(doc);
@@ -412,6 +619,7 @@ class PreferencesManager {
 
       // Advanced server models are configured in a profile-side JSON template.
       renderServerTemplateStatus(this.window.document);
+      await renderCloudSettings(this.window.document);
 
       // Keep collapsible groups in sync with the Settings search field
       initPrefsGroupSearchSync(this.window.document);
@@ -443,9 +651,15 @@ class PreferencesManager {
     const Z = getZotero();
     if (!Z) return;
 
+    const storedSearchMode = Z.Prefs.get('extensions.zotero.zotseek.hybridSearch.mode', true);
+    const defaultSearchMode = storedSearchMode === 'semantic' || storedSearchMode === 'keyword'
+      ? storedSearchMode
+      : 'hybrid';
+
     // Read current preference values
     const prefs = {
       indexingMode: Z.Prefs.get('zotseek.indexingMode', true) || 'abstract',
+      defaultSearchMode,
       maxChunksPerPaper: Z.Prefs.get('zotseek.maxChunksPerPaper', true) ?? 100,
       topK: Z.Prefs.get('zotseek.topK', true) ?? 20,
       minSimilarity: Z.Prefs.get('zotseek.minSimilarityPercent', true) ?? 70,
@@ -461,6 +675,7 @@ class PreferencesManager {
 
     // Set menulist values
     this.setMenulistValue('zotseek-pref-indexingMode', prefs.indexingMode);
+    this.setMenulistValue('zotseek-pref-defaultSearchMode', prefs.defaultSearchMode);
 
     // Set input values
     this.setInputValue('zotseek-pref-maxChunksPerPaper', prefs.maxChunksPerPaper);
@@ -596,6 +811,13 @@ class PreferencesManager {
             await populateModelMenu(doc);
             return;
           }
+          if (id === CLOUD_SLOT_SELECTION_ID) {
+            const ready = await prepareCloudSelection(doc);
+            if (!ready) {
+              await populateModelMenu(doc);
+              return;
+            }
+          }
           if (id === SERVER_SLOT_SELECTION_ID) {
             setActiveModelId(SERVER_SLOT_SELECTION_ID);
             const config = getLastServerModelConfigLoadResult();
@@ -615,7 +837,7 @@ class PreferencesManager {
           }
           const model = getModel(id);
           if (!model) return;
-          if (!model.bundled && !(await isModelOnDisk(model))) {
+          if (model.runtime === 'onnx' && !model.bundled && !(await isModelOnDisk(model))) {
             const choice = openModelDownloadChoicePrompt(
               Services.prompt,
               doc.defaultView || null,
@@ -686,6 +908,95 @@ class PreferencesManager {
         this.window,
       );
     });
+
+    const saveChangedCloudSettings = async (): Promise<void> => {
+      if (!saveCloudSettingsFromUI(doc)) return;
+      if (getActiveModelSelectionId() === CLOUD_SLOT_SELECTION_ID) {
+        embeddingPipeline.reset();
+      }
+      autoIndexManager.reload();
+      await populateModelMenu(doc);
+      refreshModelInputPolicy(doc);
+      await renderCoverage(doc);
+    };
+
+    const cloudProvider = doc.getElementById('zotseek-cloud-provider') as HTMLSelectElement | null;
+    cloudProvider?.addEventListener('change', async () => {
+      const option = CLOUD_PROVIDER_OPTIONS.find(item => item.id === cloudProvider.value);
+      const baseUrl = doc.getElementById('zotseek-cloud-base-url') as HTMLInputElement | null;
+      if (option && baseUrl) baseUrl.value = option.defaultBaseUrl;
+      await saveChangedCloudSettings();
+    });
+
+    for (const id of [
+      'zotseek-cloud-base-url',
+      'zotseek-cloud-model',
+      'zotseek-cloud-dimensions',
+      'zotseek-cloud-max-input-tokens',
+      'zotseek-cloud-query-prefix',
+      'zotseek-cloud-doc-prefix',
+      'zotseek-cloud-batch-size',
+    ]) {
+      doc.getElementById(id)?.addEventListener('change', async () => {
+        await saveChangedCloudSettings();
+      });
+    }
+
+    const cloudSetKey = doc.getElementById('zotseek-cloud-set-key');
+    cloudSetKey?.addEventListener('command', async () => {
+      if (await promptAndSaveCloudApiKey(doc) &&
+          getActiveModelSelectionId() === CLOUD_SLOT_SELECTION_ID) {
+        embeddingPipeline.reset();
+      }
+      await populateModelMenu(doc);
+    });
+
+    const cloudRemoveKey = doc.getElementById('zotseek-cloud-remove-key');
+    cloudRemoveKey?.addEventListener('command', async () => {
+      const confirmed = Services.prompt.confirm(
+        doc.defaultView || null,
+        getString('pref-cloudRemoveApiKeyTitle'),
+        getString('pref-cloudRemoveApiKeyMessage'),
+      );
+      if (!confirmed) return;
+      try {
+        const wasActive = getActiveModelSelectionId() === CLOUD_SLOT_SELECTION_ID;
+        await cloudCredentialStore.clear();
+        setCloudConnectionVerified(false);
+        if (wasActive) await embeddingPipeline.setModel(DEFAULT_MODEL_ID);
+        autoIndexManager.reload();
+        await renderCloudSettings(doc);
+        await populateModelMenu(doc);
+        await renderCoverage(doc);
+      } catch (error: any) {
+        setCloudStatus(doc, getString('pref-cloudSecureStorageError', {
+          error: error?.message || error,
+        }));
+      }
+    });
+
+    const cloudTest = doc.getElementById('zotseek-cloud-test');
+    cloudTest?.addEventListener('command', async () => {
+      await testCloudConnection(doc);
+      await populateModelMenu(doc);
+    });
+
+    const cloudAutoIndex = doc.getElementById('zotseek-cloud-auto-index') as any;
+    cloudAutoIndex?.addEventListener('command', () => {
+      setCloudAutoIndexAllowed(cloudAutoIndex.checked === true);
+      autoIndexManager.reload();
+    });
+
+    const defaultSearchMode = doc.getElementById('zotseek-pref-defaultSearchMode') as any;
+    const saveDefaultSearchMode = () => {
+      const mode = defaultSearchMode?.value;
+      if (mode === 'hybrid' || mode === 'semantic' || mode === 'keyword') {
+        Z.Prefs.set('extensions.zotero.zotseek.hybridSearch.mode', mode, true);
+        this.logger.debug(`Default search mode changed to: ${mode}`);
+      }
+    };
+    defaultSearchMode?.addEventListener('command', saveDefaultSearchMode);
+    defaultSearchMode?.addEventListener('change', saveDefaultSearchMode);
 
     // Number inputs
     const numberInputs = [

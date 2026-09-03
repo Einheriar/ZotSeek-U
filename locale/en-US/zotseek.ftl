@@ -78,10 +78,14 @@ zotseek-pref-resultsToShow = Results to show
 zotseek-pref-resultsToShowDesc = How many matches to display (5-100)
 zotseek-pref-minSimilarity = Min similarity
 zotseek-pref-minSimilarityDesc = % — Filter out low-quality matches (0-100)
+zotseek-pref-defaultSearchMode = Default search mode
+zotseek-pref-defaultSearchModeDesc = Change the default search mode.
 zotseek-pref-advancedSettings = Advanced Settings
+zotseek-pref-modelInputSettings = Chunking and Model Input
+zotseek-pref-modelOptionalHint = (configure when selected)
 zotseek-pref-maxTokens = Max tokens per chunk
 zotseek-pref-maxTokensDesc = Optional user override; the active model policy applies the final limit
-zotseek-pref-modelInputPolicy = Limit: { $limit } · Recommended: { $recommended } · Effective: { $effective } · Prefix: { $prefix }
+zotseek-pref-modelInputPolicy = Limit: { $limit } · Recommended: { $recommended }
 zotseek-pref-modelInputUnknown = server managed
 zotseek-pref-modelInputPrefixRequired = required
 zotseek-pref-modelInputPrefixNone = none
@@ -105,6 +109,51 @@ zotseek-modelDownloadManualMessage = Download the required files from the offici
 
     Installation location:
     { $path }
+
+## Cloud embedding and Local Server naming
+
+zotseek-pref-localServerReady = Local Server ({ $model })
+zotseek-pref-localServerState = Local Server ({ $state })
+zotseek-pref-cloudSlotReady = Cloud ({ $model })
+zotseek-pref-cloudSlotSetup = Cloud (SETUP REQUIRED)
+zotseek-pref-cloudTitle = Cloud Model
+zotseek-pref-cloudDesc = Configure a BYOK Cloud embedding provider. Indexed content and semantic queries are sent to the provider and may incur provider charges. ZotSeek does not charge or receive any share of those fees.
+zotseek-pref-cloudProvider = Provider
+zotseek-pref-cloudBaseUrl = Base URL
+zotseek-pref-cloudModel = Model
+zotseek-pref-cloudDimensions = Dimensions
+zotseek-pref-cloudAdvanced = Advanced model parameters
+zotseek-pref-cloudMaxInputTokens = Maximum input Tokens
+zotseek-pref-cloudRecommendedChunkTokens = Recommended Chunk Tokens
+zotseek-pref-cloudQueryPrefix = Query Prefix
+zotseek-pref-cloudDocumentPrefix = Document Prefix
+zotseek-pref-cloudBatchSize = Maximum inputs per batch
+zotseek-pref-cloudRecommendedChunkDesc = Automatically uses 85% of the model limit, capped at 3000 Tokens.
+zotseek-pref-cloudApiKey = API Key
+zotseek-pref-cloudApiKeyMissing = Not configured
+zotseek-pref-cloudSetApiKey =
+    .label = Set / replace
+zotseek-pref-cloudRemoveApiKey =
+    .label = Remove
+zotseek-pref-cloudTest =
+    .label = Test connection
+zotseek-pref-cloudAutoIndex =
+    .label = Allow Zotero to maintain the index at startup when using a Cloud model
+zotseek-pref-cloudAutoIndexDesc = Off by default. The global Automatic Maintenance setting must also be enabled.
+zotseek-pref-cloudConnectionVerified = Connection verified.
+zotseek-pref-cloudConnectionNotVerified = Connection not verified. Set an API key and test the connection before selecting Cloud.
+zotseek-pref-cloudTesting = Testing with a fixed probe text… This call may incur a very small provider charge.
+zotseek-pref-cloudTestFailed = Connection test failed: { $error }
+zotseek-pref-cloudInvalidConfig = Invalid Cloud configuration: { $error }
+zotseek-pref-cloudSecureStorageError = Secure credential storage failed: { $error }
+zotseek-pref-cloudApiKeyPromptTitle = Set Cloud API Key
+zotseek-pref-cloudApiKeyPromptMessage = Paste your Alibaba Bailian API Key. It will be encrypted using Zotero secure credential storage and will not be written to preferences, configuration files, or logs.
+zotseek-pref-cloudRemoveApiKeyTitle = Remove Cloud API Key
+zotseek-pref-cloudRemoveApiKeyMessage = Remove the saved Cloud API Key? If Cloud is active, ZotSeek will switch back to the built-in E5 model.
+zotseek-pref-cloudConsentTitle = Send embedding content to a Cloud provider?
+zotseek-pref-cloudConsentMessage = When Cloud is selected, ZotSeek sends content included by the current indexing mode and every semantic or Hybrid query to Alibaba Cloud Model Studio (Bailian). You must provide your own API Key (BYOK). The provider may charge your account; all fees are paid only to the provider. ZotSeek does not charge, receive a share, or participate in billing. A connection test sends fixed probe text and may also incur a very small provider charge. Continue?
+zotseek-pref-cloudRebuildTitle = Index remaining papers with Cloud?
+zotseek-pref-cloudRebuildMessage = This will send content from { $count } eligible papers to the configured Cloud provider. Provider charges may apply. Continue?
 zotseek-modelDownloadOpenPage = Open model page
 zotseek-modelDownloadOpenLocation = Open installation location
 zotseek-modelDownloadClose = Close
@@ -117,23 +166,23 @@ zotseek-modelDownloadRevealFailedMessage = ZotSeek could not open the model inst
     { $path }
 zotseek-pref-resetMaxTokens =
     .label = Use recommended
-zotseek-pref-serverConfigTitle = Advanced Server model
-zotseek-pref-serverConfigDesc = Configure the fixed Server model slot in the profile JSON template. ZotSeek validates it at startup; edit the file and restart Zotero to apply changes.
+zotseek-pref-serverConfigTitle = Local Server model
+zotseek-pref-serverConfigDesc = Configure the fixed Local Server model slot in the profile JSON template. ZotSeek validates it at startup; edit the file and restart Zotero to apply changes.
 zotseek-pref-serverConfigPath = Template:
 zotseek-pref-serverConfigNotLoaded = The template has not been loaded yet. Restart Zotero.
-zotseek-pref-serverConfigLoaded = Server ({ $model }) is configured. Edit the file and restart Zotero to apply changes.
-zotseek-pref-serverConfigNone = Server (NONE): no server model is configured. Select Server in the model menu to see setup instructions.
-zotseek-pref-serverConfigErrors = Server (UNKNOWN): { $errors } configuration error(s). Check the model ID, loopback service URL, vector dimensions, token budgets, and query/document prefixes in the template.
-zotseek-pref-serverModelIncomplete = Server model information is incomplete. Configure the JSON template and restart Zotero.
-zotseek-serverConfigRequiredTitle = Server model configuration required
-zotseek-serverConfigRequiredMessage = Server ({ $state }) is selected, but its model information is incomplete. ZotSeek will keep this selection but cannot index or run semantic searches yet.
+zotseek-pref-serverConfigLoaded = Local Server ({ $model }) is configured. Edit the file and restart Zotero to apply changes.
+zotseek-pref-serverConfigNone = Local Server (NONE): no local server model is configured. Select Local Server in the model menu to see setup instructions.
+zotseek-pref-serverConfigErrors = Local Server (UNKNOWN): { $errors } configuration error(s). Check the model ID, loopback service URL, vector dimensions, token budgets, and query/document prefixes in the template.
+zotseek-pref-serverModelIncomplete = Local Server model information is incomplete. Configure the JSON template and restart Zotero.
+zotseek-serverConfigRequiredTitle = Local Server model configuration required
+zotseek-serverConfigRequiredMessage = Local Server ({ $state }) is selected, but its model information is incomplete. ZotSeek will keep this selection but cannot index or run semantic searches yet.
 
     Edit: { $path }
 
     Restart Zotero after saving the file.
 
     { $guidance }
-zotseek-serverConfigMissingEntry = Set the template's "model" field to one complete server model object.
+zotseek-serverConfigMissingEntry = Set the template's "model" field to one complete Local Server model object.
 zotseek-serverConfigInvalidEntry = The template has { $errors } configuration error(s). Use the example in the template to complete the model ID, loopback service URL, vector dimensions, token budgets, and query/document prefixes.
 zotseek-serverConfigOpenLocation = Open file location
     .label = Open file location
@@ -165,7 +214,7 @@ zotseek-pref-destructive = ⚠ Destructive
 zotseek-pref-clearIndexDesc = Remove all embeddings from the database. You will need to re-index afterwards.
 zotseek-pref-about = About
 zotseek-pref-githubRepo =
-    .value = GitHub Repository
+    .value = GitHub Fork Repository
 zotseek-pref-modelLine = Model: { $model }
 zotseek-pref-avgLine = Avg: { $avg } chunks/paper
 zotseek-pref-lastIndexedLine = Last indexed: { $date }
@@ -451,3 +500,5 @@ zotseek-prefs-exclusions = Exclusions
 
 zotseek-pref-embeddingModelTitle = Embedding Model
 zotseek-pref-manageModelsTitle = Manage installed models
+zotseek-indexing-cloudRebuildConfirmTitle = Rebuild Cloud index?
+zotseek-indexing-cloudRebuildConfirmMsg = About { $count } papers in { $scope } will be sent to the configured Cloud provider and may incur provider charges. Existing complete indexes are kept until each paper is replaced successfully. Continue?

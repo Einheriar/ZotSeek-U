@@ -1,5 +1,50 @@
 # ZotSeek Traditional Chinese (Taiwan)
 
+
+## Cloud Embedding 與 Local Server 命名
+
+zotseek-pref-localServerReady = Local Server（{ $model }）
+zotseek-pref-localServerState = Local Server（{ $state }）
+zotseek-pref-cloudSlotReady = Cloud（{ $model }）
+zotseek-pref-cloudSlotSetup = Cloud（需要設定）
+zotseek-pref-cloudTitle = Cloud 模型
+zotseek-pref-cloudDesc = 設定 BYOK 雲端 Embedding 服務。索引內容和語意查詢會傳送給雲端供應商，並可能產生供應商費用；ZotSeek 不收費，也不從中分成。
+zotseek-pref-cloudProvider = 服務商
+zotseek-pref-cloudBaseUrl = Base URL
+zotseek-pref-cloudModel = 模型
+zotseek-pref-cloudDimensions = 向量維度
+zotseek-pref-cloudAdvanced = 進階模型參數
+zotseek-pref-cloudMaxInputTokens = 最大輸入 Tokens
+zotseek-pref-cloudRecommendedChunkTokens = 建議 Chunk Tokens
+zotseek-pref-cloudQueryPrefix = Query Prefix
+zotseek-pref-cloudDocumentPrefix = Document Prefix
+zotseek-pref-cloudBatchSize = 單批最大輸入數
+zotseek-pref-cloudRecommendedChunkDesc = 自動採用模型輸入上限的 85%，並以 3000 Tokens 為上限。
+zotseek-pref-cloudApiKey = API Key
+zotseek-pref-cloudApiKeyMissing = 尚未設定
+zotseek-pref-cloudSetApiKey =
+    .label = 設定 / 更換
+zotseek-pref-cloudRemoveApiKey =
+    .label = 刪除
+zotseek-pref-cloudTest =
+    .label = 測試連線
+zotseek-pref-cloudAutoIndex =
+    .label = 使用 Cloud 模型時，允許 Zotero 在啟動時自動維護索引
+zotseek-pref-cloudAutoIndexDesc = 預設關閉；同時還需要啟用全域「自動維護」設定。
+zotseek-pref-cloudConnectionVerified = 連線已驗證。
+zotseek-pref-cloudConnectionNotVerified = 連線尚未驗證。選擇 Cloud 前請設定 API Key 並測試連線。
+zotseek-pref-cloudTesting = 正在使用固定探測文字測試……本次呼叫可能產生極少量雲端供應商費用。
+zotseek-pref-cloudTestFailed = 連線測試失敗：{ $error }
+zotseek-pref-cloudInvalidConfig = Cloud 設定無效：{ $error }
+zotseek-pref-cloudSecureStorageError = 安全憑證儲存失敗：{ $error }
+zotseek-pref-cloudApiKeyPromptTitle = 設定 Cloud API Key
+zotseek-pref-cloudApiKeyPromptMessage = 請貼上阿里雲百煉 API Key。密鑰會使用 Zotero 安全憑證儲存加密，不會寫入一般偏好、設定檔或日誌。
+zotseek-pref-cloudRemoveApiKeyTitle = 刪除 Cloud API Key
+zotseek-pref-cloudRemoveApiKeyMessage = 刪除已儲存的 Cloud API Key？如果 Cloud 目前正在使用，ZotSeek 將切回內建 E5 模型。
+zotseek-pref-cloudConsentTitle = 是否將 Embedding 內容傳送給雲端供應商？
+zotseek-pref-cloudConsentMessage = 選擇 Cloud 後，ZotSeek 會把目前索引模式包含的內容，以及每一次語意或 Hybrid 查詢，傳送給阿里雲百煉。您需要自帶 API Key（BYOK）。雲端供應商可能向您的帳號收費；全部費用僅支付給供應商，ZotSeek 不收費、不分成，也不參與帳單。連線測試會傳送固定探測文字，也可能產生極少量供應商費用。是否繼續？
+zotseek-pref-cloudRebuildTitle = 是否使用 Cloud 補齊文獻索引？
+zotseek-pref-cloudRebuildMessage = 這會把 { $count } 篇符合條件的文獻內容傳送給已設定的雲端供應商，並可能產生供應商費用。是否繼續？
 ## 快顯功能表與工具列
 zotseek-menu-findSimilar = 尋找相似文獻
 zotseek-menu-openZotSeek = 開啟 ZotSeek…
@@ -71,10 +116,14 @@ zotseek-pref-resultsToShow = 顯示結果數
 zotseek-pref-resultsToShowDesc = 要顯示的相符結果數（5–100）
 zotseek-pref-minSimilarity = 最低相似度
 zotseek-pref-minSimilarityDesc = % — 篩除品質較差的相符結果（0–100）
+zotseek-pref-defaultSearchMode = 預設搜尋模式
+zotseek-pref-defaultSearchModeDesc = 更改預設搜尋模式。
 zotseek-pref-advancedSettings = 進階設定
+zotseek-pref-modelInputSettings = 分塊與模型輸入
+zotseek-pref-modelOptionalHint = （選用時填寫）
 zotseek-pref-maxTokens = 每個分塊的 Token 上限
 zotseek-pref-maxTokensDesc = 可選的使用者覆寫值；最終限制由目前的模型策略決定
-zotseek-pref-modelInputPolicy = 上限：{ $limit } · 建議值：{ $recommended } · 有效值：{ $effective } · 前綴：{ $prefix }
+zotseek-pref-modelInputPolicy = 上限：{ $limit } · 建議值：{ $recommended }
 zotseek-pref-modelInputUnknown = 由伺服器管理
 zotseek-pref-modelInputPrefixRequired = 必要
 zotseek-pref-modelInputPrefixNone = 無
@@ -110,23 +159,23 @@ zotseek-modelDownloadRevealFailedMessage = ZotSeek 無法開啟模型安裝位�
     { $path }
 zotseek-pref-resetMaxTokens =
     .label = 使用建議值
-zotseek-pref-serverConfigTitle = 進階 Server 模型
-zotseek-pref-serverConfigDesc = 在設定檔的 JSON 範本中設定固定的 Server 模型槽位。ZotSeek 會在啟動時驗證；編輯檔案後請重新啟動 Zotero 以套用變更。
+zotseek-pref-serverConfigTitle = Local Server 模型
+zotseek-pref-serverConfigDesc = 在設定檔的 JSON 範本中設定固定的 Local Server 模型槽位。ZotSeek 會在啟動時驗證；編輯檔案後請重新啟動 Zotero 以套用變更。
 zotseek-pref-serverConfigPath = 範本：
 zotseek-pref-serverConfigNotLoaded = 尚未載入範本。請重新啟動 Zotero。
-zotseek-pref-serverConfigLoaded = 已設定 Server（{ $model }）。編輯檔案後請重新啟動 Zotero 以套用變更。
-zotseek-pref-serverConfigNone = Server（NONE）：尚未設定 Server 模型。請在模型選單中選擇 Server 以查看設定說明。
-zotseek-pref-serverConfigErrors = Server（UNKNOWN）：有 { $errors } 個設定錯誤。請檢查範本中的模型 ID、回送服務 URL、向量維度、Token 配額，以及查詢/文件前綴。
-zotseek-pref-serverModelIncomplete = Server 模型資訊不完整。請設定 JSON 範本並重新啟動 Zotero。
-zotseek-serverConfigRequiredTitle = 必須設定 Server 模型
-zotseek-serverConfigRequiredMessage = 已選擇 Server（{ $state }），但模型資訊不完整。ZotSeek 會保留此選項，但目前無法建立索引或執行語意搜尋。
+zotseek-pref-serverConfigLoaded = 已設定 Local Server（{ $model }）。編輯檔案後請重新啟動 Zotero 以套用變更。
+zotseek-pref-serverConfigNone = Local Server（NONE）：尚未設定 Local Server 模型。請在模型選單中選擇 Local Server 以查看設定說明。
+zotseek-pref-serverConfigErrors = Local Server（UNKNOWN）：有 { $errors } 個設定錯誤。請檢查範本中的模型 ID、回送服務 URL、向量維度、Token 配額，以及查詢/文件前綴。
+zotseek-pref-serverModelIncomplete = Local Server 模型資訊不完整。請設定 JSON 範本並重新啟動 Zotero。
+zotseek-serverConfigRequiredTitle = 必須設定 Local Server 模型
+zotseek-serverConfigRequiredMessage = 已選擇 Local Server（{ $state }），但模型資訊不完整。ZotSeek 會保留此選項，但目前無法建立索引或執行語意搜尋。
 
     編輯：{ $path }
 
     儲存檔案後重新啟動 Zotero。
 
     { $guidance }
-zotseek-serverConfigMissingEntry = 將範本的「model」欄位設為一個完整的 Server 模型物件。
+zotseek-serverConfigMissingEntry = 將範本的「model」欄位設為一個完整的 Local Server 模型物件。
 zotseek-serverConfigInvalidEntry = 範本有 { $errors } 個設定錯誤。請依照範例補齊模型 ID、回送服務 URL、向量維度、Token 配額，以及查詢/文件前綴。
 zotseek-serverConfigOpenLocation = 開啟檔案位置
     .label = 開啟檔案位置
@@ -158,7 +207,7 @@ zotseek-pref-destructive = ⚠ 破壞性操作
 zotseek-pref-clearIndexDesc = 從資料庫移除所有 Embedding。之後必須重新建立索引。
 zotseek-pref-about = 關於
 zotseek-pref-githubRepo =
-    .value = GitHub 儲存庫
+    .value = GitHub Fork 儲存庫
 zotseek-pref-modelLine = 模型：{ $model }
 zotseek-pref-avgLine = 平均：{ $avg } 個分塊/文獻
 zotseek-pref-lastIndexedLine = 上次索引：{ $date }
@@ -425,3 +474,5 @@ zotseek-prefs-group-maintenance = 整合與維護
 zotseek-prefs-exclusions = 排除項目
 zotseek-pref-embeddingModelTitle = Embedding 模型
 zotseek-pref-manageModelsTitle = 管理已安裝的模型
+zotseek-indexing-cloudRebuildConfirmTitle = 重建 Cloud 索引？
+zotseek-indexing-cloudRebuildConfirmMsg = 預計將把 { $scope } 中的 { $count } 篇文獻傳送給已設定的雲端供應商，並可能產生供應商費用。每篇文獻成功完成替換前，現有完整索引都會保留。是否繼續？

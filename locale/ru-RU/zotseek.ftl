@@ -2,6 +2,51 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+
+## Cloud embedding and Local Server naming
+
+zotseek-pref-localServerReady = Local Server ({ $model })
+zotseek-pref-localServerState = Local Server ({ $state })
+zotseek-pref-cloudSlotReady = Cloud ({ $model })
+zotseek-pref-cloudSlotSetup = Cloud (SETUP REQUIRED)
+zotseek-pref-cloudTitle = Cloud Model
+zotseek-pref-cloudDesc = Configure a BYOK Cloud embedding provider. Indexed content and semantic queries are sent to the provider and may incur provider charges. ZotSeek does not charge or receive any share of those fees.
+zotseek-pref-cloudProvider = Provider
+zotseek-pref-cloudBaseUrl = Base URL
+zotseek-pref-cloudModel = Model
+zotseek-pref-cloudDimensions = Dimensions
+zotseek-pref-cloudAdvanced = Advanced model parameters
+zotseek-pref-cloudMaxInputTokens = Maximum input Tokens
+zotseek-pref-cloudRecommendedChunkTokens = Recommended Chunk Tokens
+zotseek-pref-cloudQueryPrefix = Query Prefix
+zotseek-pref-cloudDocumentPrefix = Document Prefix
+zotseek-pref-cloudBatchSize = Maximum inputs per batch
+zotseek-pref-cloudRecommendedChunkDesc = Automatically uses 85% of the model limit, capped at 3000 Tokens.
+zotseek-pref-cloudApiKey = API Key
+zotseek-pref-cloudApiKeyMissing = Not configured
+zotseek-pref-cloudSetApiKey =
+    .label = Set / replace
+zotseek-pref-cloudRemoveApiKey =
+    .label = Remove
+zotseek-pref-cloudTest =
+    .label = Test connection
+zotseek-pref-cloudAutoIndex =
+    .label = Разрешить Zotero автоматически обслуживать индекс при запуске с Cloud-моделью
+zotseek-pref-cloudAutoIndexDesc = Off by default. The global Automatic Maintenance setting must also be enabled.
+zotseek-pref-cloudConnectionVerified = Connection verified.
+zotseek-pref-cloudConnectionNotVerified = Connection not verified. Set an API key and test the connection before selecting Cloud.
+zotseek-pref-cloudTesting = Testing with a fixed probe text… This call may incur a very small provider charge.
+zotseek-pref-cloudTestFailed = Connection test failed: { $error }
+zotseek-pref-cloudInvalidConfig = Invalid Cloud configuration: { $error }
+zotseek-pref-cloudSecureStorageError = Secure credential storage failed: { $error }
+zotseek-pref-cloudApiKeyPromptTitle = Set Cloud API Key
+zotseek-pref-cloudApiKeyPromptMessage = Paste your Alibaba Bailian API Key. It will be encrypted using Zotero secure credential storage and will not be written to preferences, configuration files, or logs.
+zotseek-pref-cloudRemoveApiKeyTitle = Remove Cloud API Key
+zotseek-pref-cloudRemoveApiKeyMessage = Remove the saved Cloud API Key? If Cloud is active, ZotSeek will switch back to the built-in E5 model.
+zotseek-pref-cloudConsentTitle = Send embedding content to a Cloud provider?
+zotseek-pref-cloudConsentMessage = When Cloud is selected, ZotSeek sends content included by the current indexing mode and every semantic or Hybrid query to Alibaba Cloud Model Studio (Bailian). You must provide your own API Key (BYOK). The provider may charge your account; all fees are paid only to the provider. ZotSeek does not charge, receive a share, or participate in billing. A connection test sends fixed probe text and may also incur a very small provider charge. Continue?
+zotseek-pref-cloudRebuildTitle = Index remaining papers with Cloud?
+zotseek-pref-cloudRebuildMessage = This will send content from { $count } eligible papers to the configured Cloud provider. Provider charges may apply. Continue?
 ## Context menu items
 
 zotseek-menu-findSimilar = Найти похожие документы
@@ -78,10 +123,14 @@ zotseek-pref-resultsToShow = Показывать результатов
 zotseek-pref-resultsToShowDesc = Количество отображаемых совпадений (5–100)
 zotseek-pref-minSimilarity = Минимальное сходство
 zotseek-pref-minSimilarityDesc = % — отфильтровывать низкокачественные совпадения (0–100)
+zotseek-pref-defaultSearchMode = Режим поиска по умолчанию
+zotseek-pref-defaultSearchModeDesc = Изменить режим поиска по умолчанию.
 zotseek-pref-advancedSettings = Расширенные настройки
+zotseek-pref-modelInputSettings = Разбиение и ввод для модели
+zotseek-pref-modelOptionalHint = (настраивается при выборе)
 zotseek-pref-maxTokens = Максимум токенов на фрагмент
 zotseek-pref-maxTokensDesc = Необязательное пользовательское ограничение; итоговый предел определяется политикой активной модели
-zotseek-pref-modelInputPolicy = Ограничение: { $limit } · Рекомендуется: { $recommended } · Фактически: { $effective } · Префикс: { $prefix }
+zotseek-pref-modelInputPolicy = Ограничение: { $limit } · Рекомендуется: { $recommended }
 zotseek-pref-modelInputUnknown = управляется сервером
 zotseek-pref-modelInputPrefixRequired = требуется
 zotseek-pref-modelInputPrefixNone = нет
@@ -117,23 +166,23 @@ zotseek-modelDownloadRevealFailedMessage = ZotSeek не удалось откр�
     { $path }
 zotseek-pref-resetMaxTokens =
     .label = Использовать рекомендуемое
-zotseek-pref-serverConfigTitle = Расширенная модель Server
-zotseek-pref-serverConfigDesc = Настройте фиксированный слот модели Server в JSON-шаблоне профиля. ZotSeek проверяет его при запуске; отредактируйте файл и перезапустите Zotero, чтобы применить изменения.
+zotseek-pref-serverConfigTitle = Модель Local Server
+zotseek-pref-serverConfigDesc = Настройте фиксированный слот модели Local Server в JSON-шаблоне профиля. ZotSeek проверяет его при запуске; отредактируйте файл и перезапустите Zotero, чтобы применить изменения.
 zotseek-pref-serverConfigPath = Шаблон:
 zotseek-pref-serverConfigNotLoaded = Шаблон ещё не загружен. Перезапустите Zotero.
-zotseek-pref-serverConfigLoaded = Server ({ $model }) настроен. Отредактируйте файл и перезапустите Zotero, чтобы применить изменения.
-zotseek-pref-serverConfigNone = Server (NONE): модель Server не настроена. Выберите Server в меню моделей, чтобы увидеть инструкции по настройке.
-zotseek-pref-serverConfigErrors = Server (UNKNOWN). Количество ошибок конфигурации: { $errors }. Проверьте ID модели, URL loopback-сервиса, размерность векторов, бюджеты токенов и префиксы запросов/документов в шаблоне.
-zotseek-pref-serverModelIncomplete = Информация о модели Server неполна. Настройте JSON-шаблон и перезапустите Zotero.
-zotseek-serverConfigRequiredTitle = Требуется настройка серверной модели
-zotseek-serverConfigRequiredMessage = Выбрана модель Server ({ $state }), но информация о ней неполна. ZotSeek сохранит этот выбор, но пока не сможет индексировать или выполнять семантический поиск.
+zotseek-pref-serverConfigLoaded = Local Server ({ $model }) настроен. Отредактируйте файл и перезапустите Zotero, чтобы применить изменения.
+zotseek-pref-serverConfigNone = Local Server (NONE): модель Local Server не настроена. Выберите Local Server в меню моделей, чтобы увидеть инструкции по настройке.
+zotseek-pref-serverConfigErrors = Local Server (UNKNOWN). Количество ошибок конфигурации: { $errors }. Проверьте ID модели, URL loopback-сервиса, размерность векторов, бюджеты токенов и префиксы запросов/документов в шаблоне.
+zotseek-pref-serverModelIncomplete = Информация о модели Local Server неполна. Настройте JSON-шаблон и перезапустите Zotero.
+zotseek-serverConfigRequiredTitle = Требуется настройка модели Local Server
+zotseek-serverConfigRequiredMessage = Выбрана модель Local Server ({ $state }), но информация о ней неполна. ZotSeek сохранит этот выбор, но пока не сможет индексировать или выполнять семантический поиск.
 
     Изменить: { $path }
 
     После сохранения файла перезапустите Zotero.
 
     { $guidance }
-zotseek-serverConfigMissingEntry = Задайте в поле «model» шаблона один полный объект модели Server.
+zotseek-serverConfigMissingEntry = Задайте в поле «model» шаблона один полный объект модели Local Server.
 zotseek-serverConfigInvalidEntry = В шаблоне обнаружены ошибки конфигурации. Количество: { $errors }. Используйте пример в шаблоне, чтобы заполнить ID модели, URL loopback-сервиса, размерность векторов, бюджеты токенов и префиксы запросов/документов.
 zotseek-serverConfigOpenLocation = Открыть расположение файла
     .label = Открыть расположение файла
@@ -165,7 +214,7 @@ zotseek-pref-destructive = ⚠ Разрушительное действие
 zotseek-pref-clearIndexDesc = Удаляет все embedding из базы данных. После этого потребуется повторно проиндексировать библиотеку.
 zotseek-pref-about = О программе
 zotseek-pref-githubRepo =
-    .value = Репозиторий GitHub
+    .value = Fork-репозиторий GitHub
 zotseek-pref-modelLine = Модель: { $model }
 zotseek-pref-avgLine = Среднее: { $avg } фрагментов/документ
 zotseek-pref-lastIndexedLine = Последнее индексирование: { $date }
@@ -451,3 +500,5 @@ zotseek-prefs-exclusions = Исключения
 
 zotseek-pref-embeddingModelTitle = Embedding-модель
 zotseek-pref-manageModelsTitle = Управление установленными моделями
+zotseek-indexing-cloudRebuildConfirmTitle = Rebuild Cloud index?
+zotseek-indexing-cloudRebuildConfirmMsg = About { $count } papers in { $scope } will be sent to the configured Cloud provider and may incur provider charges. Existing complete indexes are kept until each paper is replaced successfully. Continue?

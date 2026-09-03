@@ -117,13 +117,14 @@
     user-select: none;
   }
   details.zotseek-prefs-group > summary:hover { color: var(--zotseek-blue); }
+
 </html:style>
 
 <html:details class="zotseek-prefs-group" id="zotseek-group-status" open="">
   <html:summary data-l10n-id="zotseek-prefs-group-status">Status</html:summary>
 
 <!-- Index Statistics - Visual Cards -->
-<groupbox>
+<groupbox style="margin-bottom: 4px;">
   <label><html:h2 data-l10n-id="zotseek-pref-indexStatistics">Index Statistics</html:h2></label>
 
   <!-- Stats Cards Row -->
@@ -165,8 +166,7 @@
 </groupbox>
 
 <!-- Actions -->
-<groupbox>
-  <label><html:h2 data-l10n-id="zotseek-pref-actions">Actions</html:h2></label>
+<groupbox style="margin-top: 0; margin-bottom: 0;">
 
   <!-- Index scope used by both the manual action and startup maintenance -->
   <html:div style="margin-bottom: 8px; display: flex; align-items: center; gap: 8px;">
@@ -183,7 +183,7 @@
   </html:p>
 
   <!-- Check and update index - Primary action -->
-  <vbox class="zotseek-action-primary" style="border-radius: 6px; padding: 12px; margin-bottom: 8px; border-width: 1px; border-style: solid;">
+  <vbox class="zotseek-action-primary" style="border-radius: 6px; padding: 12px; margin-bottom: 0; border-width: 1px; border-style: solid;">
     <hbox align="center">
       <button id="zotseek-update-index"
               label="Check and Update Index"
@@ -199,7 +199,7 @@
 </groupbox>
 
 <!-- Maintenance and repair -->
-<groupbox>
+<groupbox style="margin-top: 12px; margin-bottom: 8px;">
   <label><html:h2 data-l10n-id="zotseek-pref-maintenanceRepair">Maintenance and Repair</html:h2></label>
 
   <!-- Rebuild Index -->
@@ -221,7 +221,7 @@
   <html:summary data-l10n-id="zotseek-prefs-group-models">Models</html:summary>
 
 <!-- Embedding Model -->
-<groupbox>
+<groupbox style="margin-bottom: 4px;">
   <label><html:h2 data-l10n-id="zotseek-pref-embeddingModelTitle">Embedding Model</html:h2></label>
   <hbox align="center">
     <label value="Model:" style="min-width: 120px;" />
@@ -234,27 +234,127 @@
 </groupbox>
 
 <!-- Manage Installed Models -->
-<groupbox>
+<groupbox style="margin-top: 0; margin-bottom: 6px;">
   <label><html:h2 data-l10n-id="zotseek-pref-manageModelsTitle">Manage downloaded models</html:h2></label>
   <html:div id="zotseek-manageModels"></html:div>
 </groupbox>
 
 <!-- Advanced local inference server configuration -->
-<groupbox>
-  <label><html:h2 data-l10n-id="zotseek-pref-serverConfigTitle">Advanced Server model</html:h2></label>
-  <html:p data-l10n-id="zotseek-pref-serverConfigDesc"
-          style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 0 0 6px 0;">
-    Configure the fixed Server model slot in the profile JSON template. ZotSeek validates the template at startup; edit it and restart Zotero to apply changes.
-  </html:p>
-  <html:div style="font-size: 11px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-    <html:span data-l10n-id="zotseek-pref-serverConfigPath">Template:</html:span>
-    <html:code id="zotseek-server-config-path" style="user-select: all; overflow-wrap: anywhere;"></html:code>
-    <button id="zotseek-server-config-open-location"
-            data-l10n-id="zotseek-serverConfigOpenLocation"
-            label="Open file location"/>
+<html:details class="zotseek-model-settings" id="zotseek-local-server-settings" style="margin:10px 0;">
+  <html:summary style="cursor:pointer;">
+    <html:strong data-l10n-id="zotseek-pref-serverConfigTitle">Local Server model</html:strong>
+    <html:span data-l10n-id="zotseek-pref-modelOptionalHint" style="font-size:11px; color:var(--zotseek-text-secondary); margin-left:6px;">(configure when selected)</html:span>
+  </html:summary>
+  <groupbox style="margin-top:8px;">
+    <html:p data-l10n-id="zotseek-pref-serverConfigDesc"
+            style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 0 0 6px 0;">
+      Configure the fixed Local Server model slot in the profile JSON template. ZotSeek validates the template at startup; edit it and restart Zotero to apply changes.
+    </html:p>
+    <html:div style="font-size: 11px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+      <html:span data-l10n-id="zotseek-pref-serverConfigPath">Template:</html:span>
+      <html:code id="zotseek-server-config-path" style="user-select: all; overflow-wrap: anywhere;"></html:code>
+      <button id="zotseek-server-config-open-location"
+              data-l10n-id="zotseek-serverConfigOpenLocation"
+              label="Open file location"/>
+    </html:div>
+    <html:p id="zotseek-server-config-status"
+            style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 5px 0 0 0;"></html:p>
+  </groupbox>
+</html:details>
+
+<!-- Remote MaaS embedding configuration -->
+<html:details class="zotseek-model-settings" id="zotseek-cloud-settings" style="margin:10px 0;">
+  <html:summary style="cursor:pointer;">
+    <html:strong data-l10n-id="zotseek-pref-cloudTitle">Cloud Model</html:strong>
+    <html:span data-l10n-id="zotseek-pref-modelOptionalHint" style="font-size:11px; color:var(--zotseek-text-secondary); margin-left:6px;">(configure when selected)</html:span>
+  </html:summary>
+  <groupbox style="margin-top:8px;">
+    <html:p data-l10n-id="zotseek-pref-cloudDesc"
+            style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 0 0 8px 0;">
+      Configure a BYOK Cloud embedding provider. Index content and semantic queries are sent to the provider and may incur provider charges.
+    </html:p>
+    <html:div style="display:grid;grid-template-columns:120px minmax(260px,1fr);gap:7px 10px;align-items:center;">
+      <html:span data-l10n-id="zotseek-pref-cloudProvider">Provider</html:span>
+      <html:select id="zotseek-cloud-provider" style="width:100%;box-sizing:border-box;"></html:select>
+      <html:span data-l10n-id="zotseek-pref-cloudBaseUrl">Base URL</html:span>
+      <html:input id="zotseek-cloud-base-url" type="url" style="width:100%;box-sizing:border-box;"/>
+      <html:div style="grid-column:1 / -1;display:grid;grid-template-columns:120px minmax(180px,1fr) 72px 120px;gap:7px 10px;align-items:center;">
+        <html:span data-l10n-id="zotseek-pref-cloudModel">Model</html:span>
+        <html:input id="zotseek-cloud-model" type="text" style="width:100%;box-sizing:border-box;"/>
+        <html:span data-l10n-id="zotseek-pref-cloudDimensions">Dimensions</html:span>
+        <html:input id="zotseek-cloud-dimensions" type="number" min="1" step="1" style="width:100%;box-sizing:border-box;"/>
+      </html:div>
+      <html:span data-l10n-id="zotseek-pref-cloudApiKey">API Key</html:span>
+      <hbox align="center" style="gap:6px;">
+        <html:code id="zotseek-cloud-key-preview"></html:code>
+        <button id="zotseek-cloud-set-key" data-l10n-id="zotseek-pref-cloudSetApiKey" label="Set / replace"/>
+        <button id="zotseek-cloud-remove-key" data-l10n-id="zotseek-pref-cloudRemoveApiKey" label="Remove"/>
+      </hbox>
+    </html:div>
+
+    <html:details class="zotseek-model-settings" id="zotseek-cloud-advanced-settings" style="margin-top:10px;">
+      <html:summary data-l10n-id="zotseek-pref-cloudAdvanced" style="cursor:pointer;">Advanced model parameters</html:summary>
+      <html:div style="display:grid;grid-template-columns:160px minmax(220px,1fr);gap:7px 10px;align-items:center;margin-top:8px;">
+        <html:span data-l10n-id="zotseek-pref-cloudMaxInputTokens">Maximum input Tokens</html:span>
+        <html:input id="zotseek-cloud-max-input-tokens" type="number" min="1" step="1" style="width:100%;box-sizing:border-box;"/>
+        <html:span data-l10n-id="zotseek-pref-cloudRecommendedChunkTokens">Recommended Chunk Tokens</html:span>
+        <html:input id="zotseek-cloud-recommended-chunk-tokens" type="number" readonly="readonly" style="width:100%;box-sizing:border-box;"/>
+        <html:span data-l10n-id="zotseek-pref-cloudQueryPrefix">Query Prefix</html:span>
+        <html:input id="zotseek-cloud-query-prefix" type="text" style="width:100%;box-sizing:border-box;"/>
+        <html:span data-l10n-id="zotseek-pref-cloudDocumentPrefix">Document Prefix</html:span>
+        <html:input id="zotseek-cloud-doc-prefix" type="text" style="width:100%;box-sizing:border-box;"/>
+        <html:span data-l10n-id="zotseek-pref-cloudBatchSize">Maximum inputs per batch</html:span>
+        <html:input id="zotseek-cloud-batch-size" type="number" min="1" max="256" step="1" style="width:100%;box-sizing:border-box;"/>
+      </html:div>
+      <html:p data-l10n-id="zotseek-pref-cloudRecommendedChunkDesc"
+              style="color: var(--zotseek-text-secondary); font-size:11px; margin:6px 0 0 170px;">
+        Automatically uses 85% of the model limit, capped at 3000 Tokens.
+      </html:p>
+    </html:details>
+
+    <hbox align="center" style="margin-top:8px;">
+      <button id="zotseek-cloud-test" data-l10n-id="zotseek-pref-cloudTest" label="Test connection"/>
+      <html:span id="zotseek-cloud-status" style="font-size:11px;margin-left:8px;"></html:span>
+    </hbox>
+    <checkbox id="zotseek-cloud-auto-index"
+              data-l10n-id="zotseek-pref-cloudAutoIndex"
+              label="Allow Zotero to maintain the index at startup when using a Cloud model"
+              native="true"
+              checked="false"
+              style="margin-top:8px;"/>
+    <html:p data-l10n-id="zotseek-pref-cloudAutoIndexDesc"
+            style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 4px 0 0 24px;">
+      Off by default. The global Automatic Maintenance setting must also be enabled.
+    </html:p>
+  </groupbox>
+</html:details>
+
+<!-- Chunking and model input -->
+<groupbox style="margin-top: 12px;">
+  <label><html:h2 data-l10n-id="zotseek-pref-modelInputSettings">Chunking and Model Input</html:h2></label>
+
+  <html:div class="zotseek-settings-box" style="border-radius: 6px; padding: 12px; border-width: 1px; border-style: solid;">
+    <html:div style="display: grid; grid-template-columns: 180px 100px minmax(0, 1fr) auto; gap: 10px 12px; align-items: center;">
+      <html:label data-l10n-id="zotseek-pref-maxTokens" for="zotseek-pref-maxTokens" style="color: var(--zotseek-text-primary);">Max tokens per chunk</html:label>
+      <html:input type="number"
+                  id="zotseek-pref-maxTokens"
+                  class="zotseek-input"
+                  min="50" max="8192" step="10"
+                  style="width: 100%; box-sizing: border-box; padding: 4px 8px; border-radius: 4px; border-width: 1px; border-style: solid;" />
+      <html:span id="zotseek-pref-maxTokensPolicy" style="font-size: 11px; color: var(--zotseek-text-secondary);"></html:span>
+      <button id="zotseek-pref-resetMaxTokens" data-l10n-id="zotseek-pref-resetMaxTokens" />
+
+      <html:label data-l10n-id="zotseek-pref-maxChunks" for="zotseek-pref-maxChunksPerPaper" style="color: var(--zotseek-text-primary);">Max chunks per paper</html:label>
+      <html:input type="number"
+                  id="zotseek-pref-maxChunksPerPaper"
+                  class="zotseek-input"
+                  min="1" max="200" step="10"
+                  value="100"
+                  style="width: 100%; box-sizing: border-box; padding: 4px 8px; border-radius: 4px; border-width: 1px; border-style: solid;" />
+      <html:span data-l10n-id="zotseek-pref-maxChunksDesc" style="font-size: 11px; color: var(--zotseek-text-secondary);">Limit for long documents (1-200)</html:span>
+      <html:span></html:span>
+    </html:div>
   </html:div>
-  <html:p id="zotseek-server-config-status"
-          style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 5px 0 0 0;"></html:p>
 </groupbox>
 
 </html:details>
@@ -274,7 +374,7 @@
 </html:div>
 
 <!-- Indexing Mode - Radio Style Cards -->
-<groupbox>
+<groupbox style="margin-top: 0; margin-bottom: 6px;">
   <label><html:h2 data-l10n-id="zotseek-pref-indexingMode">Indexing Mode</html:h2></label>
 
   <!-- Hidden menulist for compatibility with existing JS -->
@@ -340,7 +440,7 @@
 </groupbox>
 
 <!-- Startup automatic index maintenance -->
-<groupbox>
+<groupbox style="margin-top: 0; margin-bottom: 6px;">
   <label><html:h2 data-l10n-id="zotseek-pref-autoIndexing">Automatic Maintenance</html:h2></label>
 
   <checkbox id="zotseek-pref-autoIndex"
@@ -354,7 +454,7 @@
 </groupbox>
 
 <!-- Exclusions -->
-<groupbox>
+<groupbox style="margin-top: 0; margin-bottom: 0;">
   <label><html:h2 data-l10n-id="zotseek-prefs-exclusions">Exclusions</html:h2></label>
 
   <checkbox id="zotseek-pref-excludeBooks"
@@ -366,7 +466,7 @@
     Books will not be indexed. Existing ZotSeek indexes for books are removed by the next index check.
   </html:p>
 
-  <html:div style="margin-top: 12px; display: flex; align-items: center; gap: 8px;">
+  <html:div style="margin-top: 8px; display: flex; align-items: center; gap: 8px;">
     <html:label data-l10n-id="zotseek-pref-excludeTag" for="zotseek-pref-excludeTag" style="color: var(--zotseek-text-primary);">Exclude tag</html:label>
     <html:input type="text"
                 id="zotseek-pref-excludeTag"
@@ -390,15 +490,15 @@
   <label><html:h2 data-l10n-id="zotseek-pref-searchSettings">Search Settings</html:h2></label>
 
   <html:div class="zotseek-settings-box" style="border-radius: 6px; padding: 12px; border-width: 1px; border-style: solid;">
-    <html:div style="display: grid; grid-template-columns: 150px 70px 1fr auto; gap: 10px 12px; align-items: center;">
+    <html:div style="display: grid; grid-template-columns: 180px 160px minmax(0, 1fr); gap: 10px 12px; align-items: center;">
       <html:label data-l10n-id="zotseek-pref-resultsToShow" for="zotseek-pref-topK" style="color: var(--zotseek-text-primary);">Results to show</html:label>
       <html:input type="number"
                   id="zotseek-pref-topK"
                   class="zotseek-input"
                   min="5" max="100" step="5"
                   value="20"
-                  style="width: 70px; padding: 4px 8px; border-radius: 4px; border-width: 1px; border-style: solid;" />
-      <html:span data-l10n-id="zotseek-pref-resultsToShowDesc" style="font-size: 11px; color: var(--zotseek-text-secondary); margin-left: 12px;">How many matches to display (5-100)</html:span>
+                  style="width: 100%; box-sizing: border-box; padding: 4px 8px; border-radius: 4px; border-width: 1px; border-style: solid;" />
+      <html:span data-l10n-id="zotseek-pref-resultsToShowDesc" style="font-size: 11px; color: var(--zotseek-text-secondary);">How many matches to display (5-100)</html:span>
 
       <html:label data-l10n-id="zotseek-pref-minSimilarity" for="zotseek-pref-minSimilarity" style="color: var(--zotseek-text-primary);">Min similarity</html:label>
       <html:input type="number"
@@ -406,38 +506,19 @@
                   class="zotseek-input"
                   min="0" max="100" step="5"
                   value="30"
-                  style="width: 70px; padding: 4px 8px; border-radius: 4px; border-width: 1px; border-style: solid;" />
-      <html:span data-l10n-id="zotseek-pref-minSimilarityDesc" style="font-size: 11px; color: var(--zotseek-text-secondary); margin-left: 12px;">% — Filter out low-quality matches (0-100)</html:span>
+                  style="width: 100%; box-sizing: border-box; padding: 4px 8px; border-radius: 4px; border-width: 1px; border-style: solid;" />
+      <html:span data-l10n-id="zotseek-pref-minSimilarityDesc" style="font-size: 11px; color: var(--zotseek-text-secondary);">% — Filter out low-quality matches (0-100)</html:span>
+
+      <html:label data-l10n-id="zotseek-pref-defaultSearchMode" for="zotseek-pref-defaultSearchMode" style="color: var(--zotseek-text-primary);">Default search mode</html:label>
+      <menulist id="zotseek-pref-defaultSearchMode" native="true" style="width: 100%; min-width: 0;">
+        <menupopup>
+          <menuitem value="hybrid" data-l10n-id="zotseek-search-modeHybrid" label="🔗 Hybrid (Recommended)"/>
+          <menuitem value="semantic" data-l10n-id="zotseek-search-modeSemantic" label="🧠 Semantic Only"/>
+          <menuitem value="keyword" data-l10n-id="zotseek-search-modeKeyword" label="🔤 Keyword Only"/>
+        </menupopup>
+      </menulist>
+      <html:span data-l10n-id="zotseek-pref-defaultSearchModeDesc" style="font-size: 11px; color: var(--zotseek-text-secondary);">Used for new searches; Hybrid combines semantic and keyword matching.</html:span>
     </html:div>
-  </html:div>
-</groupbox>
-
-<!-- Advanced Settings (Collapsible) -->
-<groupbox>
-  <label><html:h2 data-l10n-id="zotseek-pref-advancedSettings">Advanced Settings</html:h2></label>
-
-  <html:div class="zotseek-settings-box" style="border-radius: 6px; padding: 12px; border-width: 1px; border-style: solid;">
-    <html:div style="display: grid; grid-template-columns: 150px 70px 1fr; gap: 10px 12px; align-items: center;">
-      <html:label data-l10n-id="zotseek-pref-maxTokens" for="zotseek-pref-maxTokens" style="color: var(--zotseek-text-primary);">Max tokens per chunk</html:label>
-      <html:input type="number"
-                  id="zotseek-pref-maxTokens"
-                  class="zotseek-input"
-                  min="50" max="8192" step="10"
-                  style="width: 70px; padding: 4px 8px; border-radius: 4px; border-width: 1px; border-style: solid;" />
-      <html:span id="zotseek-pref-maxTokensPolicy" style="font-size: 11px; color: var(--zotseek-text-secondary); margin-left: 12px;"></html:span>
-      <button id="zotseek-pref-resetMaxTokens" data-l10n-id="zotseek-pref-resetMaxTokens" />
-
-      <html:label data-l10n-id="zotseek-pref-maxChunks" for="zotseek-pref-maxChunksPerPaper" style="color: var(--zotseek-text-primary);">Max chunks per paper</html:label>
-      <html:input type="number"
-                  id="zotseek-pref-maxChunksPerPaper"
-                  class="zotseek-input"
-                  min="1" max="200" step="10"
-                  value="100"
-                  style="width: 70px; padding: 4px 8px; border-radius: 4px; border-width: 1px; border-style: solid;" />
-      <html:span data-l10n-id="zotseek-pref-maxChunksDesc" style="font-size: 11px; color: var(--zotseek-text-secondary); margin-left: 12px;">Limit for long documents (1-200)</html:span>
-      <html:span></html:span>
-    </html:div>
-
   </html:div>
 </groupbox>
 
@@ -475,8 +556,7 @@
 </groupbox>
 
 <!-- Clear Index (Danger) -->
-<groupbox>
-  <label><html:h2 data-l10n-id="zotseek-pref-dangerZone">Danger Zone</html:h2></label>
+<groupbox style="margin-top: 0; margin-bottom: 8px;">
   <!-- Clear Index - Danger -->
   <vbox class="zotseek-action-danger" style="border-radius: 6px; padding: 12px; border-width: 1px; border-style: solid;">
     <hbox align="center">
@@ -492,7 +572,7 @@
 </groupbox>
 
 <!-- Database Health -->
-<groupbox>
+<groupbox style="margin-top: 12px;">
   <label><html:h2 data-l10n-id="zotseek-pref-healthHeader">Database Health</html:h2></label>
   <html:div class="zotseek-settings-box" style="border-radius: 6px; padding: 12px; border-width: 1px; border-style: solid;">
     <hbox align="center">
@@ -530,8 +610,8 @@
     <label class="zotero-text-link"
            is="zotero-text-link"
            role="link"
-           href="https://github.com/introfini/zotseek"
-           value="GitHub Repository"
+           href="https://github.com/Einheriar/ZotSeek-CHS"
+           value="GitHub Fork Repository"
            data-l10n-id="zotseek-pref-githubRepo" />
   </hbox>
 </groupbox>

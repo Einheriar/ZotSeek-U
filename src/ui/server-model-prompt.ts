@@ -1,4 +1,4 @@
-/** Shared modal prompt for explicit UI actions that require a ready Server model. */
+/** Shared modal prompt for explicit UI actions that require a ready Local Server model. */
 
 import { getString } from '../utils/locale';
 import {
