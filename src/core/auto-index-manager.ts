@@ -1076,21 +1076,6 @@ export class AutoIndexManager {
     }
   }
 
-  public getStatus(): {
-    running: boolean;
-    checking: boolean;
-    pending: number;
-    waiting: number;
-    pendingNoteUpdates: number;
-  } {
-    return {
-      running: this.running,
-      checking: this.checking,
-      pending: 0,
-      waiting: 0,
-      pendingNoteUpdates: 0,
-    };
-  }
 }
 
 export const autoIndexManager = AutoIndexManager.getInstance();
