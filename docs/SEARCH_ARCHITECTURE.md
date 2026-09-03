@@ -906,6 +906,30 @@ See [Chunking Strategy](#chunking-strategy) for detailed trade-offs. Summary:
 
 ### Embedding Cache
 
+Search uses two process-local, non-persistent caches. The semantic cache holds
+pre-normalized vectors for all stored model partitions plus lightweight source
+and location metadata; it deliberately excludes `chunk_text`. The T0 lexical
+cache holds one in-memory BM25 index for the active-model/fallback corpus. Both
+are lost when Zotero exits, so the first corresponding query after startup or
+invalidation rebuilds them from `zotseek.sqlite`.
+
+Both caches share a monotonically increasing mutation generation but use
+independent keyed single-flight builds. Concurrent cold semantic queries for the
+same generation share one vector read, while concurrent lexical queries for the
+same model and generation share one corpus read and tokenization pass. Library
+and source restrictions are applied when searching the shared base index; they
+do not create full per-library or per-source cache copies.
+
+A build publishes only if its generation, active model where applicable, and
+store lifecycle are still current when it completes. A successful index write,
+clear, model deletion, database reattachment, compaction, or store close first
+invalidates publication eligibility. If a build becomes stale it is discarded
+and retried once. Continued indexing can therefore temporarily omit index-side
+BM25 evidence; a repeatedly invalidated vector build preserves its error
+semantics and is converted to an empty semantic branch by the Hybrid layer. No
+known-stale or potentially mixed cache is returned. The next query after writes
+settle rebuilds normally, without requiring a restart or index clear.
+
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                      CACHING ARCHITECTURE                            │
@@ -1128,6 +1152,11 @@ semantic/lexical share inside the Notes H1 specialist. It does not change the
 Full 2+N source allocation, and Abstract content search remains semantic after
 metadata identity navigation:
 
+The metadata identity prepass emits timing diagnostics for Zotero Search,
+bulk `Zotero.Items.getAsync()` loading, candidate filtering, classification and
+final result preparation, together with candidate counts and the match kind.
+These diagnostics do not include the query, creator list, DOI or document text.
+
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                      QUERY ANALYSIS                                  │
@@ -1174,12 +1203,17 @@ Stored faithful chunk text is ranked by the frozen T0 contract:
 - maximum TF when natural and bigram channels produce the same term;
 - BM25 `k1=1.2`, `b=0.75`, with no library-term patch.
 
-The first lexical query builds a lightweight in-memory cache. For each paper,
+The first lexical query builds a process-local in-memory cache. For each paper,
 chunks from the active model are preferred; if that paper has not yet been
 rebuilt for the active model, one deterministic fallback model partition keeps
 lexical retrieval available during migration without mixing two copies of the
 same paper. Index mutations, clearing, model changes and database reattachment
-invalidate the cache. Semantic vectors are not decoded while building it.
+invalidate the cache or prevent an obsolete build from publishing. Same-key
+concurrent cold queries join one build; an invalidated build retries once and
+then safely omits index-side lexical evidence until a later stable query.
+Semantic vectors are not decoded while building it. Build diagnostics report
+model, chunk count, faithful-text character/UTF-8 byte counts, unique terms,
+postings and elapsed time without logging corpus text.
 Source-restricted specialists calculate corpus statistics after restricting to
 their Metadata/Notes or PDF source set.
 

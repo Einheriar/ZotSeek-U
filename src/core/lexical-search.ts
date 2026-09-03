@@ -32,6 +32,18 @@ function increment(terms: Map<string, number>, term: string): void {
   terms.set(term, (terms.get(term) ?? 0) + 1);
 }
 
+function utf8ByteLength(value: string): number {
+  let bytes = 0;
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (codePoint <= 0x7f) bytes += 1;
+    else if (codePoint <= 0x7ff) bytes += 2;
+    else if (codePoint <= 0xffff) bytes += 3;
+    else bytes += 4;
+  }
+  return bytes;
+}
+
 export function normalizeLexicalText(value: string): string {
   return String(value ?? '').normalize('NFC').toLocaleLowerCase('und');
 }
@@ -86,6 +98,9 @@ interface IndexedDocument extends LexicalDocument {
 export class T0BM25Index {
   private documents = new Map<string, IndexedDocument>();
   private postings = new Map<string, Map<string, number>>();
+  private postingCount = 0;
+  private totalTextChars = 0;
+  private totalTextBytes = 0;
 
   constructor(
     documents: LexicalDocument[],
@@ -99,16 +114,35 @@ export class T0BM25Index {
     return this.documents.size;
   }
 
+  get stats(): {
+    documentCount: number;
+    termCount: number;
+    postingCount: number;
+    totalTextChars: number;
+    totalTextBytes: number;
+  } {
+    return {
+      documentCount: this.documents.size,
+      termCount: this.postings.size,
+      postingCount: this.postingCount,
+      totalTextChars: this.totalTextChars,
+      totalTextBytes: this.totalTextBytes,
+    };
+  }
+
   private add(document: LexicalDocument): void {
     const documentId = `${document.itemPk}:${document.chunkIndex}`;
     if (this.documents.has(documentId)) return;
     const terms = tokenizeT0(document.chunkText);
     const length = [...terms.values()].reduce((sum, count) => sum + count, 0);
     this.documents.set(documentId, { ...document, documentId, length });
+    this.totalTextChars += document.chunkText.length;
+    this.totalTextBytes += utf8ByteLength(document.chunkText);
     for (const [term, tf] of terms) {
       const posting = this.postings.get(term) ?? new Map<string, number>();
       posting.set(documentId, tf);
       this.postings.set(term, posting);
+      this.postingCount++;
     }
   }
 

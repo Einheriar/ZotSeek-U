@@ -37,6 +37,19 @@ describe('Plan 24C T0 production lexical search', () => {
     assert.equal(results.filter(result => result.itemKey === 'AAAA0001').length, 1);
   });
 
+  test('reports corpus size diagnostics without retaining another text copy', () => {
+    const index = new T0BM25Index([
+      doc(1, 'AAAA0001', 0, '中文A', 'note'),
+      doc(2, 'BBBB0002', 0, 'plain', 'summary'),
+    ]);
+
+    assert.equal(index.stats.documentCount, 2);
+    assert.equal(index.stats.totalTextChars, 8);
+    assert.equal(index.stats.totalTextBytes, 12);
+    assert.ok(index.stats.termCount > 0);
+    assert.ok(index.stats.postingCount >= index.stats.termCount);
+  });
+
   test('isolates metadata/Notes and PDF corpora before computing BM25', () => {
     const index = new T0BM25Index([
       doc(1, 'NOTE0001', 0, 'shared phrase in note', 'note'),

@@ -314,6 +314,13 @@ export class HybridSearchEngine {
     query: string,
     opts: ResolvedHybridSearchOptions,
   ): Promise<HybridSearchResult[]> {
+    const totalStartedAt = Date.now();
+    let searchMs = 0;
+    let metadataLoadMs = 0;
+    let candidateFilterMs = 0;
+    let classifyMs = 0;
+    let itemIdCount = 0;
+    let candidateCount = 0;
     try {
       const search = new Zotero.Search();
       if (opts.libraryId !== undefined) search.libraryID = opts.libraryId;
@@ -328,7 +335,10 @@ export class HybridSearchEngine {
       );
       search.addCondition('itemType', 'isNot', 'attachment');
       search.addCondition('itemType', 'isNot', 'note');
+      const searchStartedAt = Date.now();
       const itemIds = await search.search().catch(() => []);
+      searchMs = Date.now() - searchStartedAt;
+      itemIdCount = itemIds.length;
       const excludeBooks = Zotero.Prefs.get('zotseek.excludeBooks', true) ?? true;
       const candidates: Array<{
         id: string;
@@ -342,9 +352,12 @@ export class HybridSearchEngine {
       // set. Bulk resolution avoids an N-round-trip loop and lets the final
       // author collection be sorted deterministically instead of depending on
       // Zotero Search's unspecified result order.
+      const metadataLoadStartedAt = Date.now();
       const resolvedItems = itemIds.length > 0
         ? await Zotero.Items.getAsync(itemIds)
         : [];
+      metadataLoadMs = Date.now() - metadataLoadStartedAt;
+      const candidateFilterStartedAt = Date.now();
       for (const item of (Array.isArray(resolvedItems) ? resolvedItems : [resolvedItems])) {
         if (!item?.isRegularItem?.()) continue;
         if (excludeBooks && item.itemType === 'book') continue;
@@ -362,9 +375,21 @@ export class HybridSearchEngine {
           item,
         });
       }
+      candidateFilterMs = Date.now() - candidateFilterStartedAt;
+      candidateCount = candidates.length;
 
+      const classifyStartedAt = Date.now();
       const match = classifyMetadataIdentity(query, candidates);
-      if (!match) return [];
+      classifyMs = Date.now() - classifyStartedAt;
+      if (!match) {
+        this.logger.debug(
+          `Identity prepass: match=none itemIds=${itemIdCount} candidates=${candidateCount} ` +
+          `search=${searchMs}ms metadata=${metadataLoadMs}ms filter=${candidateFilterMs}ms ` +
+          `classify=${classifyMs}ms total=${Date.now() - totalStartedAt}ms`
+        );
+        return [];
+      }
+      const resultStartedAt = Date.now();
       const matchedCandidates = [...match.candidates];
       const candidateIdentity = (candidate: typeof matchedCandidates[number]) => {
         const stable = identityFromItem(candidate.item);
@@ -396,10 +421,20 @@ export class HybridSearchEngine {
         textSource: 'summary' as TextSourceType,
       }));
       await this.populateItemMetadata(results);
-      this.logger.info(`Identity navigation: ${match.kind}, ${results.length} result(s)`);
+      this.logger.info(
+        `Identity navigation: match=${match.kind} results=${results.length} ` +
+        `itemIds=${itemIdCount} candidates=${candidateCount} search=${searchMs}ms ` +
+        `metadata=${metadataLoadMs}ms filter=${candidateFilterMs}ms classify=${classifyMs}ms ` +
+        `finalize=${Date.now() - resultStartedAt}ms total=${Date.now() - totalStartedAt}ms`
+      );
       return results;
     } catch (error) {
-      this.logger.debug(`Identity navigation abstained after metadata error: ${error}`);
+      this.logger.debug(
+        `Identity navigation abstained after metadata error: ${error}; ` +
+        `itemIds=${itemIdCount} candidates=${candidateCount} search=${searchMs}ms ` +
+        `metadata=${metadataLoadMs}ms filter=${candidateFilterMs}ms ` +
+        `classify=${classifyMs}ms total=${Date.now() - totalStartedAt}ms`
+      );
       return [];
     }
   }

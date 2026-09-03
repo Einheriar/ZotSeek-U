@@ -140,9 +140,26 @@ export interface VectorStoreStats {
   locationCoveragePercent: number; // Percentage of chunks with location data
 }
 
+interface CachedEmbeddingRow {
+  itemPk: number;
+  libraryKey: string;
+  itemKey: string;
+  itemId?: number;
+  libraryId?: number;
+  chunkIndex: number;
+  title: string;
+  textSource: TextSourceType;
+  modelId: string;
+  embedding: Float32Array;
+  pdfAttachmentKey?: string;
+  pageNumber?: number;
+  paragraphIndex?: number;
+}
+
 // Database configuration
 const DB_NAME = 'zotseek';           // Schema name when attached
 const DB_FILE = 'zotseek.sqlite';    // Database filename
+const CACHE_WARNING_INTERVAL_MS = 30_000;
 const SCHEMA_VERSION = 12;           // v12: exact main-PDF attachment provenance
 
 // Legacy table prefix (for migration from old schema)
@@ -160,23 +177,19 @@ export class VectorStoreSQLite {
   private attached = false;
   private onConnectRegistered = false;
   private cache: {
-    data: Array<{
-      itemPk: number;
-      libraryKey: string;
-      itemKey: string;
-      itemId?: number;
-      libraryId?: number;
-      chunkIndex: number;
-      title: string;
-      textSource: TextSourceType;
-      modelId: string;
-      embedding: Float32Array;
-      pageNumber?: number;
-      paragraphIndex?: number;
-    }>;
-    validAt: number;  // timestamp
+    data: CachedEmbeddingRow[];
+    validAt: number;
+    generation: number;
   } | null = null;
-  private lexicalCache: { modelId: string; index: T0BM25Index } | null = null;
+  private lexicalCache: {
+    modelId: string;
+    generation: number;
+    index: T0BM25Index;
+  } | null = null;
+  private cacheGeneration = 0;
+  private vectorCacheBuilds = new Map<number, Promise<CachedEmbeddingRow[]>>();
+  private lexicalCacheBuilds = new Map<string, Promise<T0BM25Index>>();
+  private cacheWarningAt = new Map<'vector' | 'lexical', number>();
 
   constructor() {
     this.logger = new Logger('VectorStoreSQLite');
@@ -2042,8 +2055,8 @@ export class VectorStoreSQLite {
       embedding.bbox ?? null,
     ]);
 
-    this.logger.debug(`Stored chunk for (${embedding.libraryKey}, ${embedding.itemKey}) idx=${chunkIndex}`);
     this.invalidateCache();
+    this.logger.debug(`Stored chunk for (${embedding.libraryKey}, ${embedding.itemKey}) idx=${chunkIndex}`);
   }
 
   /**
@@ -2124,14 +2137,20 @@ export class VectorStoreSQLite {
       }
     });
 
+    // The transaction has committed. Invalidate synchronously before any
+    // diagnostic await so a failed verification query cannot leave stale data.
+    this.invalidateCache();
     this.logger.info(`Stored ${embeddings.length} embeddings`);
 
     // Verification log only — not a correctness check
-    const verifyRows = await Zotero.DB.queryAsync(
-      `SELECT COUNT(*) as count FROM ${DB_NAME}.chunks`
-    );
-    this.logger.info(`Table now has ${verifyRows?.[0]?.count || 0} total embedding chunks`);
-    this.invalidateCache();
+    try {
+      const verifyRows = await Zotero.DB.queryAsync(
+        `SELECT COUNT(*) as count FROM ${DB_NAME}.chunks`
+      );
+      this.logger.info(`Table now has ${verifyRows?.[0]?.count || 0} total embedding chunks`);
+    } catch (error: any) {
+      this.logger.debug(`putBatch verification query skipped: ${error?.message || error}`);
+    }
   }
 
   /**
@@ -2251,8 +2270,8 @@ export class VectorStoreSQLite {
       );
     });
 
-    this.logger.debug(`Deleted item (${libraryKey}, ${itemKey})`);
     this.invalidateCache();
+    this.logger.debug(`Deleted item (${libraryKey}, ${itemKey})`);
   }
 
   /**
@@ -2559,42 +2578,62 @@ export class VectorStoreSQLite {
    * Get all embeddings with in-memory caching
    * Returns cached data if available, otherwise fetches from DB and caches
    */
-  async getAllCached(): Promise<Array<{
-    itemPk: number;
-    libraryKey: string;
-    itemKey: string;
-    /** @deprecated Compatibility field: current local Zotero ID, or -1 for orphans. */
-    itemId?: number;
-    /** Current local Zotero library ID, resolved from the stable library key. */
-    libraryId?: number;
-    chunkIndex: number;
-    title: string;
-    textSource: TextSourceType;
-    modelId: string;
-    embedding: Float32Array;
-    pageNumber?: number;
-    paragraphIndex?: number;
-  }>> {
+  async getAllCached(): Promise<CachedEmbeddingRow[]> {
     await this.ensureInit();
 
-    // Check if cache is valid (less than 5 minutes old)
-    const now = Date.now();
-    if (this.cache && (now - this.cache.validAt) < 5 * 60 * 1000) {
-      this.logger.debug(`getAllCached(): Cache hit! Returning ${this.cache.data.length} cached embeddings`);
-      return this.cache.data;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const generation = this.cacheGeneration;
+      const now = Date.now();
+      if (this.cache && this.cache.generation === generation &&
+          (now - this.cache.validAt) < 5 * 60 * 1000) {
+        this.logger.debug(`getAllCached(): Cache hit! Returning ${this.cache.data.length} cached embeddings`);
+        return this.cache.data;
+      }
+
+      const cachedData = await this.getOrStartVectorCacheBuild(generation);
+      if (this.cacheGeneration === generation && this.initialized) {
+        // Joined callers can publish the same immutable build idempotently.
+        // Do not reuse an older TTL-expired cache merely because its mutation
+        // generation is unchanged.
+        this.cache = { data: cachedData, validAt: Date.now(), generation };
+        this.logger.debug(`getAllCached(): Cached ${cachedData.length} embeddings at generation ${generation}`);
+        return cachedData;
+      }
+
+      this.logger.debug(`getAllCached(): Discarded stale generation ${generation}`);
+      if (!this.initialized) throw new Error('Vector store closed during cache build');
     }
 
-    this.logger.debug('getAllCached(): Cache miss, fetching from database...');
+    this.warnCacheDegraded(
+      'vector',
+      'getAllCached(): Cache changed during both build attempts; semantic search will degrade'
+    );
+    throw new Error('Vector cache changed during both build attempts');
+  }
 
-    // Fetch all embeddings using the reliable getAll method
+  private async getOrStartVectorCacheBuild(generation: number): Promise<CachedEmbeddingRow[]> {
+    const existing = this.vectorCacheBuilds.get(generation);
+    if (existing) {
+      this.logger.debug(`getAllCached(): Joining generation ${generation} build`);
+      return existing;
+    }
+
+    this.logger.debug(`getAllCached(): Cache miss at generation ${generation}, fetching from database...`);
+    const build = this.buildVectorCache();
+    this.vectorCacheBuilds.set(generation, build);
+    try {
+      return await build;
+    } finally {
+      if (this.vectorCacheBuilds.get(generation) === build) {
+        this.vectorCacheBuilds.delete(generation);
+      }
+    }
+  }
+
+  private async buildVectorCache(): Promise<CachedEmbeddingRow[]> {
     const embeddings = await this.getAll();
-
-    // Convert to cached format with Float32Array and pre-normalized vectors
-    const cachedData = embeddings.map(e => {
-      // Convert to Float32Array
+    return embeddings.map(e => {
       const float32Embedding = new Float32Array(e.embedding);
-
-      // Normalize the vector for faster similarity computation
       let norm = 0;
       for (let i = 0; i < float32Embedding.length; i++) {
         norm += float32Embedding[i] * float32Embedding[i];
@@ -2617,25 +2656,18 @@ export class VectorStoreSQLite {
         textSource: e.textSource,
         modelId: e.modelId,
         embedding: float32Embedding,
+        pdfAttachmentKey: e.pdfAttachmentKey,
         pageNumber: e.pageNumber,
         paragraphIndex: e.paragraphIndex,
       };
     });
-
-    // Cache the data
-    this.cache = {
-      data: cachedData,
-      validAt: now,
-    };
-
-    this.logger.debug(`getAllCached(): Cached ${cachedData.length} embeddings`);
-    return cachedData;
   }
 
   /**
    * Invalidate the in-memory cache
    */
   invalidateCache(): void {
+    this.cacheGeneration++;
     if (this.cache) {
       this.logger.debug('invalidateCache(): Cache invalidated');
       this.cache = null;
@@ -2658,77 +2690,150 @@ export class VectorStoreSQLite {
   ): Promise<IndexedTextMatch[]> {
     await this.ensureInit();
     try {
-      const activeModelId = getActiveModelId();
-      if (!this.lexicalCache || this.lexicalCache.modelId !== activeModelId) {
-        const params = [activeModelId, activeModelId];
-        const fromWhere = `
-          FROM ${DB_NAME}.chunks c
-          INNER JOIN ${DB_NAME}.items i ON c.item_pk = i.item_pk
-          WHERE i.library_key != 'orphan'
-            AND c.chunk_text IS NOT NULL
-            AND (
-              c.model_id = ?
-              OR (
-                NOT EXISTS (
-                  SELECT 1 FROM ${DB_NAME}.chunks active
-                  WHERE active.item_pk = c.item_pk AND active.model_id = ?
-                )
-                AND c.model_id = (
-                  SELECT MIN(fallback.model_id)
-                  FROM ${DB_NAME}.chunks fallback
-                  WHERE fallback.item_pk = c.item_pk
-                )
-              )
-            )
-          ORDER BY c.item_pk, c.chunk_index
-        `;
-        const [pks, libraryKeys, itemKeys, chunkIndexes, chunkTexts, sectionPaths, pdfAttachmentKeys, textSources] = await Promise.all([
-          Zotero.DB.columnQueryAsync(`SELECT c.item_pk ${fromWhere}`, params),
-          Zotero.DB.columnQueryAsync(`SELECT i.library_key ${fromWhere}`, params),
-          Zotero.DB.columnQueryAsync(`SELECT i.item_key ${fromWhere}`, params),
-          Zotero.DB.columnQueryAsync(`SELECT c.chunk_index ${fromWhere}`, params),
-          Zotero.DB.columnQueryAsync(`SELECT c.chunk_text ${fromWhere}`, params),
-          Zotero.DB.columnQueryAsync(`SELECT c.section_paths ${fromWhere}`, params),
-          Zotero.DB.columnQueryAsync(`SELECT c.pdf_attachment_key ${fromWhere}`, params),
-          Zotero.DB.columnQueryAsync(`SELECT c.text_source ${fromWhere}`, params),
-        ]);
-        const identities = (pks || []).map((_: any, index: number) => ({
-          libraryKey: String(libraryKeys[index]),
-          itemKey: String(itemKeys[index]),
-        }));
-        const idMap = bulkResolve(identities);
-        const documents: LexicalDocument[] = (pks || []).map((value: any, index: number) => {
-          const libraryKey = String(libraryKeys[index]);
-          const itemKey = String(itemKeys[index]);
-          return {
-            itemPk: Number(value),
-            libraryKey,
-            itemKey,
-            itemId: idMap.get(`${libraryKey}|${itemKey}`),
-            chunkIndex: Number(chunkIndexes[index]),
-            chunkText: String(chunkTexts[index] || ''),
-            sectionPaths: this.sectionPathsFromJSON(sectionPaths[index]),
-            pdfAttachmentKey: pdfAttachmentKeys[index] || undefined,
-            textSource: (textSources[index] as TextSourceType) || 'content',
-          };
-        });
-        this.lexicalCache = { modelId: activeModelId, index: new T0BM25Index(documents) };
-        this.logger.info(`Built T0 BM25 cache for ${documents.length} chunks`);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const modelId = getActiveModelId();
+        const generation = this.cacheGeneration;
+        if (this.lexicalCache?.modelId === modelId &&
+            this.lexicalCache.generation === generation) {
+          return this.searchLexicalCache(this.lexicalCache.index, query, options);
+        }
+
+        const index = await this.getOrStartLexicalCacheBuild(modelId, generation);
+        if (this.cacheGeneration === generation && this.initialized &&
+            getActiveModelId() === modelId) {
+          // Joined callers publish the same immutable build idempotently.
+          this.lexicalCache = { modelId, generation, index };
+          return this.searchLexicalCache(index, query, options);
+        }
+
+        this.logger.debug(
+          `searchText(): Discarded stale build model=${modelId} generation=${generation}`
+        );
+        if (!this.initialized) {
+          this.logger.debug('searchText(): Store closed during cache build; lexical evidence omitted');
+          return [];
+        }
       }
 
-      const libraryKey = options.libraryId === undefined
-        ? undefined
-        : libraryKeyFromLocalID(options.libraryId) ?? undefined;
-      if (options.libraryId !== undefined && !libraryKey) return [];
-      return this.lexicalCache.index.search(query, {
-        limit: options.limit,
-        libraryKey,
-        textSources: options.textSources,
-      });
+      this.warnCacheDegraded(
+        'lexical',
+        'searchText(): Cache changed during both build attempts; lexical evidence will degrade'
+      );
+      return [];
     } catch (error) {
       this.logger.error(`searchText failed: ${error}`);
       return [];
     }
+  }
+
+  private searchLexicalCache(
+    index: T0BM25Index,
+    query: string,
+    options: { limit?: number; libraryId?: number; textSources?: TextSourceType[] }
+  ): IndexedTextMatch[] {
+    const libraryKey = options.libraryId === undefined
+      ? undefined
+      : libraryKeyFromLocalID(options.libraryId) ?? undefined;
+    if (options.libraryId !== undefined && !libraryKey) return [];
+    return index.search(query, {
+      limit: options.limit,
+      libraryKey,
+      textSources: options.textSources,
+    });
+  }
+
+  private async getOrStartLexicalCacheBuild(
+    modelId: string,
+    generation: number
+  ): Promise<T0BM25Index> {
+    const key = `${modelId}\u0000${generation}`;
+    const existing = this.lexicalCacheBuilds.get(key);
+    if (existing) {
+      this.logger.debug(`searchText(): Joining model=${modelId} generation=${generation} build`);
+      return existing;
+    }
+
+    const build = this.buildLexicalCache(modelId, generation);
+    this.lexicalCacheBuilds.set(key, build);
+    try {
+      return await build;
+    } finally {
+      if (this.lexicalCacheBuilds.get(key) === build) {
+        this.lexicalCacheBuilds.delete(key);
+      }
+    }
+  }
+
+  private async buildLexicalCache(modelId: string, generation: number): Promise<T0BM25Index> {
+    const startedAt = Date.now();
+    const params = [modelId, modelId];
+    const fromWhere = `
+      FROM ${DB_NAME}.chunks c
+      INNER JOIN ${DB_NAME}.items i ON c.item_pk = i.item_pk
+      WHERE i.library_key != 'orphan'
+        AND c.chunk_text IS NOT NULL
+        AND (
+          c.model_id = ?
+          OR (
+            NOT EXISTS (
+              SELECT 1 FROM ${DB_NAME}.chunks active
+              WHERE active.item_pk = c.item_pk AND active.model_id = ?
+            )
+            AND c.model_id = (
+              SELECT MIN(fallback.model_id)
+              FROM ${DB_NAME}.chunks fallback
+              WHERE fallback.item_pk = c.item_pk
+            )
+          )
+        )
+      ORDER BY c.item_pk, c.chunk_index
+    `;
+    const [pks, libraryKeys, itemKeys, chunkIndexes, chunkTexts, sectionPaths, pdfAttachmentKeys, textSources] = await Promise.all([
+      Zotero.DB.columnQueryAsync(`SELECT c.item_pk ${fromWhere}`, params),
+      Zotero.DB.columnQueryAsync(`SELECT i.library_key ${fromWhere}`, params),
+      Zotero.DB.columnQueryAsync(`SELECT i.item_key ${fromWhere}`, params),
+      Zotero.DB.columnQueryAsync(`SELECT c.chunk_index ${fromWhere}`, params),
+      Zotero.DB.columnQueryAsync(`SELECT c.chunk_text ${fromWhere}`, params),
+      Zotero.DB.columnQueryAsync(`SELECT c.section_paths ${fromWhere}`, params),
+      Zotero.DB.columnQueryAsync(`SELECT c.pdf_attachment_key ${fromWhere}`, params),
+      Zotero.DB.columnQueryAsync(`SELECT c.text_source ${fromWhere}`, params),
+    ]);
+    const identities = (pks || []).map((_: any, index: number) => ({
+      libraryKey: String(libraryKeys[index]),
+      itemKey: String(itemKeys[index]),
+    }));
+    const idMap = bulkResolve(identities);
+    const documents: LexicalDocument[] = (pks || []).map((value: any, index: number) => {
+      const libraryKey = String(libraryKeys[index]);
+      const itemKey = String(itemKeys[index]);
+      return {
+        itemPk: Number(value),
+        libraryKey,
+        itemKey,
+        itemId: idMap.get(`${libraryKey}|${itemKey}`),
+        chunkIndex: Number(chunkIndexes[index]),
+        chunkText: String(chunkTexts[index] || ''),
+        sectionPaths: this.sectionPathsFromJSON(sectionPaths[index]),
+        pdfAttachmentKey: pdfAttachmentKeys[index] || undefined,
+        textSource: (textSources[index] as TextSourceType) || 'content',
+      };
+    });
+    const index = new T0BM25Index(documents);
+    const stats = index.stats;
+    this.logger.info(
+      `Built T0 BM25 cache model=${modelId} generation=${generation} chunks=${stats.documentCount} ` +
+      `chars=${stats.totalTextChars} bytes=${stats.totalTextBytes} ` +
+      `terms=${stats.termCount} postings=${stats.postingCount} ` +
+      `in ${Date.now() - startedAt}ms`
+    );
+    return index;
+  }
+
+  private warnCacheDegraded(channel: 'vector' | 'lexical', message: string): void {
+    const now = Date.now();
+    if (now - (this.cacheWarningAt.get(channel) ?? 0) < CACHE_WARNING_INTERVAL_MS) return;
+    this.cacheWarningAt.set(channel, now);
+    this.logger.warn(message);
   }
 
   /**
@@ -3553,9 +3658,10 @@ export class VectorStoreSQLite {
    * Close the vector store and detach the database
    */
   async close(): Promise<void> {
+    // Prevent in-flight builders from publishing while detach is awaiting.
+    this.initialized = false;
     this.invalidateCache();
     await this.detachDatabase();
-    this.initialized = false;
     this.logger.debug('SQLite store closed');
   }
 
