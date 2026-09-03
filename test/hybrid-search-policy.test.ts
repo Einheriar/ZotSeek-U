@@ -2,6 +2,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { installZoteroStub } from './helpers/zotero-stub';
 import { HybridSearchEngine } from '../src/core/hybrid-search';
+import { metadataIdentityCache } from '../src/core/metadata-identity-cache';
 
 describe('HybridSearchEngine product dispatch', () => {
   const result = (
@@ -66,16 +67,23 @@ describe('HybridSearchEngine product dispatch', () => {
 
   test('allocates Full by stable identity and fills a missing PDF tail from Notes', async () => {
     const engine = new HybridSearchEngine({} as any) as any;
-    engine.fixedHybridSearch = async () => [
-      result(1, 'NOTE0001', 'both'),
-      result(2, 'NOTE0002', 'both'),
-      result(3, 'NOTE0003', 'both'),
-    ];
-    engine.semanticOnlySearch = async () => [
-      // Same stable paper as NOTE0001 but a deliberately different local ID.
-      result(99, 'NOTE0001'),
-      result(4, 'PDF00004'),
-    ];
+    let capturedPartitions: any[] = [];
+    engine.semanticSearchPartitionsQuery = async (_query: string, partitions: any[]) => {
+      capturedPartitions = partitions;
+      return new Map([
+        ['notes', [
+          { itemId: 1, libraryKey: 'user', itemKey: 'NOTE0001', score: 0.9 },
+          { itemId: 2, libraryKey: 'user', itemKey: 'NOTE0002', score: 0.8 },
+          { itemId: 3, libraryKey: 'user', itemKey: 'NOTE0003', score: 0.7 },
+        ]],
+        ['pdf', [
+          // Same stable paper as NOTE0001 but a deliberately different local ID.
+          { itemId: 99, libraryKey: 'user', itemKey: 'NOTE0001', score: 0.95 },
+          { itemId: 4, libraryKey: 'user', itemKey: 'PDF00004', score: 0.85 },
+        ]],
+      ]);
+    };
+    engine.keywordSearchQuery = async () => [];
     engine.populateItemMetadata = async () => undefined;
 
     const results = await engine.fullSourceAwareSearch('query', {
@@ -95,6 +103,10 @@ describe('HybridSearchEngine product dispatch', () => {
     ]);
     assert.deepEqual(results.map((entry: any) => entry.policyChannel), [
       'notes', 'notes', 'pdf', 'notes',
+    ]);
+    assert.deepEqual(capturedPartitions, [
+      { key: 'notes', topK: 50, textSources: ['summary', 'abstract', 'title_only', 'note'] },
+      { key: 'pdf', topK: 50, textSources: ['fulltext', 'methods', 'findings', 'content'] },
     ]);
   });
 
@@ -293,5 +305,148 @@ describe('HybridSearchEngine product dispatch', () => {
     assert.deepEqual(fallbackScalarCalls, [20, 99]);
     assert.equal(errorResults[0].title, 'First');
     assert.equal(errorResults[1].title, 'Missing');
+  });
+
+  test('cached identity navigation stays equivalent to the legacy candidate gate', async () => {
+    const zotero = installZoteroStub({ 'zotseek.excludeBooks': true });
+    const makeItem = (
+      id: number,
+      key: string,
+      title: string,
+      doi: string,
+      date: string,
+      creators: any[],
+      itemType = 'journalArticle',
+    ) => ({
+      id,
+      key,
+      libraryID: 1,
+      itemType,
+      isRegularItem: () => true,
+      getField: (field: string) => ({ title, DOI: doi, date } as any)[field] || '',
+      getCreators: () => creators,
+    });
+    const title = 'Parenting Stress Undermines Mother-Child Brain-to-Brain Synchrony';
+    const doi = '10.1000/example';
+    const items = new Map<number, any>([
+      [1, makeItem(1, 'PAPER001', title, doi, '2019', [{ firstName: 'Alice', lastName: 'Azhari' }])],
+      [2, makeItem(2, 'PAPER002', 'A second paper', '', '2023', [{ firstName: 'Alice', lastName: 'Azhari' }])],
+      [3, makeItem(3, 'PAPER003', 'Duplicate DOI', doi, '2020', [{ firstName: 'Wei', lastName: 'Zhang' }])],
+      [4, makeItem(4, 'PAPER004', title, '', '2018', [{ firstName: 'Other', lastName: 'Author' }])],
+      [5, makeItem(5, 'BOOK0005', 'Excluded book', doi, '2025', [{ firstName: 'Alice', lastName: 'Azhari' }], 'book')],
+      [6, makeItem(6, 'PAPER006', '中文标题', '', '2024', [{ lastName: '王小明' }])],
+    ]);
+    const allIds = [...items.keys()];
+    let wholeScopeSearches = 0;
+    let querySpecificSearches = 0;
+    zotero.Libraries = {
+      userLibraryID: 1,
+      get: (id: number) => id === 1 ? { libraryType: 'user' } : null,
+    };
+    zotero.Items = {
+      getAsync: async (ids: number[] | number) => {
+        const requested = Array.isArray(ids) ? ids : [ids];
+        return requested.map(id => items.get(id) ?? null);
+      },
+    };
+    zotero.Search = class {
+      private conditions: Array<[string, string, string]> = [];
+      addCondition(field: string, operator: string, value: string): void {
+        this.conditions.push([field, operator, value]);
+      }
+      async search(): Promise<number[]> {
+        const quick = this.conditions.find(([field]) => field.startsWith('quicksearch'))?.[2];
+        if (!quick) {
+          wholeScopeSearches++;
+          return allIds;
+        }
+        querySpecificSearches++;
+        const normalized = quick.toLocaleLowerCase('und');
+        if (normalized === title.toLocaleLowerCase('und')) return [1, 4];
+        if (normalized === doi) return [1, 3, 5];
+        if (normalized === 'azhari') return [1, 2, 5];
+        if (normalized === 'azhari 2023') return [2];
+        if (normalized === '王小明') return [6];
+        return [];
+      }
+    };
+    const engine = new HybridSearchEngine({} as any) as any;
+    engine.populateItemMetadata = async () => undefined;
+    metadataIdentityCache.invalidate('identity equivalence fixture');
+    const opts = {
+      semanticTopK: 50,
+      keywordTopK: 50,
+      finalTopK: 10,
+      rrfK: 60,
+      minSimilarity: 0.3,
+      semanticWeight: 0.5,
+      returnAllChunks: false,
+      mode: 'hybrid',
+      indexingMode: 'full',
+      libraryId: 1,
+    };
+
+    for (const query of [
+      title,
+      doi,
+      'Azhari',
+      'Azhari 2023',
+      '王小明',
+      'unrelated concept query',
+      `“${title}”`,
+    ]) {
+      const cached = await engine.identityNavigationSearch(query, opts);
+      const legacy = await engine.legacyIdentityNavigationSearch(query, opts);
+      assert.deepEqual(cached, legacy, query);
+    }
+    assert.equal(wholeScopeSearches, 1);
+    // Potential identity matches retain Zotero's query-specific gate; concept
+    // negatives are answered from the scope snapshot without invoking it.
+    assert.equal(querySpecificSearches, 13);
+    metadataIdentityCache.invalidate('identity equivalence fixture cleanup');
+  });
+
+  test('falls back to query-specific Zotero Search when snapshot construction fails', async () => {
+    const zotero = installZoteroStub({ 'zotseek.excludeBooks': true });
+    const item = {
+      id: 7,
+      key: 'PAPER007',
+      libraryID: 1,
+      itemType: 'journalArticle',
+      isRegularItem: () => true,
+      getField: (field: string) => field === 'title' ? 'Fallback Identity Title' : '',
+      getCreators: () => [],
+    };
+    zotero.Libraries = { get: () => ({ libraryType: 'user' }) };
+    zotero.Items = { getAsync: async () => [item] };
+    zotero.Search = class {
+      private hasQuickSearch = false;
+      addCondition(field: string): void {
+        if (field.startsWith('quicksearch')) this.hasQuickSearch = true;
+      }
+      async search(): Promise<number[]> {
+        if (!this.hasQuickSearch) throw new Error('whole-scope search unavailable');
+        return [7];
+      }
+    };
+    const engine = new HybridSearchEngine({} as any) as any;
+    engine.populateItemMetadata = async () => undefined;
+    metadataIdentityCache.invalidate('fallback fixture');
+
+    const results = await engine.identityNavigationSearch('Fallback Identity Title', {
+      semanticTopK: 50,
+      keywordTopK: 50,
+      finalTopK: 10,
+      rrfK: 60,
+      minSimilarity: 0.3,
+      semanticWeight: 0.5,
+      returnAllChunks: false,
+      mode: 'hybrid',
+      indexingMode: 'full',
+      libraryId: 1,
+    });
+
+    assert.deepEqual(results.map((entry: any) => entry.itemKey), ['PAPER007']);
+    metadataIdentityCache.invalidate('fallback fixture cleanup');
   });
 });

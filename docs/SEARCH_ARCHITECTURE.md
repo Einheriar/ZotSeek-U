@@ -29,7 +29,8 @@ A comprehensive guide to how semantic and hybrid search works in ZotSeek.
    - [Curated Model Set](#curated-model-set)
    - [Partitioned Search by Model](#partitioned-search-by-model)
    - [Switching Models](#switching-models)
-   - [Server-Backed Embeddings](#server-backed-embeddings)
+   - [Local-Server-Backed Embeddings](#local-server-backed-embeddings)
+   - [Cloud Embeddings](#cloud-embeddings)
 10. [Database Schema](#database-schema)
     - [Stable Identity (Schema v8)](#stable-identity-schema-v8)
     - [Per-Model Embeddings (Schema v9)](#per-model-embeddings-schema-v9)
@@ -906,7 +907,7 @@ See [Chunking Strategy](#chunking-strategy) for detailed trade-offs. Summary:
 
 ### Embedding Cache
 
-Search uses two process-local, non-persistent caches. The semantic cache holds
+Search uses three process-local, non-persistent caches. The semantic cache holds
 pre-normalized vectors for all stored model partitions plus lightweight source
 and location metadata; it deliberately excludes `chunk_text`. Since Plan 43,
 the vector cache reads only the active model and only this narrow projection
@@ -916,6 +917,14 @@ cross-model. The T0 lexical cache holds one in-memory BM25 index for the
 active-model/fallback corpus. Both caches are lost when Zotero exits, so the
 first corresponding query after startup or invalidation rebuilds them from
 `zotseek.sqlite`.
+
+The third cache is the Plan 44 metadata identity snapshot used by the Hybrid
+prepass. It retains at most one library/collection scope and contains only
+stable library/item identity, local item ID, title, DOI, year, and creator name
+surfaces. It never retains `Zotero.Item`, abstracts, Notes, PDF text, chunks, or
+embeddings. Its estimated logical payload is capped at 32 MiB; an oversized,
+failed, stale, or destroyed build is discarded and the query uses the legacy
+Zotero Search path.
 
 Both caches share a monotonically increasing mutation generation but use
 independent keyed single-flight builds. Concurrent cold semantic queries for the
@@ -940,6 +949,25 @@ failure, so this does not retain a persistent query-result cache. Hybrid result
 mapping batch-loads Zotero items and then restores input order; T0 tokenization
 reuses one `Intl.Segmenter` instance. These optimizations do not change the
 per-semantic-branch 50-candidate hydration window.
+
+Full's default Hybrid policy uses `searchPartitions()` to share one query
+embedding, one active-model vector-cache filter, and one dot-product traversal
+between the Metadata/Notes and PDF semantic specialists. Each specialist still
+owns its independent MaxSim state, source filter, stable tie-break, Top-50
+window, and snippet hydration. The shared scan therefore does not form a global
+50-result window before splitting sources, and the later Notes-2/PDF-tail
+allocation and RRF behavior are unchanged.
+
+The identity snapshot uses its own monotonic generation and keyed single-flight.
+Item, collection-item, and collection Notifier events, relevant preference
+changes, a new scope, and plugin shutdown invalidate the whole snapshot. A
+generation check prevents an in-flight stale build from publishing. The
+whole-scope snapshot is allowed to answer only a proven identity-negative query
+directly. If any DOI, exact/distinctive title, author, or author-year match is
+possible—including an ambiguous title fragment—the query is validated through
+the original query-specific Zotero Search candidate gate. This keeps Zotero's
+punctuation/tokenization and candidate semantics as the final authority while
+removing that gate from ordinary concept-query hot paths.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -991,6 +1019,25 @@ Set includes the whole Zotero parent process, model, tokenizer, lexical index,
 vector cache, UI, and temporary query objects; it is not a direct JavaScript
 heap or isolated cache-size measurement. Preserve the exact corpus, process
 state, cache state, and endpoint when comparing future results.
+
+Plan 44 reused the same 150-paper / 8,894-chunk / E5 / Full corpus and froze a
+new D0 before either change. D1's single semantic traversal preserved every
+response byte and moved the fixed-query warm median only from 3.045942 s to
+2.99 s (about 1.8%), so its demonstrated value is removal of duplicate work,
+not a large standalone latency claim. D2's bounded identity cache produced a
+final warm median of 1.329666 s, 55.5% below D1 and 56.3% below D0; its cold run
+was 7.048830 s. The hot identity prepass fell from 1,271–1,530 ms to roughly
+39–54 ms.
+
+For the measured user library, the snapshot had 2,274 candidates and an
+estimated logical payload of 1,950,580 bytes (about 1.86 MiB), far below the
+32 MiB rejection cap. Five scope invalidation/rebuild cycles produced stable
+whole-process deltas of about +7.7 MiB Working Set and +8.5 MiB Private Bytes;
+explicit GC/CC reduced both figures, so no monotonic accumulation was observed.
+All fixed and matrix response SHA-256 values remained identical to D0, and the
+Browser Console confirmed `notes=50`, `pdf=50`, a single vector pass, and an
+identity `cache-hit`. These figures are corpus-specific; group libraries and
+substantially larger real libraries remain external validation boundaries.
 
 ---
 
@@ -1069,9 +1116,9 @@ Three model-aware triggers can re-index the library, all preserving embeddings f
 2. The **Index remaining N** button on the coverage line in Settings (shows count of items lacking coverage for the active model).
 3. The toolbar / right-click **Index Library** action.
 
-### Server-Backed Embeddings
+### Local-Server-Backed Embeddings
 
-Issue #42 adds a second `runtime` to `ModelConfig` alongside the in-process ChromeWorker: `'server'`, which delegates embedding generation to a local OpenAI-compatible inference server (LM Studio, Ollama, llama.cpp or vLLM), all of which expose `POST /v1/embeddings` and `GET /v1/models` on localhost.
+Issue #42 adds a second `runtime` to `ModelConfig` alongside the in-process ChromeWorker: `'server'`, shown to users as **Local Server**. It delegates embedding generation to a local OpenAI-compatible inference server (LM Studio, Ollama, llama.cpp or vLLM), all of which expose `POST /v1/embeddings` and `GET /v1/models` on localhost. The stable `server-slot` and `server:` machine values remain unchanged.
 
 **Provider branch:** `EmbeddingPipeline.init()` reads the active model's `runtime` and initializes one of two code paths. Both converge on the same `embed()` / `embedDocuments()` call surface used by the rest of the search engine, so callers never branch on runtime themselves:
 
@@ -1103,11 +1150,11 @@ Issue #42 adds a second `runtime` to `ModelConfig` alongside the in-process Chro
 
 **Request batching:** the server runtime groups chunks into requests of `SERVER_EMBED_GROUP = 32` (`embedChunks()` in `src/index.ts`), one HTTP round-trip per group, rather than one request per chunk as the ONNX path does internally. This amortizes HTTP overhead across chunks; the response array is re-sorted by the `index` field the OpenAI embeddings API returns, so out-of-order responses cannot misalign chunk IDs with vectors.
 
-**Advanced configuration template:** ZotSeek exposes one fixed Server slot, configured in `<Zotero profile>/zotseek-server-models.json`. Schema v2 has one `model` field: `null` means unconfigured (`Server (NONE)`), an invalid or partial object means incomplete (`Server (UNKNOWN)`), and one valid object produces `Server (<serverModelName>)`. ZotSeek creates an empty template with a complete example when the file is missing, validates it at startup, and copies only the ready model into `zotseek.serverModels` as a synchronous one-entry cache. The settings pane shows the path and validation result but does not edit the contract. Changes take effect after restarting Zotero.
+**Advanced configuration template:** ZotSeek exposes one fixed Local Server slot, configured in `<Zotero profile>/zotseek-server-models.json`. Schema v2 has one `model` field: `null` means unconfigured (`Local Server (NONE)`), an invalid or partial object means incomplete (`Local Server (UNKNOWN)`), and one valid object produces `Local Server (<serverModelName>)`. ZotSeek creates an empty template with a complete example when the file is missing, validates it at startup, and copies only the ready model into `zotseek.serverModels` as a synchronous one-entry cache. The settings pane shows the path and validation result but does not edit the contract. Changes take effect after restarting Zotero.
 
 **Selection versus model identity:** the model menu persists the stable `server-slot` selection value even while the slot is `NONE` or `UNKNOWN`. A ready template supplies a separate explicit `server:`-prefixed id (for example `server:nomic-embed-text-v1.5-lmstudio`); only this real id identifies the vector space in `chunks.model_id`, coverage and search. The placeholder selection id is never written to the database. If the actual model or its output dimensions change, the template should use a new id and receive its own index pass. Previous ONNX and server partitions remain untouched.
 
-**Incomplete-selection behavior:** selecting an incomplete Server slot is allowed and survives restart, but it never falls back to an ONNX model. Clicking the slot or explicitly starting indexing, semantic/hybrid search or similar-document search shows a localized configuration summary with the template path and an **Open file location** action; Close and the title-bar close path only dismiss the prompt. The Settings path exposes the same file-manager action. Raw validator details are not inserted into localized UI text, while MCP/REST still returns the technical error as text. Startup and background reconciliation do not show a modal and skip work that needs embeddings; keyword-only search remains available. A damaged Server template is inert when a local model is selected.
+**Incomplete-selection behavior:** selecting an incomplete Local Server slot is allowed and survives restart, but it never falls back to an ONNX model. Clicking the slot or explicitly starting indexing, semantic/hybrid search or similar-document search shows a localized configuration summary with the template path and an **Open file location** action; Close and the title-bar close path only dismiss the prompt. The Settings path exposes the same file-manager action. Raw validator details are not inserted into localized UI text, while MCP/REST still returns the technical error as text. Startup and background reconciliation do not show a modal and skip work that needs embeddings; keyword-only search remains available. A damaged Local Server template is inert when a local model is selected.
 
 **Prefix handling:** `queryPrefix` and `docPrefix` are required template fields and may be explicitly empty. ZotSeek does not infer them from the model name. The client applies the configured task prefix through the same `applyPrefix()` path used by ONNX models, so the server receives the final text. `docPrefix` is part of the index policy fingerprint and therefore triggers reconciliation when changed; `queryPrefix` affects future queries but does not invalidate stored document embeddings.
 
@@ -1118,6 +1165,16 @@ Issue #42 adds a second `runtime` to `ModelConfig` alongside the in-process Chro
 **Model and dimension guards:** `initServerClient()` first requires `GET /v1/models` to list the configured `serverModelName`, then calls `client.probe()` (a one-text `/v1/embeddings` request) and compares the returned vector length with the template's `dimensions`. Either mismatch throws before any chunk is embedded. The user must load the named model or correct the template; a changed model or dimension should receive a new `server:` id and a new index pass.
 
 **Loopback enforcement:** every request URL, not just the configured base URL, passes through `assertLoopbackUrl()` at request time, which allow-lists `127.0.0.1`, `localhost` and `[::1]` and rejects everything else, including a redirect target (`fetch` is called with `redirect: 'error'`, so a redirect off-loopback aborts rather than being followed). There is no preference to disable this check.
+
+### Cloud Embeddings
+
+Cloud is a third, independent `ModelConfig.runtime`. The first provider is Alibaba Cloud Model Studio (Bailian), using the OpenAI-compatible `POST /embeddings` endpoint at `https://dashscope.aliyuncs.com/compatible-mode/v1`. The preset starts with `qwen3.7-text-embedding`, 1024 dimensions, a 128000-token input limit and batches of 20, while model name, dimensions and model-input parameters remain user-configurable. Recommended chunk tokens are derived as `min(3000, floor(maxInputTokens * 0.85))`. ZotSeek sends HTTP directly and does not depend on the OpenAI SDK. The menu persists `cloud-slot`; provider, model name and dimensions derive the current vector-space identity, preserving `cloud:alibaba-bailian:qwen3.7-text-embedding:1024` for the default preset.
+
+Local Server and Cloud configuration are separate collapsed Settings sections; Cloud has a second collapsed advanced-parameter section. Selecting the Bailian provider supplies its default Base URL, which remains editable for an allowlisted workspace endpoint. The URL must use HTTPS, may not contain credentials, query parameters or fragments, and is invalidated for use until a direct embedding probe succeeds. Redirects are rejected. The probe submits one full configured batch of fixed strings, and responses are accepted only when every input has one unique indexed vector containing exactly the configured number of finite values. Network errors, 429 and 5xx responses use bounded retries; deterministic 4xx responses fail immediately. Provider response bodies are reduced to a bounded safe error code, so text, queries and credentials are never copied into logs or user errors.
+
+The API key is BYOK. It is entered with a password-style masked prompt and stored only through Zotero Login Manager after OS-backed encryption; there is no preference or plaintext fallback. Newer Zotero versions use `Zotero.OSKeyStore`, while Zotero 9.0 uses the bundled Mozilla `OSKeyStore.sys.mjs` compatibility path and accepts only ZotSeek-version-tagged ciphertext. Settings display only the first and last five characters with a fixed masked middle. Before the first Cloud selection, ZotSeek explains that indexed text and semantic/hybrid queries leave the device, the provider may charge the user, and ZotSeek neither receives nor participates in those fees. Consent is versioned and Cloud initialization refuses to proceed if it is no longer current.
+
+Startup maintenance has a second Cloud-specific authorization, disabled by default, in addition to the global automatic-maintenance preference. Manual indexing and searches remain explicit actions. A Cloud full rebuild shows only the estimated paper count. It does not clear the database first: all chunks for one paper must finish and validate before `replaceItemModelChunks()` atomically replaces that paper/model pair. Failure or cancellation therefore keeps the previous complete paper index, while completed papers and every other model partition remain available.
 
 ---
 

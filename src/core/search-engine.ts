@@ -49,6 +49,15 @@ export interface SearchOptions {
   returnAllChunks?: boolean;  // If true, return all matching chunks instead of MaxSim aggregation
 }
 
+/** One independently ranked result channel within a shared vector pass. */
+export interface SearchPartitionOptions {
+  key: string;
+  topK: number;
+  textSources?: TextSourceType[];
+}
+
+export type SearchPartitionCommonOptions = Omit<SearchOptions, 'topK' | 'textSources'>;
+
 const DEFAULT_OPTIONS: Required<Omit<SearchOptions, 'libraryId' | 'excludeItemIds' | 'textSources'>> = {
   topK: 20,
   minSimilarity: 0.7,
@@ -70,6 +79,28 @@ interface ItemSimilarity {
   matchedChunkIndex: number;
   pageNumber?: number;
   paragraphIndex?: number;
+}
+
+interface CachedSearchEmbedding {
+  itemPk: number;
+  libraryKey: string;
+  itemKey: string;
+  itemId?: number;
+  libraryId?: number;
+  chunkIndex: number;
+  title: string;
+  textSource: TextSourceType;
+  modelId: string;
+  embedding: Float32Array;
+  pageNumber?: number;
+  paragraphIndex?: number;
+}
+
+interface SearchPartitionAccumulator {
+  options: SearchPartitionOptions;
+  allowedSources?: Set<TextSourceType>;
+  itemResults: Map<number, ItemSimilarity>;
+  chunkResults: SearchResult[];
 }
 
 export class SearchEngine {
@@ -142,8 +173,51 @@ export class SearchEngine {
   async search(query: string, options: SearchOptions = {}): Promise<SearchResult[]> {
     const opts = { ...DEFAULT_OPTIONS, ...options };
 
-    this.logger.info(`Searching for: "${query.substring(0, 50)}..."`);
+    const partitions = await this.searchPartitions(query, [{
+      key: 'default',
+      topK: opts.topK,
+      textSources: opts.textSources,
+    }], {
+      minSimilarity: opts.minSimilarity,
+      libraryId: opts.libraryId,
+      excludeItemIds: opts.excludeItemIds,
+      returnAllChunks: opts.returnAllChunks,
+    });
+    return partitions.get('default') ?? [];
+  }
+
+  /**
+   * Search independently ranked source partitions with one query embedding,
+   * one cached-vector filter, and one vector traversal. A similarity is
+   * calculated once per eligible chunk and routed to every matching partition;
+   * MaxSim, top-K selection, and snippet hydration remain partition-local.
+   */
+  async searchPartitions(
+    query: string,
+    partitions: SearchPartitionOptions[],
+    options: SearchPartitionCommonOptions = {},
+  ): Promise<Map<string, SearchResult[]>> {
+    const opts = { ...DEFAULT_OPTIONS, ...options };
+
+    this.logger.info('Semantic search started');
     const startTime = Date.now();
+
+    const accumulators = partitions.map((partition): SearchPartitionAccumulator => ({
+      options: partition,
+      allowedSources: partition.textSources?.length
+        ? new Set(partition.textSources)
+        : undefined,
+      itemResults: new Map<number, ItemSimilarity>(),
+      chunkResults: [],
+    }));
+    const seenKeys = new Set<string>();
+    for (const partition of partitions) {
+      if (seenKeys.has(partition.key)) {
+        throw new Error(`Duplicate search partition key: ${partition.key}`);
+      }
+      seenKeys.add(partition.key);
+    }
+    if (accumulators.length === 0) return new Map();
 
     // Auto-initialize pipeline if needed (supports cold-start from API)
     if (!this.pipeline.isReady()) {
@@ -169,20 +243,7 @@ export class SearchEngine {
 
     // Get cached embeddings for fast search
     const store = this.getStore();
-    let embeddings: Array<{
-      itemPk: number;
-      libraryKey: string;
-      itemKey: string;
-      itemId?: number;
-      libraryId?: number;
-      chunkIndex: number;
-      title: string;
-      textSource: TextSourceType;
-      modelId: string;
-      embedding: Float32Array;
-      pageNumber?: number;
-      paragraphIndex?: number;
-    }>;
+    let embeddings: CachedSearchEmbedding[];
 
     // Reuse the pre-normalized cache for both global and library-specific
     // searches. The previous scoped path decoded and normalized every vector
@@ -196,11 +257,6 @@ export class SearchEngine {
     // This prevents dimension mismatches when the user switches models.
     const activeModelId = getActiveModelId();
     embeddings = embeddings.filter((e: any) => e.modelId === activeModelId);
-    if (opts.textSources?.length) {
-      const allowedSources = new Set(opts.textSources);
-      embeddings = embeddings.filter(e => allowedSources.has(e.textSource));
-    }
-
     // Filter out excluded items (by resolved local itemId; orphans are never excluded here)
     if (opts.excludeItemIds && opts.excludeItemIds.length > 0) {
       const excludeSet = new Set(opts.excludeItemIds);
@@ -209,31 +265,51 @@ export class SearchEngine {
       );
     }
 
-    // Compute results: either all chunks or MaxSim aggregation
-    let results: SearchResult[];
-    if (opts.returnAllChunks) {
-      // Return all matching chunks (for location/paragraph-level results)
-      results = this.computeAllChunkResultsFloat32(queryFloat32, embeddings, opts.minSimilarity);
-    } else {
-      // Use MaxSim aggregation (one result per document with best chunk)
-      results = this.computeMaxSimResultsFloat32(queryFloat32, embeddings, opts.minSimilarity);
+    for (const chunk of embeddings) {
+      if (!chunk.embedding || chunk.embedding.length === 0) continue;
+      let similarity: number | undefined;
+      for (const partition of accumulators) {
+        if (partition.allowedSources && !partition.allowedSources.has(chunk.textSource)) continue;
+        // Calculate lazily and reuse the score if future partitions overlap.
+        similarity ??= this.dotProductFloat32(queryFloat32, chunk.embedding);
+        if (opts.returnAllChunks) {
+          if (similarity >= opts.minSimilarity) {
+            partition.chunkResults.push(this.chunkSearchResult(chunk, similarity));
+          }
+          continue;
+        }
+
+        const existing = partition.itemResults.get(chunk.itemPk);
+        if (!existing || similarity > existing.maxSimilarity) {
+          partition.itemResults.set(chunk.itemPk, this.itemSimilarity(chunk, similarity));
+        }
+      }
     }
 
-    // Sort by similarity (descending) and take top K
-    results.sort((a, b) => b.similarity - a.similarity ||
-      a.libraryKey.localeCompare(b.libraryKey) || a.itemKey.localeCompare(b.itemKey));
-    const topResults = results.slice(0, opts.topK);
+    const partitionEntries = await Promise.all(accumulators.map(async partition => {
+      const results = opts.returnAllChunks
+        ? partition.chunkResults
+        : this.itemSimilaritiesToResults(partition.itemResults, opts.minSimilarity);
+      results.sort((a, b) => b.similarity - a.similarity ||
+        a.libraryKey.localeCompare(b.libraryKey) || a.itemKey.localeCompare(b.itemKey));
+      const topResults = results.slice(0, partition.options.topK);
 
-    // Enrich the visible results with the matched chunk's text (for snippet display).
-    // Only the top K rows need it, so this is a small, bounded batch fetch — we
-    // deliberately keep chunk_text out of the in-memory embedding cache to avoid
-    // bloating RAM on large libraries.
-    await this.populateChunkText(topResults);
+      // Hydration stays separate so every specialist retains its own bounded
+      // candidate window and matched-passage metadata.
+      await this.populateChunkText(topResults);
+      return [partition.options.key, topResults] as const;
+    }));
+    const resultsByPartition = new Map<string, SearchResult[]>(partitionEntries);
 
     const searchTime = Date.now() - startTime;
-    this.logger.info(`Found ${topResults.length} results in ${searchTime}ms`);
+    const counts = [...resultsByPartition.entries()]
+      .map(([key, results]) => `${key}=${results.length}`)
+      .join(', ');
+    this.logger.info(
+      `Found partition results (${counts}) in ${searchTime}ms (single vector pass)`
+    );
 
-    return topResults;
+    return resultsByPartition;
   }
 
   /**
@@ -581,6 +657,69 @@ export class SearchEngine {
     }
 
     return dotProduct / (normA * normB);
+  }
+
+  private itemSimilarity(
+    chunk: Omit<CachedSearchEmbedding, 'modelId'>,
+    similarity: number,
+  ): ItemSimilarity {
+    return {
+      itemPk: chunk.itemPk,
+      libraryKey: chunk.libraryKey,
+      itemKey: chunk.itemKey,
+      itemId: chunk.itemId,
+      libraryId: chunk.libraryId,
+      title: chunk.title,
+      textSource: chunk.textSource,
+      maxSimilarity: similarity,
+      matchedChunkIndex: chunk.chunkIndex,
+      pageNumber: chunk.pageNumber,
+      paragraphIndex: chunk.paragraphIndex,
+    };
+  }
+
+  private chunkSearchResult(
+    chunk: Omit<CachedSearchEmbedding, 'modelId'>,
+    similarity: number,
+  ): SearchResult {
+    return {
+      itemPk: chunk.itemPk,
+      libraryKey: chunk.libraryKey,
+      itemKey: chunk.itemKey,
+      itemId: chunk.itemId,
+      libraryId: chunk.libraryId,
+      title: chunk.title,
+      similarity,
+      textSource: chunk.textSource,
+      chunkIndex: chunk.chunkIndex,
+      matchedChunkIndex: chunk.chunkIndex,
+      pageNumber: chunk.pageNumber,
+      paragraphIndex: chunk.paragraphIndex,
+    };
+  }
+
+  private itemSimilaritiesToResults(
+    itemResults: Map<number, ItemSimilarity>,
+    minSimilarity: number,
+  ): SearchResult[] {
+    const results: SearchResult[] = [];
+    for (const item of itemResults.values()) {
+      if (item.maxSimilarity < minSimilarity) continue;
+      results.push({
+        itemPk: item.itemPk,
+        libraryKey: item.libraryKey,
+        itemKey: item.itemKey,
+        itemId: item.itemId,
+        libraryId: item.libraryId,
+        title: item.title,
+        similarity: item.maxSimilarity,
+        textSource: item.textSource,
+        matchedChunkIndex: item.matchedChunkIndex,
+        pageNumber: item.pageNumber,
+        paragraphIndex: item.paragraphIndex,
+      });
+    }
+    return results;
   }
 
   /**

@@ -324,7 +324,7 @@ export class ToolbarButton {
     append({
       label: getString('menu-findRelated'),
       onCommand: () => {
-        this.logger.info(`Context menu: searching for "${selectedText.substring(0, 50)}..." (excluding item ${currentItemId})`);
+        this.logger.info(`Context menu: semantic search requested (excluding item ${currentItemId})`);
         searchDialogWithVTable.open(selectedText.trim(), currentItemId);
       }
     });

@@ -2,6 +2,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   allocatePrimaryWithAlternateTail,
+  analyzeMetadataIdentity,
   classifyMetadataIdentity,
   normalizeProductIndexingMode,
   resolveProductHybridPolicy,
@@ -86,5 +87,14 @@ describe('metadata identity navigation', () => {
       candidates[1],
       { ...candidates[1], id: 'D', title: 'Reliable Notes on Another Topic' },
     ]), null);
+  });
+
+  test('marks only queries whose result could change under a narrower candidate gate', () => {
+    assert.equal(analyzeMetadataIdentity('unrelated concept query', candidates).hasPotentialMatch, false);
+    assert.equal(analyzeMetadataIdentity('A Semantic Anchor Study', candidates).hasPotentialMatch, true);
+    assert.deepEqual(analyzeMetadataIdentity('Reliable Notes on', [
+      candidates[1],
+      { ...candidates[1], id: 'D', title: 'Reliable Notes on Another Topic' },
+    ]), { match: null, hasPotentialMatch: true });
   });
 });

@@ -693,7 +693,7 @@ export class ZoteroAPI {
           .trim()
           .substring(0, 100); // Use first 100 chars for matching
 
-        debug(`Searching for snippet in ${totalPages} pages: "${normalizedSnippet.substring(0, 50)}..."`);
+        debug(`Searching for a snippet across ${totalPages} pages`);
 
         // Search each page using PDFWorker with specific page indices
         for (let pageIndex = 0; pageIndex < totalPages; pageIndex++) {

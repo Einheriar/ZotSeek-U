@@ -13,16 +13,22 @@
  */
 
 import { Logger } from '../utils/logger';
-import { SearchEngine, SearchResult } from './search-engine';
+import { SearchEngine, SearchPartitionOptions, SearchResult } from './search-engine';
 import { TextSourceType } from './vector-store-sqlite';
 import { boundedTextSnippet, noteHTMLToStructuredText } from '../utils/note-text';
 import { identityFromItem } from './identity-resolver';
+import {
+  estimateMetadataIdentityCandidateBytes,
+  metadataIdentityCache,
+  MetadataIdentitySnapshotCandidate,
+} from './metadata-identity-cache';
 import {
   FULL_NOTES_HEAD_SLOTS,
   METADATA_NOTE_SOURCES,
   PDF_SOURCES,
   ProductIndexingMode,
   allocatePrimaryWithAlternateTail,
+  analyzeMetadataIdentity,
   classifyMetadataIdentity,
   normalizeProductIndexingMode,
   resolveProductHybridPolicy,
@@ -161,6 +167,17 @@ interface SemanticSearchHit {
   paragraphIndex?: number;
 }
 
+interface IdentityNavigationCandidate {
+  id: string;
+  itemId: number;
+  itemKey: string;
+  libraryKey?: string;
+  title: string;
+  doi?: string;
+  year?: string;
+  creators: Array<{ firstName?: string; lastName?: string; name?: string }>;
+}
+
 function stableRankingKey(result: {
   itemId: number;
   libraryKey?: string;
@@ -240,7 +257,7 @@ export class HybridSearchEngine {
   async search(query: string, options: HybridSearchOptions = {}): Promise<HybridSearchResult[]> {
     const opts = { ...DEFAULT_OPTIONS, ...options };
 
-    this.logger.info(`Hybrid search: "${query.substring(0, 50)}${query.length > 50 ? '...' : ''}"`);
+    this.logger.info('Hybrid search started');
 
     // Handle mode overrides
     if (opts.mode === 'semantic') {
@@ -317,20 +334,46 @@ export class HybridSearchEngine {
     opts: ResolvedHybridSearchOptions,
   ): Promise<HybridSearchResult[]> {
     const specialistTopK = Math.max(opts.finalTopK, opts.semanticTopK, opts.keywordTopK);
-    const [notesResults, pdfResults] = await Promise.all([
-      this.fixedHybridSearch(query, {
-        ...opts,
-        finalTopK: specialistTopK,
-        semanticTextSources: METADATA_NOTE_SOURCES,
-        keywordTextSources: METADATA_NOTE_SOURCES,
-      }, false),
-      this.semanticOnlySearch(query, {
-        ...opts,
-        finalTopK: specialistTopK,
-        semanticTopK: specialistTopK,
-        semanticTextSources: PDF_SOURCES,
-      }, false),
+    const notesOpts: ResolvedHybridSearchOptions = {
+      ...opts,
+      finalTopK: specialistTopK,
+      semanticTextSources: METADATA_NOTE_SOURCES,
+      keywordTextSources: METADATA_NOTE_SOURCES,
+    };
+    const pdfOpts: ResolvedHybridSearchOptions = {
+      ...opts,
+      finalTopK: specialistTopK,
+      semanticTopK: specialistTopK,
+      semanticTextSources: PDF_SOURCES,
+    };
+    const semanticPartitions: SearchPartitionOptions[] = [
+      {
+        key: 'notes',
+        topK: opts.returnAllChunks ? opts.semanticTopK * 3 : opts.semanticTopK,
+        textSources: METADATA_NOTE_SOURCES,
+      },
+      {
+        key: 'pdf',
+        topK: opts.returnAllChunks ? specialistTopK * 3 : specialistTopK,
+        textSources: PDF_SOURCES,
+      },
+    ];
+    const [semanticResults, keywordResults] = await Promise.all([
+      this.semanticSearchPartitionsQuery(query, semanticPartitions, opts),
+      this.keywordSearchQuery(query, notesOpts),
     ]);
+
+    const notesSemantic = semanticResults.get('notes') ?? [];
+    const pdfSemantic = semanticResults.get('pdf') ?? [];
+    this.logger.info(`Got ${notesSemantic.length} semantic, ${keywordResults.length} keyword results`);
+
+    const notesResults = this.reciprocalRankFusion(
+      notesSemantic,
+      keywordResults,
+      notesOpts,
+    ).slice(0, specialistTopK);
+    const pdfResults = this.semanticHitsToHybrid(pdfSemantic)
+      .slice(0, pdfOpts.finalTopK);
 
     const taggedNotes = notesResults.map(result => ({ ...result, policyChannel: 'notes' as const }));
     const taggedPdf = pdfResults.map(result => ({ ...result, policyChannel: 'pdf' as const }));
@@ -361,12 +404,135 @@ export class HybridSearchEngine {
     opts: ResolvedHybridSearchOptions,
   ): Promise<HybridSearchResult[]> {
     const totalStartedAt = Date.now();
+    const excludeBooks = Zotero.Prefs.get('zotseek.excludeBooks', true) ?? true;
+    const buildMetrics = { searchMs: 0, metadataLoadMs: 0, filterMs: 0, itemIds: 0 };
+    const cacheStartedAt = Date.now();
+    const cached = await metadataIdentityCache.getOrBuild({
+      libraryId: opts.libraryId,
+      collectionId: opts.collectionId,
+      excludeBooks,
+    }, maxBytes => this.buildMetadataIdentitySnapshot(
+      opts,
+      excludeBooks,
+      maxBytes,
+      buildMetrics,
+    ));
+    const cacheMs = Date.now() - cacheStartedAt;
+
+    if (cached.snapshot) {
+      try {
+        const analysis = analyzeMetadataIdentity(query, cached.snapshot.candidates);
+        if (analysis.hasPotentialMatch) {
+          // The legacy path first asks Zotero for query-specific candidates.
+          // A whole-scope snapshot can safely prove that no candidate could
+          // match, but it cannot reproduce every Zotero quick-search edge
+          // (punctuation, tokenization, ambiguity). Validate all potential
+          // identity hits through the legacy gate to preserve exact behavior.
+          this.logger.debug(
+            `Identity cache found a potential match; validating with Zotero Search ` +
+            `(state=${cached.state} cache=${cacheMs}ms)`
+          );
+          return this.legacyIdentityNavigationSearch(query, opts, totalStartedAt, cacheMs);
+        }
+        return await this.classifyIdentityCandidates(
+          query,
+          opts,
+          cached.snapshot.candidates,
+          {
+            path: `cache-${cached.state}`,
+            totalStartedAt,
+            cacheMs,
+            searchMs: buildMetrics.searchMs,
+            metadataLoadMs: buildMetrics.metadataLoadMs,
+            filterMs: buildMetrics.filterMs,
+            itemIds: buildMetrics.itemIds || cached.snapshot.candidates.length,
+            estimatedBytes: cached.snapshot.estimatedBytes,
+          },
+          analysis.match,
+        );
+      } catch (error) {
+        this.logger.debug(`Cached identity classification failed; using Zotero Search: ${error}`);
+      }
+    }
+
+    this.logger.debug(
+      `Identity cache fallback: reason=${cached.reason || 'classification-error'} cache=${cacheMs}ms`
+    );
+    return this.legacyIdentityNavigationSearch(query, opts, totalStartedAt, cacheMs);
+  }
+
+  private async buildMetadataIdentitySnapshot(
+    opts: ResolvedHybridSearchOptions,
+    excludeBooks: boolean,
+    maxBytes: number,
+    metrics: { searchMs: number; metadataLoadMs: number; filterMs: number; itemIds: number },
+  ): Promise<MetadataIdentitySnapshotCandidate[]> {
+    const search = new Zotero.Search();
+    if (opts.libraryId !== undefined) search.libraryID = opts.libraryId;
+    if (opts.collectionId) {
+      search.addCondition('collectionID', 'is', opts.collectionId.toString());
+    }
+    search.addCondition('itemType', 'isNot', 'attachment');
+    search.addCondition('itemType', 'isNot', 'note');
+
+    const searchStartedAt = Date.now();
+    const itemIds = await search.search();
+    metrics.searchMs = Date.now() - searchStartedAt;
+    metrics.itemIds = itemIds.length;
+
+    const candidates: MetadataIdentitySnapshotCandidate[] = [];
+    let estimatedBytes = 0;
+    // Zotero may return partially loaded Items when one large result set is
+    // sliced into follow-up getAsync calls. Resolving the complete scope in one
+    // call preserves Zotero's bulk-loading contract; only compact plain data is
+    // retained after this method returns.
+    const metadataLoadStartedAt = Date.now();
+    const resolvedItems = await Zotero.Items.getAsync(itemIds);
+    metrics.metadataLoadMs = Date.now() - metadataLoadStartedAt;
+
+    const filterStartedAt = Date.now();
+    for (const item of (Array.isArray(resolvedItems) ? resolvedItems : [resolvedItems])) {
+      if (!item?.isRegularItem?.()) continue;
+      if (excludeBooks && item.itemType === 'book') continue;
+      const stable = identityFromItem(item);
+      // An incomplete stable identity would make a cached result lossy; abort
+      // the whole publication and let the legacy query-specific path decide.
+      if (!stable) throw new Error(`stable identity unavailable for item ${item.id}`);
+      const date = String(item.getField('date') || '');
+      const candidate: MetadataIdentitySnapshotCandidate = {
+        id: String(item.id),
+        itemId: item.id,
+        libraryKey: stable.libraryKey,
+        itemKey: stable.itemKey,
+        title: String(item.getField('title') || ''),
+        doi: String(item.getField('DOI') || ''),
+        year: date.match(/\b\d{4}\b/)?.[0],
+        creators: (item.getCreators?.() || []).map((creator: any) => ({
+          firstName: creator.firstName,
+          lastName: creator.lastName,
+          name: creator.name,
+        })),
+      };
+      estimatedBytes += estimateMetadataIdentityCandidateBytes(candidate);
+      if (estimatedBytes > maxBytes) {
+        throw new Error(`metadata identity cache exceeds ${maxBytes} bytes`);
+      }
+      candidates.push(candidate);
+    }
+    metrics.filterMs = Date.now() - filterStartedAt;
+    return candidates;
+  }
+
+  private async legacyIdentityNavigationSearch(
+    query: string,
+    opts: ResolvedHybridSearchOptions,
+    totalStartedAt = Date.now(),
+    cacheMs = 0,
+  ): Promise<HybridSearchResult[]> {
     let searchMs = 0;
     let metadataLoadMs = 0;
     let candidateFilterMs = 0;
-    let classifyMs = 0;
     let itemIdCount = 0;
-    let candidateCount = 0;
     try {
       const search = new Zotero.Search();
       if (opts.libraryId !== undefined) search.libraryID = opts.libraryId;
@@ -386,14 +552,7 @@ export class HybridSearchEngine {
       searchMs = Date.now() - searchStartedAt;
       itemIdCount = itemIds.length;
       const excludeBooks = Zotero.Prefs.get('zotseek.excludeBooks', true) ?? true;
-      const candidates: Array<{
-        id: string;
-        title: string;
-        doi?: string;
-        year?: string;
-        creators: Array<{ firstName?: string; lastName?: string; name?: string }>;
-        item: any;
-      }> = [];
+      const candidates: IdentityNavigationCandidate[] = [];
       // Identity and author-set semantics require the complete metadata match
       // set. Bulk resolution avoids an N-round-trip loop and lets the final
       // author collection be sorted deterministically instead of depending on
@@ -408,8 +567,12 @@ export class HybridSearchEngine {
         if (!item?.isRegularItem?.()) continue;
         if (excludeBooks && item.itemType === 'book') continue;
         const date = String(item.getField('date') || '');
+        const stable = identityFromItem(item);
         candidates.push({
           id: String(item.id),
+          itemId: item.id,
+          itemKey: item.key || '',
+          libraryKey: stable?.libraryKey,
           title: String(item.getField('title') || ''),
           doi: String(item.getField('DOI') || ''),
           year: date.match(/\b\d{4}\b/)?.[0],
@@ -418,71 +581,102 @@ export class HybridSearchEngine {
             lastName: creator.lastName,
             name: creator.name,
           })),
-          item,
         });
       }
       candidateFilterMs = Date.now() - candidateFilterStartedAt;
-      candidateCount = candidates.length;
-
-      const classifyStartedAt = Date.now();
-      const match = classifyMetadataIdentity(query, candidates);
-      classifyMs = Date.now() - classifyStartedAt;
-      if (!match) {
-        this.logger.debug(
-          `Identity prepass: match=none itemIds=${itemIdCount} candidates=${candidateCount} ` +
-          `search=${searchMs}ms metadata=${metadataLoadMs}ms filter=${candidateFilterMs}ms ` +
-          `classify=${classifyMs}ms total=${Date.now() - totalStartedAt}ms`
-        );
-        return [];
-      }
-      const resultStartedAt = Date.now();
-      const matchedCandidates = [...match.candidates];
-      const candidateIdentity = (candidate: typeof matchedCandidates[number]) => {
-        const stable = identityFromItem(candidate.item);
-        return stable ? `${stable.libraryKey}|${stable.itemKey}` : `local:${candidate.item.id}`;
-      };
-      if (match.kind === 'author-set' || match.kind === 'author-year-set') {
-        matchedCandidates.sort((left, right) =>
-          String(right.year ?? '').localeCompare(String(left.year ?? '')) ||
-          left.title.localeCompare(right.title) ||
-          candidateIdentity(left).localeCompare(candidateIdentity(right)));
-      } else {
-        matchedCandidates.sort((left, right) =>
-          candidateIdentity(left).localeCompare(candidateIdentity(right)));
-      }
-      const results = matchedCandidates.slice(0, opts.finalTopK).map((candidate, index) => ({
-        libraryKey: identityFromItem(candidate.item)?.libraryKey,
-        itemId: candidate.item.id,
-        itemKey: candidate.item.key || '',
-        title: candidate.title || 'Untitled',
-        creators: '',
-        year: Number(candidate.year || 0),
-        semanticScore: null,
-        keywordScore: 1,
-        rrfScore: 1 / (opts.rrfK + index + 1),
-        semanticRank: null,
-        keywordRank: index + 1,
-        source: 'keyword' as const,
-        policyChannel: 'identity' as const,
-        textSource: 'summary' as TextSourceType,
-      }));
-      await this.populateItemMetadata(results);
-      this.logger.info(
-        `Identity navigation: match=${match.kind} results=${results.length} ` +
-        `itemIds=${itemIdCount} candidates=${candidateCount} search=${searchMs}ms ` +
-        `metadata=${metadataLoadMs}ms filter=${candidateFilterMs}ms classify=${classifyMs}ms ` +
-        `finalize=${Date.now() - resultStartedAt}ms total=${Date.now() - totalStartedAt}ms`
-      );
-      return results;
+      return this.classifyIdentityCandidates(query, opts, candidates, {
+        path: 'legacy',
+        totalStartedAt,
+        cacheMs,
+        searchMs,
+        metadataLoadMs,
+        filterMs: candidateFilterMs,
+        itemIds: itemIdCount,
+      });
     } catch (error) {
       this.logger.debug(
         `Identity navigation abstained after metadata error: ${error}; ` +
-        `itemIds=${itemIdCount} candidates=${candidateCount} search=${searchMs}ms ` +
+        `path=legacy itemIds=${itemIdCount} search=${searchMs}ms ` +
         `metadata=${metadataLoadMs}ms filter=${candidateFilterMs}ms ` +
-        `classify=${classifyMs}ms total=${Date.now() - totalStartedAt}ms`
+        `cache=${cacheMs}ms total=${Date.now() - totalStartedAt}ms`
       );
       return [];
     }
+  }
+
+  private async classifyIdentityCandidates<T extends IdentityNavigationCandidate>(
+    query: string,
+    opts: ResolvedHybridSearchOptions,
+    candidates: T[],
+    timing: {
+      path: string;
+      totalStartedAt: number;
+      cacheMs: number;
+      searchMs: number;
+      metadataLoadMs: number;
+      filterMs: number;
+      itemIds: number;
+      estimatedBytes?: number;
+    },
+    precomputedMatch?: ReturnType<typeof classifyMetadataIdentity<T>>,
+  ): Promise<HybridSearchResult[]> {
+    const classifyStartedAt = Date.now();
+    const match = precomputedMatch === undefined
+      ? classifyMetadataIdentity(query, candidates)
+      : precomputedMatch;
+    const classifyMs = Date.now() - classifyStartedAt;
+    const memory = timing.estimatedBytes === undefined ? '' : ` bytes=${timing.estimatedBytes}`;
+    if (!match) {
+      this.logger.debug(
+        `Identity prepass: path=${timing.path} match=none itemIds=${timing.itemIds} ` +
+        `candidates=${candidates.length}${memory} cache=${timing.cacheMs}ms ` +
+        `search=${timing.searchMs}ms metadata=${timing.metadataLoadMs}ms ` +
+        `filter=${timing.filterMs}ms classify=${classifyMs}ms ` +
+        `total=${Date.now() - timing.totalStartedAt}ms`
+      );
+      return [];
+    }
+
+    const resultStartedAt = Date.now();
+    const matchedCandidates = [...match.candidates];
+    const candidateIdentity = (candidate: T) => candidate.libraryKey && candidate.itemKey
+      ? `${candidate.libraryKey}|${candidate.itemKey}`
+      : `local:${candidate.itemId}`;
+    if (match.kind === 'author-set' || match.kind === 'author-year-set') {
+      matchedCandidates.sort((left, right) =>
+        String(right.year ?? '').localeCompare(String(left.year ?? '')) ||
+        left.title.localeCompare(right.title) ||
+        candidateIdentity(left).localeCompare(candidateIdentity(right)));
+    } else {
+      matchedCandidates.sort((left, right) =>
+        candidateIdentity(left).localeCompare(candidateIdentity(right)));
+    }
+    const results = matchedCandidates.slice(0, opts.finalTopK).map((candidate, index) => ({
+      libraryKey: candidate.libraryKey,
+      itemId: candidate.itemId,
+      itemKey: candidate.itemKey,
+      title: candidate.title || 'Untitled',
+      creators: '',
+      year: Number(candidate.year || 0),
+      semanticScore: null,
+      keywordScore: 1,
+      rrfScore: 1 / (opts.rrfK + index + 1),
+      semanticRank: null,
+      keywordRank: index + 1,
+      source: 'keyword' as const,
+      policyChannel: 'identity' as const,
+      textSource: 'summary' as TextSourceType,
+    }));
+    await this.populateItemMetadata(results);
+    this.logger.info(
+      `Identity navigation: path=${timing.path} match=${match.kind} results=${results.length} ` +
+      `itemIds=${timing.itemIds} candidates=${candidates.length}${memory} ` +
+      `cache=${timing.cacheMs}ms search=${timing.searchMs}ms metadata=${timing.metadataLoadMs}ms ` +
+      `filter=${timing.filterMs}ms classify=${classifyMs}ms ` +
+      `finalize=${Date.now() - resultStartedAt}ms ` +
+      `total=${Date.now() - timing.totalStartedAt}ms`
+    );
+    return results;
   }
 
   /**
@@ -494,8 +688,16 @@ export class HybridSearchEngine {
     populateMetadata = true,
   ): Promise<HybridSearchResult[]> {
     const results = await this.semanticSearchQuery(query, opts);
+    const hybridResults = this.semanticHitsToHybrid(results);
 
-    const hybridResults: HybridSearchResult[] = results.map((r, index) => ({
+    if (populateMetadata) {
+      await this.populateItemMetadata(hybridResults.slice(0, opts.finalTopK));
+    }
+    return hybridResults.slice(0, opts.finalTopK);
+  }
+
+  private semanticHitsToHybrid(results: SemanticSearchHit[]): HybridSearchResult[] {
+    return results.map((r, index) => ({
       itemId: r.itemId,
       libraryKey: r.libraryKey,
       itemKey: r.itemKey,
@@ -504,7 +706,7 @@ export class HybridSearchEngine {
       year: 0,
       semanticScore: r.score,
       keywordScore: null,
-      rrfScore: r.score, // Use raw score for semantic-only
+      rrfScore: r.score,
       semanticRank: index + 1,
       keywordRank: null,
       source: 'semantic' as const,
@@ -516,11 +718,6 @@ export class HybridSearchEngine {
       pageNumber: r.pageNumber,
       paragraphIndex: r.paragraphIndex,
     }));
-
-    if (populateMetadata) {
-      await this.populateItemMetadata(hybridResults.slice(0, opts.finalTopK));
-    }
-    return hybridResults.slice(0, opts.finalTopK);
   }
 
   /**
@@ -576,45 +773,73 @@ export class HybridSearchEngine {
         returnAllChunks: opts.returnAllChunks,
       });
 
-      // Drop orphan results (no resolved local itemId) — hybrid search needs a
-      // local item for keyword merging and navigation.
-      let filteredResults = results.filter(
-        (r): r is SearchResult & { itemId: number } => r.itemId !== undefined
-      );
-
-      // Filter out books if preference is set
-      const excludeBooks = Zotero.Prefs.get('zotseek.excludeBooks', true) ?? true;
-      if (excludeBooks) {
-        const itemsById = await getItemsBatch(filteredResults.map(r => r.itemId));
-        const kept: typeof filteredResults = [];
-        for (const r of filteredResults) {
-          const entry = itemsById.get(r.itemId);
-          // If an individual lookup failed, retain the previous fail-open
-          // behavior. A missing item still drops the result as before.
-          if (entry?.failed) kept.push(r);
-          else if (entry?.item && entry.item.itemType !== 'book') kept.push(r);
-        }
-        filteredResults = kept;
-      }
-
-      return filteredResults.map((r) => ({
-        itemId: r.itemId,
-        libraryKey: r.libraryKey,
-        itemKey: r.itemKey,
-        score: r.similarity,
-        textSource: r.textSource,
-        chunkIndex: r.chunkIndex,
-        chunkText: r.chunkText,
-        sectionPaths: r.sectionPaths,
-        pdfAttachmentKey: r.pdfAttachmentKey,
-        pageNumber: r.pageNumber,
-        paragraphIndex: r.paragraphIndex,
-      }));
+      return this.filterAndMapSemanticResults(results);
     } catch (error) {
       if ((error as any)?.code === 'SERVER_MODEL_NOT_READY') throw error;
       this.logger.error('Semantic search failed:', error);
       return [];
     }
+  }
+
+  /** Full-mode semantic specialists share vector work but keep independent results. */
+  private async semanticSearchPartitionsQuery(
+    query: string,
+    partitions: SearchPartitionOptions[],
+    opts: ResolvedHybridSearchOptions,
+  ): Promise<Map<string, SemanticSearchHit[]>> {
+    try {
+      if (!this.semanticSearch.isReady()) {
+        await this.semanticSearch.init();
+      }
+      const rawPartitions = await this.semanticSearch.searchPartitions(query, partitions, {
+        minSimilarity: opts.minSimilarity,
+        libraryId: opts.libraryId,
+        returnAllChunks: opts.returnAllChunks,
+      });
+      const mappedEntries = await Promise.all(partitions.map(async partition => [
+        partition.key,
+        await this.filterAndMapSemanticResults(rawPartitions.get(partition.key) ?? []),
+      ] as const));
+      return new Map(mappedEntries);
+    } catch (error) {
+      if ((error as any)?.code === 'SERVER_MODEL_NOT_READY') throw error;
+      this.logger.error('Partitioned semantic search failed:', error);
+      return new Map(partitions.map(partition => [partition.key, []]));
+    }
+  }
+
+  private async filterAndMapSemanticResults(results: SearchResult[]): Promise<SemanticSearchHit[]> {
+    // Hybrid search needs a local item for keyword merging and navigation.
+    let filteredResults = results.filter(
+      (r): r is SearchResult & { itemId: number } => r.itemId !== undefined
+    );
+
+    const excludeBooks = Zotero.Prefs.get('zotseek.excludeBooks', true) ?? true;
+    if (excludeBooks) {
+      const itemsById = await getItemsBatch(filteredResults.map(r => r.itemId));
+      const kept: typeof filteredResults = [];
+      for (const r of filteredResults) {
+        const entry = itemsById.get(r.itemId);
+        // Retain the established fail-open behavior for per-item lookup errors.
+        if (entry?.failed) kept.push(r);
+        else if (entry?.item && entry.item.itemType !== 'book') kept.push(r);
+      }
+      filteredResults = kept;
+    }
+
+    return filteredResults.map((r) => ({
+      itemId: r.itemId,
+      libraryKey: r.libraryKey,
+      itemKey: r.itemKey,
+      score: r.similarity,
+      textSource: r.textSource,
+      chunkIndex: r.chunkIndex,
+      chunkText: r.chunkText,
+      sectionPaths: r.sectionPaths,
+      pdfAttachmentKey: r.pdfAttachmentKey,
+      pageNumber: r.pageNumber,
+      paragraphIndex: r.paragraphIndex,
+    }));
   }
 
   /**

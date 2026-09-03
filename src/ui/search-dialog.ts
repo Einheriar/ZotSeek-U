@@ -68,7 +68,7 @@ export class ZotSeekDialog {
   private async performSearch(query: string): Promise<SearchResult[]> {
     if (showServerModelConfigurationPromptIfNeeded()) return [];
     try {
-      this.logger.info('Performing semantic search for:', query);
+      this.logger.info('Performing semantic search');
       
       // Show progress in the dialog
       if (this.isWindowOpen()) {

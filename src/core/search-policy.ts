@@ -67,6 +67,12 @@ export interface MetadataIdentityMatch<T extends MetadataIdentityCandidate> {
   candidates: T[];
 }
 
+export interface MetadataIdentityAnalysis<T extends MetadataIdentityCandidate> {
+  match: MetadataIdentityMatch<T> | null;
+  /** True when some subset of candidates could receive identity permission. */
+  hasPotentialMatch: boolean;
+}
+
 function normalizeIdentityText(value: string): string {
   return String(value ?? '')
     .normalize('NFC')
@@ -111,22 +117,33 @@ function isDistinctiveTitleFragment(query: string): boolean {
   return query.length >= 12 && terms.length >= 3;
 }
 
-/** Metadata-only identity permission. Weak fragments and year-only queries abstain. */
-export function classifyMetadataIdentity<T extends MetadataIdentityCandidate>(
+/**
+ * Analyze metadata-only identity permission and whether a narrower candidate
+ * gate could change the answer. The latter lets cache callers preserve
+ * Zotero's query-specific candidate semantics without paying for that gate on
+ * ordinary concept queries that cannot match any identity surface.
+ */
+export function analyzeMetadataIdentity<T extends MetadataIdentityCandidate>(
   queryValue: string,
   candidates: T[],
-): MetadataIdentityMatch<T> | null {
+): MetadataIdentityAnalysis<T> {
   const query = normalizeIdentityText(queryValue);
-  if (!query || candidates.length === 0 || /^\d{4}$/.test(query)) return null;
+  if (!query || candidates.length === 0 || /^\d{4}$/.test(query)) {
+    return { match: null, hasPotentialMatch: false };
+  }
 
   const queryDoi = normalizeDoi(query);
   if (/^10\.\d{4,9}\//.test(queryDoi)) {
     const matches = candidates.filter(candidate => normalizeDoi(candidate.doi ?? '') === queryDoi);
-    if (matches.length > 0) return { kind: 'doi', candidates: matches };
+    if (matches.length > 0) {
+      return { match: { kind: 'doi', candidates: matches }, hasPotentialMatch: true };
+    }
   }
 
   const exactTitles = candidates.filter(candidate => normalizeIdentityText(candidate.title) === query);
-  if (exactTitles.length > 0) return { kind: 'exact-title', candidates: exactTitles };
+  if (exactTitles.length > 0) {
+    return { match: { kind: 'exact-title', candidates: exactTitles }, hasPotentialMatch: true };
+  }
 
   const yearMatch = query.match(/(?:^|\s)((?:19|20)\d{2})(?:$|\s)/);
   const queryYear = yearMatch?.[1];
@@ -138,7 +155,13 @@ export function classifyMetadataIdentity<T extends MetadataIdentityCandidate>(
       creatorSurfaces(candidate).has(authorQuery) &&
       (!queryYear || String(candidate.year ?? '').includes(queryYear)));
     if (authorMatches.length > 0) {
-      return { kind: queryYear ? 'author-year-set' : 'author-set', candidates: authorMatches };
+      return {
+        match: {
+          kind: queryYear ? 'author-year-set' : 'author-set',
+          candidates: authorMatches,
+        },
+        hasPotentialMatch: true,
+      };
     }
   }
 
@@ -146,8 +169,19 @@ export function classifyMetadataIdentity<T extends MetadataIdentityCandidate>(
     const fragments = candidates.filter(candidate => normalizeIdentityText(candidate.title).includes(query));
     // Ambiguous fragments do not get identity permission. They fall through to
     // the normal content strategy instead of manufacturing a privileged set.
-    if (fragments.length === 1) return { kind: 'title-fragment', candidates: fragments };
+    if (fragments.length === 1) {
+      return { match: { kind: 'title-fragment', candidates: fragments }, hasPotentialMatch: true };
+    }
+    if (fragments.length > 1) return { match: null, hasPotentialMatch: true };
   }
 
-  return null;
+  return { match: null, hasPotentialMatch: false };
+}
+
+/** Metadata-only identity permission. Weak fragments and year-only queries abstain. */
+export function classifyMetadataIdentity<T extends MetadataIdentityCandidate>(
+  queryValue: string,
+  candidates: T[],
+): MetadataIdentityMatch<T> | null {
+  return analyzeMetadataIdentity(queryValue, candidates).match;
 }

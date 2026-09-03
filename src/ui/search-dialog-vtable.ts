@@ -320,8 +320,7 @@ export class ZotSeekDialogVTable {
 
       if (initialQuery && query1Input) {
         query1Input.value = initialQuery;
-        const truncated = initialQuery.length > 50 ? initialQuery.substring(0, 50) + '...' : initialQuery;
-        this.logger.info(`Pre-filling query from PDF selection: "${truncated}"`);
+        this.logger.info(`Pre-filling query from PDF selection (${initialQuery.length} characters)`);
 
         // Trigger search after a brief delay to let UI settle
         win.setTimeout(() => {
