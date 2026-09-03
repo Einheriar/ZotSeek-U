@@ -95,6 +95,7 @@ describe('scoped index reconciliation', () => {
         getActiveModel(),
         zotero.Prefs.get('zotseek.maxTokens', true),
       )),
+      pdfSourceIdentityVersion: 0,
     });
     const fingerprints = new Map<string, StartupFingerprint>(papers.map(paper => [
       `user\u0000${paper.key}\u0000multilingual-e5-base`,

@@ -7,6 +7,7 @@ import {
   runSearchTool,
   runFindSimilarTool,
   runIndexStatusTool,
+  runGetItemTool,
   isAllowedOrigin,
 } from './http-tools';
 
@@ -14,6 +15,7 @@ export const REST_PATHS = {
   search: '/zotseek/search',
   similar: '/zotseek/similar',
   stats: '/zotseek/stats',
+  item: '/zotseek/item',
 };
 
 type EndpointResponse = [number, string, string];
@@ -39,6 +41,20 @@ export async function handleSearchRequest(requestData: any): Promise<EndpointRes
     return json(400, { error: 'Missing required query parameter: q' });
   }
   try {
+    const exactParam = sp.get('exact');
+    if (exactParam !== null && exactParam !== 'true' && exactParam !== 'false') {
+      throw new Error('search: exact must be "true" or "false"');
+    }
+    const filter = ['yearFrom', 'yearTo', 'journal', 'author', 'exact']
+      .some(name => sp.has(name))
+      ? {
+          year_from: sp.has('yearFrom') ? Number(sp.get('yearFrom')) : undefined,
+          year_to: sp.has('yearTo') ? Number(sp.get('yearTo')) : undefined,
+          journal: sp.get('journal') ?? undefined,
+          author: sp.get('author') ?? undefined,
+          exact: exactParam === null ? undefined : exactParam === 'true',
+        }
+      : undefined;
     const payload = await runSearchTool({
       query: q,
       library_key: sp.get('libraryKey') || undefined,
@@ -48,8 +64,35 @@ export async function handleSearchRequest(requestData: any): Promise<EndpointRes
       min_similarity: sp.get('minSimilarity')
         ? parseFloat(sp.get('minSimilarity') as string)
         : undefined,
+      filter,
     });
     return json(200, payload);
+  } catch (e: any) {
+    return json(400, { error: e?.message || String(e) });
+  }
+}
+
+export async function handleItemRequest(requestData: any): Promise<EndpointResponse> {
+  const denied = originGuard(requestData);
+  if (denied) return denied;
+  const sp: URLSearchParams = requestData.searchParams;
+  const itemKey = sp.get('itemKey');
+  if (!itemKey || !itemKey.trim()) {
+    return json(400, { error: 'Missing required query parameter: itemKey' });
+  }
+  const includeNotes = sp.get('includeNotes');
+  if (includeNotes !== null && includeNotes !== 'true' && includeNotes !== 'false') {
+    return json(400, { error: 'includeNotes must be "true" or "false"' });
+  }
+  try {
+    return json(200, await runGetItemTool({
+      item_key: itemKey,
+      library_key: sp.get('libraryKey') || undefined,
+      include_notes: includeNotes === null ? undefined : includeNotes === 'true',
+      include_pdf: (sp.get('includePdf') as any) || undefined,
+      pdf_pages: sp.get('pdfPages') || undefined,
+      pdf_attachment_key: sp.get('pdfAttachmentKey') || undefined,
+    }));
   } catch (e: any) {
     return json(400, { error: e?.message || String(e) });
   }
@@ -107,4 +150,12 @@ ZotSeekStatsEndpoint.prototype = {
   supportedDataTypes: ['application/json'],
   permitBookmarklet: false,
   init: handleStatsRequest,
+};
+
+export function ZotSeekItemEndpoint(this: any) {}
+ZotSeekItemEndpoint.prototype = {
+  supportedMethods: ['GET'],
+  supportedDataTypes: ['application/json'],
+  permitBookmarklet: false,
+  init: handleItemRequest,
 };

@@ -54,6 +54,8 @@ export interface IndexConfigSnapshot {
   maxChunksPerPaper: number;
   chunkStrategyVersion: number;
   modelInputPolicy: string;
+  /** Full-only provenance contract; zero for modes that never index PDFs. */
+  pdfSourceIdentityVersion: number;
 }
 
 export type IndexConfigFingerprintAssessment =
@@ -94,6 +96,7 @@ export function serializeIndexConfigFingerprint(snapshot: IndexConfigSnapshot): 
     maxChunksPerPaper: snapshot.maxChunksPerPaper,
     chunkStrategyVersion: snapshot.chunkStrategyVersion,
     modelInputPolicy: snapshot.modelInputPolicy,
+    pdfSourceIdentityVersion: snapshot.pdfSourceIdentityVersion,
   });
 }
 
@@ -118,7 +121,8 @@ export function parseIndexConfigFingerprint(value: string): IndexConfigSnapshot 
         typeof parsed.maxChunksPerPaper !== 'number' ||
         !Number.isFinite(parsed.maxChunksPerPaper) || parsed.maxChunksPerPaper < 1 ||
         !Number.isInteger(parsed.chunkStrategyVersion) ||
-        typeof parsed.modelInputPolicy !== 'string' || !parsed.modelInputPolicy) {
+        typeof parsed.modelInputPolicy !== 'string' || !parsed.modelInputPolicy ||
+        !Number.isInteger(parsed.pdfSourceIdentityVersion ?? 0)) {
       return null;
     }
     return {
@@ -127,6 +131,7 @@ export function parseIndexConfigFingerprint(value: string): IndexConfigSnapshot 
       maxChunksPerPaper: parsed.maxChunksPerPaper,
       chunkStrategyVersion: parsed.chunkStrategyVersion,
       modelInputPolicy: parsed.modelInputPolicy,
+      pdfSourceIdentityVersion: parsed.pdfSourceIdentityVersion ?? 0,
     };
   } catch {
     return null;
@@ -168,7 +173,12 @@ export function assessIndexConfigFingerprint(
   current: IndexConfigSnapshot,
 ): IndexConfigFingerprintAssessment {
   if (storedFingerprint === serializeIndexConfigFingerprint(current)) return 'current';
-  if (storedFingerprint === legacyIndexConfigFingerprint(current)) return 'legacy-current';
+  // A legacy hash cannot prove that Full chunks carry schema-v12 PDF
+  // provenance. Non-PDF modes can still upgrade that hash without embedding.
+  if (current.pdfSourceIdentityVersion === 0 &&
+      storedFingerprint === legacyIndexConfigFingerprint(current)) {
+    return 'legacy-current';
+  }
 
   const stored = parseIndexConfigFingerprint(storedFingerprint);
   if (!stored) return 'changed';
@@ -176,7 +186,8 @@ export function assessIndexConfigFingerprint(
     stored.indexContractVersion === current.indexContractVersion &&
     stored.mode === current.mode &&
     stored.chunkStrategyVersion === current.chunkStrategyVersion &&
-    stored.modelInputPolicy === current.modelInputPolicy;
+    stored.modelInputPolicy === current.modelInputPolicy &&
+    stored.pdfSourceIdentityVersion === current.pdfSourceIdentityVersion;
   if (!sameOtherConfig) return 'changed';
   if (current.maxChunksPerPaper > stored.maxChunksPerPaper) {
     return 'max-chunks-increased';

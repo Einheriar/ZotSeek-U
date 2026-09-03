@@ -13,6 +13,7 @@ import {
   ZotSeekSearchEndpoint,
   ZotSeekSimilarEndpoint,
   ZotSeekStatsEndpoint,
+  ZotSeekItemEndpoint,
   REST_PATHS,
 } from './rest-endpoints';
 import { ZotSeekOpenEndpoint, OPEN_PATH } from './open-endpoint';
@@ -26,7 +27,7 @@ export const MCP_SERVER_PREF = 'zotseek.mcpServer.enabled';
 let registered = false;
 let observerSymbol: symbol | null = null;
 
-const ALL_PATHS = [MCP_PATH, REST_PATHS.search, REST_PATHS.similar, REST_PATHS.stats, OPEN_PATH];
+const ALL_PATHS = [MCP_PATH, REST_PATHS.search, REST_PATHS.similar, REST_PATHS.stats, REST_PATHS.item, OPEN_PATH];
 
 export function registerEndpoints(): void {
   if (registered) return;
@@ -38,6 +39,7 @@ export function registerEndpoints(): void {
   Zotero.Server.Endpoints[REST_PATHS.search] = ZotSeekSearchEndpoint;
   Zotero.Server.Endpoints[REST_PATHS.similar] = ZotSeekSimilarEndpoint;
   Zotero.Server.Endpoints[REST_PATHS.stats] = ZotSeekStatsEndpoint;
+  Zotero.Server.Endpoints[REST_PATHS.item] = ZotSeekItemEndpoint;
   Zotero.Server.Endpoints[OPEN_PATH] = ZotSeekOpenEndpoint;
   registered = true;
   const port = Zotero.Server?.port;

@@ -1,6 +1,6 @@
 # ZotSeek MCP Server & REST API
 
-ZotSeek can expose your indexed library to AI agents and scripts through a local MCP server and matching REST endpoints, served on Zotero's own HTTP server.
+ZotSeek can expose read-only search plus stable-identity item, Note, and PDF reading to AI agents and scripts through a local MCP server and matching REST endpoints, served on Zotero's own HTTP server.
 
 This needs no extra software: the endpoints run inside the Zotero you already have open. They are **opt-in** (off by default), **read-only** (nothing can modify your library or the index), and bound to **localhost only** — no data leaves your machine.
 
@@ -12,7 +12,7 @@ Everything routes through the running Zotero, where your embeddings and index al
 
 ### 1. Enable AI Agent Access
 
-In Zotero, open **Settings → ZotSeek → AI Agent Access** and check **"Allow AI agents to search your library (local MCP server)"**. This is off by default. Toggling it takes effect immediately — no restart needed.
+In Zotero, open **Settings → ZotSeek → AI Agent Access** and check **"Allow AI agents to search and read your library (local MCP server)"**. This is off by default. Toggling it takes effect immediately — no restart needed. The same switch authorizes all read-only MCP/REST operations; there is no separate PDF permission.
 
 ### 2. Allow Zotero's local HTTP server
 
@@ -47,7 +47,8 @@ Any other MCP client that supports the HTTP transport works the same way (for ex
 
 | Tool | Arguments | Returns |
 |------|-----------|---------|
-| `search` | `query` *(required)*; `max_results` (1–100, default 10); `mode` (`hybrid` \| `semantic` \| `keyword`, default `hybrid`); `granularity` (`papers` \| `passages`, default `papers`); `min_similarity` (0–1, defaults to your ZotSeek preference); `library_key` (`user` or `group:<groupID>`, omit to search all indexed libraries) | Ranked results from a semantic/keyword search over the library |
+| `search` | `query` *(required)*; `max_results` (1–100, default 10); `mode` (`hybrid` \| `semantic` \| `keyword`, default `hybrid`); `granularity` (`papers` \| `passages`, default `papers`); `min_similarity` (0–1, defaults to your ZotSeek preference); `library_key` (`user` or `group:<groupID>`, omit to search all indexed libraries); optional `filter` (`year_from`, `year_to`, `journal`, `author`, `exact`) | Ranked results, optionally post-filtered within the ranked result window |
+| `get_item` | `item_key` *(required)*; `library_key` (default `user`); `include_notes` (default `false`); `include_pdf` (`none` \| `pages` \| `full`, default `none`); `pdf_pages` (`3` or `3-5`, at most 20 pages); `pdf_attachment_key` | A normalized live Zotero item snapshot, optionally with complete Notes and exact PDF text |
 | `find_similar` | `item_key` *(required, 8-character Zotero key)*; `library_key` (`user` or `group:<groupID>`, default `user`); `max_results` (1–100, default 10) | Papers similar to a known library item, by its stored embeddings |
 | `index_status` | *(none)* | `{ready, modelLoaded, indexedPapers, totalChunks, modelId, activeModel, coverage, configurationError?, lastIndexed, storageUsedBytes}` |
 
@@ -56,6 +57,8 @@ Any other MCP client that supports the HTTP transport works the same way (for ex
 If the fixed Server model slot is selected but its profile JSON template is `NONE` or `UNKNOWN`, semantic/hybrid `search` and `find_similar` return a configuration error containing the template path; keyword-only search remains available. `index_status` remains callable and reports `ready: false`, zero usable coverage and the same text in `configurationError`. This state never falls back to a local model.
 
 `library_key` narrows `search` to a single library; when omitted, results come from every indexed library. Note the different default on `find_similar`: there `library_key` identifies the library of the *source* item and defaults to `user`.
+
+`search.filter` is deliberately a **post-filter**. ZotSeek first obtains the normal ranked `max_results` window and then filters it without changing order. It is not an exhaustive database field query, so the result can contain fewer than `max_results` items or be empty even when another matching item exists below the original window. `journal` checks publication, book, and proceedings titles. `author` checks first name, last name, `First Last`, `Last, First`, and institutional creator names. Matching trims values, normalizes Unicode NFC, and ignores case; `exact:true` switches the two string filters from substring to whole-candidate matching.
 
 For `index_status`, `ready` is `true` when the index contains papers and the selected model has an operational identity; the embedding model itself lazy-loads on the first search, adding ~30s to that first call when `modelLoaded` is `false`. `modelLoaded` reports whether that pipeline is already warm. A `ready: true, modelLoaded: false` status means searches will work but the first one will be slow. `activeModel` is the short identifier of the currently configured embedding model (e.g. `"bge-m3"`), or `"server-slot"` while an incomplete Server choice is retained. `coverage` is `{ covered, total }` — the number of library items indexed under the operational model vs. the total items in the index, letting agents detect when a model switch has left items to be re-indexed.
 
@@ -75,8 +78,8 @@ For `index_status`, `ready` is `true` when the index contains papers and the sel
   "matchedChunk": {
     "snippet": "The Transformer relies entirely on self-attention to compute representations...",
     "page": 3,
-    "textSource": "note",
-    "sectionPaths": [["核心发现与价值 (The Finding)", "核心故事线"]]
+    "textSource": "methods",
+    "pdfAttachmentKey": "WXYZ6789"
   },
   "links": {
     "select": "zotero://select/library/items/ABCD2345",
@@ -92,21 +95,30 @@ Notes on the shape:
 - `source` (`"both"` | `"semantic"` | `"keyword"`) is present on `search` results only — it reports which engine found the item.
 - `libraryKey` is `"user"` or `"group:<groupID>"`, or `null` for items that can no longer be resolved locally (e.g. indexed on another machine and not present in this library); a `null` `libraryKey` also means no `links` are emitted.
 - `authors` is a formatted string for `search` results and an array of strings for `find_similar` results.
-- `matchedChunk` is `null` when no excerpt or page is available; `page`, `textSource` and `sectionPaths` may be absent within it. `sectionPaths` is a list because one compact Child Note chunk may combine multiple adjacent small subsections under the same `h2`.
+- `matchedChunk` is `null` when no excerpt or page is available; `page`, `textSource`, `sectionPaths`, and `pdfAttachmentKey` may be absent within it. `pdfAttachmentKey` is present on newly indexed Full-mode PDF chunks and identifies the exact attachment that produced the hit; copy it into `get_item.pdf_attachment_key`. Old Full indexes remain searchable but return no exact PDF key until refreshed.
 - Child Note keyword fallbacks return a query-centred excerpt capped at 1200 Unicode characters, never the complete long Note. When the stored index has the matching chunk, its faithful chunk text and `sectionPaths` take precedence.
 - `score` is a relevance score (RRF score for `search`, cosine similarity for `find_similar`), rounded to three decimals. RRF scores are small by construction (typically 0.005-0.03) and only meaningful for ranking within a single result set; don't read them as percentages. Cosine scores (semantic mode, `find_similar`) range 0-1.
 
+### `get_item` result and PDF behavior
+
+`get_item` always returns stable identity, normalized bibliographic metadata (including abstract), tags, collections, related-item identities, attachments, and deep links. `include_notes:true` adds all Child Notes sorted by `noteKey`; every Note contains complete visible `text`, live `sections` (`path`, `pathLevels`, `paragraphs`), and deduplicated `sectionPaths`. Read-side Notes do not apply ZotSeek's indexing exclusions for Basic Information or References.
+
+PDF reading never reruns the main-PDF classifier. A supplied `pdf_attachment_key` must be a PDF child of the requested parent in the same library. Without it, ZotSeek uses the exact source persisted by a new Full index; if no exact source is available, `pdf.status` is `unresolved` and the caller can choose a key from `attachments`. `pages` accepts one physical page or one continuous range such as `3-5`; `full` is explicit and can return a very large response for books or theses.
+
+`pdf.status` uses stable machine values: `ok`, `partial`, `missing`, `unresolved`, `empty`, or `failed`. `source` is `zotero-fulltext-cache`, `pdfworker`, or `cache+pdfworker`. Zotero's `.zotero-ft-cache` is used first; missing requested pages are filled with one batched PDFWorker call, and a full fallback likewise parses the document only once. Returned text is Zotero/PDF.js plain text split by physical page, including References and without ZotSeek's indexing cleanup.
+
 ### Recommended workflow for AI agents
 
-An agent should treat ZotSeek as a retrieval interface, not as a complete-document reader:
+An agent should separate discovery from complete-item reading:
 
 1. Call `index_status` before a retrieval session. If `ready` is false, `coverage.covered` is lower than `coverage.total`, or `configurationError` is present, report the limitation instead of presenting the result set as complete.
 2. For literature discovery, start with `search` using `mode: "hybrid"`, `granularity: "papers"`, and multiple results (normally 10). Do not answer a completeness-sensitive question from the first result alone.
 3. For comparisons or questions that require several papers, split the information need into focused retrieval queries, run one paper-level search per concept or claim, then merge and deduplicate results by `libraryKey + itemKey`. Putting several weakly related concepts into one long embedding query can reduce recall.
 4. Use `granularity: "passages"` only for targeted evidence gathering. Passage results may contain several chunks from the same paper, so they should not replace paper-level discovery when document diversity matters.
-5. Synthesize only from evidence actually returned, and say when one side of a comparison remains unsupported. Broaden or rephrase the focused query before concluding that the library contains no relevant paper.
+5. For a chosen result, call `get_item` with its `libraryKey` and `itemKey`. For a PDF hit, pass `matchedChunk.pdfAttachmentKey` and request the matched page or a small adjacent range before requesting `full`.
+6. Synthesize only from evidence actually returned, and say when one side of a comparison remains unsupported. Broaden or rephrase the focused query before concluding that the library contains no relevant paper.
 
-`matchedChunk.snippet` is one bounded matching chunk or excerpt, **not the complete Child Note or PDF**. The current MCP API does not expose a `get_note` or per-item `get_document_chunks` operation. Prompt instructions can improve query decomposition, retries, and evidence aggregation, but they cannot make a single `search` result return context that the tool does not expose. A paper-specific passage query may help retrieve additional evidence, but it does not guarantee that results are restricted to that paper.
+`matchedChunk.snippet` remains one bounded matching chunk or excerpt, **not the complete Child Note or PDF**. Use `get_item` for complete Notes or page/full PDF text rather than trying to reconstruct a document through repeated search queries.
 
 ### Deep links
 
@@ -115,7 +127,7 @@ Each result carries `zotero://` deep links so an agent can cite a paper with a l
 | Field | Opens | Notes |
 |-------|-------|-------|
 | `links.select` | The item in the Zotero main pane | Always present for a resolvable item |
-| `links.openPdf` | The item's PDF in Zotero's reader, at the matched page | Present only when the item has a PDF; the `?page=N` lands you on the exact page that matched |
+| `links.openPdf` | The exact indexed PDF in Zotero's reader, at the matched page | New Full-mode PDF hits use `matchedChunk.pdfAttachmentKey`; older/non-PDF results may use Zotero's best attachment |
 | `links.selectHttp` | Same as `select`, via a local http launcher | For clients that only linkify `http(s)` URLs |
 | `links.openPdfHttp` | Same as `openPdf`, via a local http launcher | Present whenever `openPdf` is |
 
@@ -129,7 +141,8 @@ The same operations and result shapes are available as plain `GET` endpoints for
 
 | Endpoint | Query parameters |
 |----------|------------------|
-| `GET /zotseek/search` | `q` *(required)*, `topK`, `mode`, `granularity`, `minSimilarity` (0–1), `libraryKey` (`user` or `group:N`, omit to search all indexed libraries) |
+| `GET /zotseek/search` | `q` *(required)*, `topK`, `mode`, `granularity`, `minSimilarity`, `libraryKey`, plus `yearFrom`, `yearTo`, `journal`, `author`, `exact` (`true`/`false`) |
+| `GET /zotseek/item` | `itemKey` *(required)*, `libraryKey`, `includeNotes`, `includePdf` (`none`/`pages`/`full`), `pdfPages`, `pdfAttachmentKey` |
 | `GET /zotseek/similar` | `itemKey` *(required)*, `libraryKey` (`user` or `group:N`), `topK` |
 | `GET /zotseek/stats` | *(none)* |
 | `GET /zotseek/open` | `target` (`select` \| `pdf`) *(required)*, `key` *(required)*, `library` (`user` or `group:N`), `page` (pdf only) — selects the item or opens the PDF directly in Zotero and returns a confirmation page (`404` if the item isn't in this library) |
@@ -172,9 +185,9 @@ curl 'http://localhost:23119/zotseek/search?q=transformer+attention&topK=2&mode=
 | Property | Guarantee |
 |----------|-----------|
 | **Opt-in** | Off by default; you enable it explicitly in ZotSeek settings |
-| **Read-only** | Nothing exposed here can modify your library or the index — search and stats only |
+| **Read-only** | Nothing exposed here can modify your library or the index — tools only search or read live item, Note, PDF, and index-status data |
 | **Localhost only** | Endpoints bind to the loopback interface; not reachable from the network |
-| **Not reachable from web pages** | Zotero's server blocks browser-originated requests to the search and stats endpoints before they reach ZotSeek, and ZotSeek additionally validates the `Origin` header. The one deliberate exception is the `GET /zotseek/open` link launcher, which browsers can reach by design — it exposes no data and can only select an item or open a PDF in Zotero (strictly validated input, prefetch requests ignored) |
+| **Not reachable from web pages** | Zotero's server blocks browser-originated requests to the data endpoints before they reach ZotSeek, and ZotSeek additionally validates the `Origin` header. The one deliberate exception is the `GET /zotseek/open` link launcher, which browsers can reach by design — it exposes no data and can only select an item or open a PDF in Zotero (strictly validated input, prefetch requests ignored) |
 | **100% local** | All search and inference run on your machine; no data leaves it |
 
 ## See also

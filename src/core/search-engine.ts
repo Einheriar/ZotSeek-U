@@ -33,6 +33,7 @@ export interface SearchResult {
   chunkIndex?: number;         // Chunk index (when returnAllChunks=true)
   chunkText?: string;          // Text of the matched chunk (populated for top results only, for snippet display)
   sectionPaths?: string[][];   // Child Note heading paths for the matched chunk
+  pdfAttachmentKey?: string;   // Exact main PDF source for this matched chunk
   authors?: string[];          // Optional: author names for display
   year?: number;               // Optional: publication year for display
   pageNumber?: number;         // 1-based page number of matched chunk
@@ -717,6 +718,7 @@ export class SearchEngine {
         if (passage) {
           r.chunkText = passage.text;
           r.sectionPaths = passage.sectionPaths;
+          r.pdfAttachmentKey = passage.pdfAttachmentKey;
         }
       }
     } catch (e) {

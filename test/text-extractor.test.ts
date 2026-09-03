@@ -108,6 +108,9 @@ describe('TextExtractor PDF main-text production chain', () => {
     assert.doesNotMatch(text, /Jones, B\. \(2022\)/);
     assert.deepEqual([...new Set(body.map(chunk => chunk.pageNumber))].sort(), [1, 2, 3, 4]);
     assert.ok(body.every(chunk => chunk.text.startsWith('Target article title\n\n')));
+    assert.ok(body.every(chunk => chunk.pdfAttachmentKey === 'MAIN'));
+    assert.ok(result!.chunks.filter(chunk => chunk.type === 'summary')
+      .every(chunk => chunk.pdfAttachmentKey === undefined));
     assert.equal((text.match(/REPEATED JOURNAL HEADER/g) ?? []).length, 1);
   });
 

@@ -59,6 +59,7 @@ export interface PaperEmbedding {
   abstract?: string;
   chunkText?: string;       // Faithful evidence text shown in search results
   sectionPaths?: string[][]; // Original Child Note heading paths represented by this chunk
+  pdfAttachmentKey?: string; // Exact main PDF attachment that produced this chunk
   textSource: TextSourceType;
   embedding: number[];      // 768 dimensions (nomic-embed-text-v1.5)
   modelId: string;
@@ -88,6 +89,7 @@ export interface IndexedTextMatch {
   chunkIndex: number;
   chunkText: string;
   sectionPaths?: string[][];
+  pdfAttachmentKey?: string;
   textSource: TextSourceType;
   score: number;
 }
@@ -140,7 +142,7 @@ export interface VectorStoreStats {
 // Database configuration
 const DB_NAME = 'zotseek';           // Schema name when attached
 const DB_FILE = 'zotseek.sqlite';    // Database filename
-const SCHEMA_VERSION = 11;           // v11: persisted Child Note section paths
+const SCHEMA_VERSION = 12;           // v12: exact main-PDF attachment provenance
 
 // Legacy table prefix (for migration from old schema)
 const LEGACY_TABLE_PREFIX = 'zs_';
@@ -272,6 +274,9 @@ export class VectorStoreSQLite {
 
       // Persist Child Note heading paths alongside faithful display text.
       await this.migrateToV11();
+
+      // Persist the exact PDF attachment that produced each Full-mode chunk.
+      await this.migrateToV12();
 
       this.initialized = true;
       this.logger.info('SQLite store initialized successfully');
@@ -1433,6 +1438,23 @@ export class VectorStoreSQLite {
     );
   }
 
+  /** Add exact PDF-source provenance without rewriting or guessing old rows. */
+  private async migrateToV12(): Promise<void> {
+    const columns: any[] = await Zotero.DB.queryAsync(
+      `PRAGMA ${DB_NAME}.table_info(chunks)`
+    );
+    const names = new Set((columns || []).map((column: any) => column.name));
+    if (!names.has('pdf_attachment_key')) {
+      this.logger.info('Migrating schema to v12 (exact PDF attachment provenance)...');
+      await Zotero.DB.queryAsync(
+        `ALTER TABLE ${DB_NAME}.chunks ADD COLUMN pdf_attachment_key TEXT`
+      );
+    }
+    await Zotero.DB.queryAsync(
+      `INSERT OR REPLACE INTO ${DB_NAME}.metadata (key, value) VALUES ('schema_version', '12')`
+    );
+  }
+
   /**
    * Check if a table exists in the attached database
    */
@@ -1497,6 +1519,7 @@ export class VectorStoreSQLite {
           model_id TEXT NOT NULL,
           chunk_text TEXT,
           section_paths TEXT,
+          pdf_attachment_key TEXT,
           text_source TEXT NOT NULL,
           embedding TEXT NOT NULL,
           page_number INTEGER,
@@ -1553,7 +1576,7 @@ export class VectorStoreSQLite {
     await this.createIndexes();
     await this.updateSchemaVersion();
 
-    this.logger.debug('Tables created successfully (v11)');
+    this.logger.debug('Tables created successfully (v12)');
   }
 
   /**
@@ -1693,6 +1716,7 @@ export class VectorStoreSQLite {
     chunkIndex: number;
     chunkText?: string | null;
     sectionPaths?: string | null;
+    pdfAttachmentKey?: string | null;
     textSource: string;
     embedding: string;
     pageNumber?: number | null;
@@ -1718,6 +1742,7 @@ export class VectorStoreSQLite {
       abstract: row.abstract || undefined,
       chunkText: row.chunkText || undefined,
       sectionPaths: this.sectionPathsFromJSON(row.sectionPaths),
+      pdfAttachmentKey: row.pdfAttachmentKey || undefined,
       textSource: (row.textSource as TextSourceType) || 'abstract',
       embedding: this.base64ToEmbedding(row.embedding),
       modelId: row.modelId,
@@ -1946,6 +1971,23 @@ export class VectorStoreSQLite {
     return (rows || []).map((value: any) => String(value || ''));
   }
 
+  /** Return the exact Full-mode PDF source persisted for the active model. */
+  async getIndexedPdfAttachmentKey(
+    libraryKey: string,
+    itemKey: string,
+    modelId: string = getActiveModelId()
+  ): Promise<string | undefined> {
+    await this.ensureInit();
+    const value = await Zotero.DB.valueQueryAsync(`SELECT c.pdf_attachment_key
+      FROM ${DB_NAME}.chunks c
+      INNER JOIN ${DB_NAME}.items i ON i.item_pk = c.item_pk
+      WHERE i.library_key = ? AND i.item_key = ? AND c.model_id = ?
+        AND c.pdf_attachment_key IS NOT NULL
+      ORDER BY c.chunk_index
+      LIMIT 1`, [libraryKey, itemKey, modelId]);
+    return typeof value === 'string' && value ? value : undefined;
+  }
+
   /**
    * Store a paper embedding (single chunk).
    *
@@ -1981,13 +2023,14 @@ export class VectorStoreSQLite {
 
     await Zotero.DB.queryAsync(`
       INSERT OR REPLACE INTO ${DB_NAME}.chunks
-      (item_pk, chunk_index, model_id, chunk_text, section_paths, text_source, embedding,
+      (item_pk, chunk_index, model_id, chunk_text, section_paths, pdf_attachment_key, text_source, embedding,
        page_number, paragraph_index, start_char, end_char, bbox)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       itemPk, chunkIndex, embedding.modelId,
       embedding.chunkText || null,
       this.sectionPathsToJSON(embedding.sectionPaths),
+      embedding.pdfAttachmentKey ?? null,
       embedding.textSource,
       embeddingStr,
       embedding.pageNumber ?? null,
@@ -2060,13 +2103,14 @@ export class VectorStoreSQLite {
 
         await Zotero.DB.queryAsync(`
           INSERT OR REPLACE INTO ${DB_NAME}.chunks
-          (item_pk, chunk_index, model_id, chunk_text, section_paths, text_source, embedding,
+          (item_pk, chunk_index, model_id, chunk_text, section_paths, pdf_attachment_key, text_source, embedding,
            page_number, paragraph_index, start_char, end_char, bbox)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `, [
           itemPk, chunkIndex, embedding.modelId,
           embedding.chunkText || null,
           this.sectionPathsToJSON(embedding.sectionPaths),
+          embedding.pdfAttachmentKey ?? null,
           embedding.textSource,
           embeddingStr,
           embedding.pageNumber ?? null,
@@ -2135,15 +2179,16 @@ export class VectorStoreSQLite {
       for (const embedding of embeddings) {
         await Zotero.DB.queryAsync(`
           INSERT INTO ${DB_NAME}.chunks
-          (item_pk, chunk_index, model_id, chunk_text, section_paths, text_source, embedding,
+          (item_pk, chunk_index, model_id, chunk_text, section_paths, pdf_attachment_key, text_source, embedding,
            page_number, paragraph_index, start_char, end_char, bbox)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `, [
           itemPk,
           embedding.chunkIndex,
           embedding.modelId,
           embedding.chunkText || null,
           this.sectionPathsToJSON(embedding.sectionPaths),
+          embedding.pdfAttachmentKey ?? null,
           embedding.textSource,
           this.embeddingToBase64(embedding.embedding),
           embedding.pageNumber ?? null,
@@ -2407,7 +2452,7 @@ export class VectorStoreSQLite {
       const activeModelId = getActiveModelId();
       const [
         library_key, item_key, title, indexed_at, content_hash, abstract,
-        text_source, chunk_text, section_paths, embedding,
+        text_source, chunk_text, section_paths, pdf_attachment_key, embedding,
         page_number, paragraph_index, start_char, end_char, bbox
       ] = await Promise.all([
         Zotero.DB.valueQueryAsync(`SELECT library_key FROM ${DB_NAME}.items WHERE item_pk = ?`, [itemPk]),
@@ -2419,6 +2464,7 @@ export class VectorStoreSQLite {
         Zotero.DB.valueQueryAsync(`SELECT text_source FROM ${DB_NAME}.chunks WHERE item_pk = ? AND chunk_index = ? AND model_id = ?`, [itemPk, chunkIndex, activeModelId]),
         Zotero.DB.valueQueryAsync(`SELECT chunk_text FROM ${DB_NAME}.chunks WHERE item_pk = ? AND chunk_index = ? AND model_id = ?`, [itemPk, chunkIndex, activeModelId]),
         Zotero.DB.valueQueryAsync(`SELECT section_paths FROM ${DB_NAME}.chunks WHERE item_pk = ? AND chunk_index = ? AND model_id = ?`, [itemPk, chunkIndex, activeModelId]),
+        Zotero.DB.valueQueryAsync(`SELECT pdf_attachment_key FROM ${DB_NAME}.chunks WHERE item_pk = ? AND chunk_index = ? AND model_id = ?`, [itemPk, chunkIndex, activeModelId]),
         Zotero.DB.valueQueryAsync(`SELECT embedding FROM ${DB_NAME}.chunks WHERE item_pk = ? AND chunk_index = ? AND model_id = ?`, [itemPk, chunkIndex, activeModelId]),
         Zotero.DB.valueQueryAsync(`SELECT page_number FROM ${DB_NAME}.chunks WHERE item_pk = ? AND chunk_index = ? AND model_id = ?`, [itemPk, chunkIndex, activeModelId]),
         Zotero.DB.valueQueryAsync(`SELECT paragraph_index FROM ${DB_NAME}.chunks WHERE item_pk = ? AND chunk_index = ? AND model_id = ?`, [itemPk, chunkIndex, activeModelId]),
@@ -2441,6 +2487,7 @@ export class VectorStoreSQLite {
         chunkIndex,
         chunkText: chunk_text,
         sectionPaths: section_paths,
+        pdfAttachmentKey: pdf_attachment_key,
         textSource: text_source || 'abstract',
         embedding,
         pageNumber: page_number,
@@ -2463,8 +2510,8 @@ export class VectorStoreSQLite {
    */
   async getChunkTexts(
     pairs: Array<{ itemPk: number; chunkIndex: number }>
-  ): Promise<Map<string, { text: string; sectionPaths?: string[][] }>> {
-    const out = new Map<string, { text: string; sectionPaths?: string[][] }>();
+  ): Promise<Map<string, { text: string; sectionPaths?: string[][]; pdfAttachmentKey?: string }>> {
+    const out = new Map<string, { text: string; sectionPaths?: string[][]; pdfAttachmentKey?: string }>();
     if (pairs.length === 0) return out;
     await this.ensureInit();
 
@@ -2476,13 +2523,17 @@ export class VectorStoreSQLite {
     // The batch is bounded by topK (~20-50), so this is cheap.
     const entries = Array.from(unique.values());
     const modelId = getActiveModelId();
-    const [texts, paths] = await Promise.all([
+    const [texts, paths, pdfAttachmentKeys] = await Promise.all([
       Promise.all(entries.map(p => Zotero.DB.valueQueryAsync(
         `SELECT chunk_text FROM ${DB_NAME}.chunks WHERE item_pk = ? AND chunk_index = ? AND model_id = ?`,
         [p.itemPk, p.chunkIndex, modelId]
       ).catch(() => null))),
       Promise.all(entries.map(p => Zotero.DB.valueQueryAsync(
         `SELECT section_paths FROM ${DB_NAME}.chunks WHERE item_pk = ? AND chunk_index = ? AND model_id = ?`,
+        [p.itemPk, p.chunkIndex, modelId]
+      ).catch(() => null))),
+      Promise.all(entries.map(p => Zotero.DB.valueQueryAsync(
+        `SELECT pdf_attachment_key FROM ${DB_NAME}.chunks WHERE item_pk = ? AND chunk_index = ? AND model_id = ?`,
         [p.itemPk, p.chunkIndex, modelId]
       ).catch(() => null))),
     ]);
@@ -2493,6 +2544,9 @@ export class VectorStoreSQLite {
         out.set(`${p.itemPk}:${p.chunkIndex}`, {
           text: t,
           sectionPaths: this.sectionPathsFromJSON(paths[i]),
+          pdfAttachmentKey: typeof pdfAttachmentKeys[i] === 'string' && pdfAttachmentKeys[i]
+            ? pdfAttachmentKeys[i]
+            : undefined,
         });
       }
     });
@@ -2636,13 +2690,14 @@ export class VectorStoreSQLite {
     `;
 
     try {
-      const [pks, libraryKeys, itemKeys, chunkIndexes, chunkTexts, sectionPaths, textSources, modelIds] = await Promise.all([
+      const [pks, libraryKeys, itemKeys, chunkIndexes, chunkTexts, sectionPaths, pdfAttachmentKeys, textSources, modelIds] = await Promise.all([
         Zotero.DB.columnQueryAsync(`SELECT c.item_pk ${fromWhere}`, params),
         Zotero.DB.columnQueryAsync(`SELECT i.library_key ${fromWhere}`, params),
         Zotero.DB.columnQueryAsync(`SELECT i.item_key ${fromWhere}`, params),
         Zotero.DB.columnQueryAsync(`SELECT c.chunk_index ${fromWhere}`, params),
         Zotero.DB.columnQueryAsync(`SELECT c.chunk_text ${fromWhere}`, params),
         Zotero.DB.columnQueryAsync(`SELECT c.section_paths ${fromWhere}`, params),
+        Zotero.DB.columnQueryAsync(`SELECT c.pdf_attachment_key ${fromWhere}`, params),
         Zotero.DB.columnQueryAsync(`SELECT c.text_source ${fromWhere}`, params),
         Zotero.DB.columnQueryAsync(`SELECT c.model_id ${fromWhere}`, params),
       ]);
@@ -2673,6 +2728,7 @@ export class VectorStoreSQLite {
           chunkIndex: Number(chunkIndexes[index]),
           chunkText: text,
           sectionPaths: this.sectionPathsFromJSON(sectionPaths[index]),
+          pdfAttachmentKey: pdfAttachmentKeys[index] || undefined,
           textSource: (textSources[index] as TextSourceType) || 'content',
           score,
         };
@@ -2717,6 +2773,7 @@ export class VectorStoreSQLite {
     let chunkIndexes: number[] = [];
     let chunkTexts: (string | null)[] = [];
     let sectionPaths: (string | null)[] = [];
+    let pdfAttachmentKeys: (string | null)[] = [];
     let textSources: string[] = [];
     let embeddings: string[] = [];
     let pageNumbers: (number | null)[] = [];
@@ -2728,7 +2785,7 @@ export class VectorStoreSQLite {
     try {
       [
         pks, libraryKeys, itemKeys, titles, abstracts, modelIds, indexedAts, contentHashes,
-        chunkIndexes, chunkTexts, sectionPaths, textSources, embeddings,
+        chunkIndexes, chunkTexts, sectionPaths, pdfAttachmentKeys, textSources, embeddings,
         pageNumbers, paragraphIndexes, startChars, endChars, bboxes
       ] = await Promise.all([
         Zotero.DB.columnQueryAsync(`SELECT c.item_pk FROM ${DB_NAME}.chunks c INNER JOIN ${DB_NAME}.items i ON c.item_pk = i.item_pk WHERE i.library_key != 'orphan' ORDER BY c.item_pk, c.chunk_index`).then((r: any) => (r || []).map(Number)),
@@ -2742,6 +2799,7 @@ export class VectorStoreSQLite {
         Zotero.DB.columnQueryAsync(`SELECT c.chunk_index FROM ${DB_NAME}.chunks c INNER JOIN ${DB_NAME}.items i ON c.item_pk = i.item_pk WHERE i.library_key != 'orphan' ORDER BY c.item_pk, c.chunk_index`).then((r: any) => (r || []).map(Number)),
         Zotero.DB.columnQueryAsync(`SELECT c.chunk_text FROM ${DB_NAME}.chunks c INNER JOIN ${DB_NAME}.items i ON c.item_pk = i.item_pk WHERE i.library_key != 'orphan' ORDER BY c.item_pk, c.chunk_index`).then((r: any) => r || []),
         Zotero.DB.columnQueryAsync(`SELECT c.section_paths FROM ${DB_NAME}.chunks c INNER JOIN ${DB_NAME}.items i ON c.item_pk = i.item_pk WHERE i.library_key != 'orphan' ORDER BY c.item_pk, c.chunk_index`).then((r: any) => r || []),
+        Zotero.DB.columnQueryAsync(`SELECT c.pdf_attachment_key FROM ${DB_NAME}.chunks c INNER JOIN ${DB_NAME}.items i ON c.item_pk = i.item_pk WHERE i.library_key != 'orphan' ORDER BY c.item_pk, c.chunk_index`).then((r: any) => r || []),
         Zotero.DB.columnQueryAsync(`SELECT c.text_source FROM ${DB_NAME}.chunks c INNER JOIN ${DB_NAME}.items i ON c.item_pk = i.item_pk WHERE i.library_key != 'orphan' ORDER BY c.item_pk, c.chunk_index`).then((r: any) => r || []),
         Zotero.DB.columnQueryAsync(`SELECT c.embedding FROM ${DB_NAME}.chunks c INNER JOIN ${DB_NAME}.items i ON c.item_pk = i.item_pk WHERE i.library_key != 'orphan' ORDER BY c.item_pk, c.chunk_index`).then((r: any) => r || []),
         Zotero.DB.columnQueryAsync(`SELECT c.page_number FROM ${DB_NAME}.chunks c INNER JOIN ${DB_NAME}.items i ON c.item_pk = i.item_pk WHERE i.library_key != 'orphan' ORDER BY c.item_pk, c.chunk_index`).then((r: any) => r || []),
@@ -2781,6 +2839,7 @@ export class VectorStoreSQLite {
         abstract: abstracts[i] || undefined,
         chunkText: chunkTexts[i] || undefined,
         sectionPaths: this.sectionPathsFromJSON(sectionPaths[i]),
+        pdfAttachmentKey: pdfAttachmentKeys[i] || undefined,
         textSource: (textSources[i] as TextSourceType) || 'abstract',
         embedding: this.base64ToEmbedding(embeddings[i]),
         modelId: modelIds[i] || '',

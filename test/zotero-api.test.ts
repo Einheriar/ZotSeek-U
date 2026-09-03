@@ -2,7 +2,7 @@ import './helpers/zotero-stub';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { installZoteroStub } from './helpers/zotero-stub';
-import { ZoteroAPI } from '../src/utils/zotero-api';
+import { mapPdfPageText, ZoteroAPI } from '../src/utils/zotero-api';
 
 type PageResult = { totalPages?: number; text?: string } | Error;
 
@@ -233,4 +233,84 @@ test('compatibility page API returns only selector-approved main pages', async (
     { attachmentId: 20, pageIndex: 0 },
   ]);
   assert.equal(scenario.getFulltextCalls(), 0);
+});
+
+test('maps form-feed boundaries to the explicitly requested physical pages', () => {
+  assert.deepEqual(mapPdfPageText('page two\fpage four', [2, 4]), [
+    { page: 2, text: 'page two' },
+    { page: 4, text: 'page four' },
+  ]);
+  assert.equal(mapPdfPageText('collapsed', [1, 2]), null);
+});
+
+test('reads a complete Zotero cache without invoking PDFWorker', async () => {
+  const zotero = installZoteroStub();
+  let workerCalls = 0;
+  zotero.Fulltext = {
+    getPages: async () => ({ indexedPages: 3, total: 3 }),
+    getItemCacheFile: () => ({ path: 'cache', exists: () => true }),
+  };
+  zotero.File = { getContentsAsync: async () => 'one\ftwo\fthree' };
+  zotero.PDFWorker = {
+    getFullText: async () => {
+      workerCalls++;
+      throw new Error('must not run');
+    },
+  };
+
+  const result = await new ZoteroAPI().readPdfAttachment({ id: 10, key: 'PDFKEY12' } as any, null);
+  assert.equal(result.status, 'ok');
+  assert.equal(result.source, 'zotero-fulltext-cache');
+  assert.equal(result.complete, true);
+  assert.equal(workerCalls, 0);
+  assert.deepEqual(result.pages.map(page => page.page), [1, 2, 3]);
+});
+
+test('fills all missing requested pages with one batched PDFWorker call', async () => {
+  const zotero = installZoteroStub();
+  const calls: Array<number[] | null> = [];
+  zotero.Fulltext = {
+    getPages: async () => ({ indexedPages: 2, total: 5 }),
+    getItemCacheFile: () => ({ path: 'cache', exists: () => true }),
+  };
+  zotero.File = { getContentsAsync: async () => 'one\ftwo' };
+  zotero.PDFWorker = {
+    getFullText: async (_id: number, pages: number[] | null) => {
+      calls.push(pages);
+      return { totalPages: 5, text: 'four\ffive', extractedPages: 2 };
+    },
+  };
+
+  const result = await new ZoteroAPI().readPdfAttachment(
+    { id: 10, key: 'PDFKEY12' } as any,
+    [1, 4, 5],
+  );
+  assert.equal(result.status, 'ok');
+  assert.equal(result.source, 'cache+pdfworker');
+  assert.deepEqual(calls, [[3, 4]]);
+  assert.deepEqual(result.pages, [
+    { page: 1, text: 'one' },
+    { page: 4, text: 'four' },
+    { page: 5, text: 'five' },
+  ]);
+});
+
+test('uses one whole-document PDFWorker call when no cache is available', async () => {
+  const zotero = installZoteroStub();
+  const calls: Array<number[] | null> = [];
+  zotero.Fulltext = {
+    getPages: async () => null,
+    getItemCacheFile: () => ({ path: 'missing', exists: () => false }),
+  };
+  zotero.PDFWorker = {
+    getFullText: async (_id: number, pages: number[] | null) => {
+      calls.push(pages);
+      return { totalPages: 2, text: 'one\ftwo', extractedPages: 2 };
+    },
+  };
+
+  const result = await new ZoteroAPI().readPdfAttachment({ id: 10, key: 'PDFKEY12' } as any, null);
+  assert.equal(result.status, 'ok');
+  assert.equal(result.source, 'pdfworker');
+  assert.deepEqual(calls, [null]);
 });

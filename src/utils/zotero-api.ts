@@ -58,6 +58,34 @@ export interface SelectedMainPdfText {
   selectedText: PdfAttachmentText | null;
 }
 
+export type PdfReadStatus = 'ok' | 'partial' | 'missing' | 'unresolved' | 'empty' | 'failed';
+export type PdfReadSource = 'zotero-fulltext-cache' | 'pdfworker' | 'cache+pdfworker';
+
+export interface PdfReadPage {
+  page: number;
+  text: string;
+}
+
+export interface PdfReadResult {
+  status: PdfReadStatus;
+  source?: PdfReadSource;
+  attachmentKey?: string;
+  indexedPages?: number;
+  totalPages?: number;
+  complete: boolean;
+  pages: PdfReadPage[];
+  error?: string;
+}
+
+/** Map PDFWorker/cache form-feed boundaries back to explicit physical pages. */
+export function mapPdfPageText(text: unknown, pageNumbers: number[]): PdfReadPage[] | null {
+  if (pageNumbers.length === 0) return [];
+  if (typeof text !== 'string') return null;
+  const parts = text.split('\f');
+  if (parts.length !== pageNumbers.length) return null;
+  return parts.map((part, index) => ({ page: pageNumbers[index], text: part }));
+}
+
 export interface ZoteroCollection {
   id: number;
   key: string;
@@ -300,6 +328,173 @@ export class ZoteroAPI {
         status: 'failed',
       };
     }
+  }
+
+  /**
+   * Read exact attachment pages without running the main-PDF classifier.
+   * Zotero's own full-text cache is preferred; one batched PDFWorker request
+   * fills only the pages the cache cannot satisfy.
+   */
+  async readPdfAttachment(
+    attachment: ZoteroAttachment,
+    requestedPages: number[] | null,
+  ): Promise<PdfReadResult> {
+    const attachmentKey = attachment.key;
+    let indexedPages = 0;
+    let knownTotal = 0;
+    let cachedPages: PdfReadPage[] | null = null;
+
+    try {
+      try {
+        const info = await Zotero.Fulltext?.getPages?.(attachment.id);
+        indexedPages = Number.isInteger(Number(info?.indexedPages))
+          ? Math.max(0, Number(info.indexedPages))
+          : 0;
+        knownTotal = Number.isInteger(Number(info?.total ?? info?.totalPages))
+          ? Math.max(0, Number(info.total ?? info.totalPages))
+          : 0;
+      } catch {
+        // Missing fulltextItems state is normal; PDFWorker remains the fallback.
+      }
+
+      if (indexedPages > 0) {
+        try {
+          const cacheFile = Zotero.Fulltext?.getItemCacheFile?.(attachment);
+          if (cacheFile?.exists?.()) {
+            const cacheText = await Zotero.File.getContentsAsync(cacheFile.path, 'utf-8');
+            const cacheCount = knownTotal > 0
+              ? Math.min(indexedPages, knownTotal)
+              : indexedPages;
+            cachedPages = mapPdfPageText(
+              cacheText,
+              Array.from({ length: cacheCount }, (_, index) => index + 1),
+            );
+          }
+        } catch (error) {
+          debug(`Failed to read Zotero full-text cache for ${attachment.id}: ${error}`);
+          cachedPages = null;
+        }
+      }
+
+      if (requestedPages && knownTotal > 0 && requestedPages.some(page => page > knownTotal)) {
+        throw new Error(`Requested PDF page exceeds total page count (${knownTotal})`);
+      }
+
+      if (requestedPages === null && cachedPages && knownTotal > 0 && cachedPages.length >= knownTotal) {
+        return this.finishPdfRead(
+          attachmentKey,
+          cachedPages.slice(0, knownTotal),
+          indexedPages,
+          knownTotal,
+          'zotero-fulltext-cache',
+          true,
+        );
+      }
+
+      const cachedByPage = new Map((cachedPages || []).map(page => [page.page, page]));
+      let pagesToRead: number[] | null;
+      if (requestedPages === null) {
+        pagesToRead = cachedPages && knownTotal > 0
+          ? Array.from(
+              { length: Math.max(0, knownTotal - cachedPages.length) },
+              (_, index) => cachedPages!.length + index + 1,
+            )
+          : null;
+      } else {
+        pagesToRead = requestedPages.filter(page => !cachedByPage.has(page));
+      }
+
+      if (Array.isArray(pagesToRead) && pagesToRead.length === 0) {
+        const pages = requestedPages!.map(page => cachedByPage.get(page)!).filter(Boolean);
+        return this.finishPdfRead(
+          attachmentKey,
+          pages,
+          indexedPages,
+          knownTotal,
+          'zotero-fulltext-cache',
+          pages.length === requestedPages!.length,
+        );
+      }
+
+      const workerArg = pagesToRead === null
+        ? null
+        : pagesToRead.map(page => page - 1);
+      const worker = await Zotero.PDFWorker.getFullText(
+        attachment.id,
+        workerArg,
+        false,
+        null,
+      );
+      const workerTotal = Number(worker?.totalPages ?? 0);
+      if (!Number.isInteger(workerTotal) || workerTotal <= 0) {
+        throw new Error('PDFWorker returned an invalid total page count');
+      }
+      if (requestedPages && requestedPages.some(page => page > workerTotal)) {
+        throw new Error(`Requested PDF page exceeds total page count (${workerTotal})`);
+      }
+
+      const workerPageNumbers = pagesToRead === null
+        ? Array.from({ length: workerTotal }, (_, index) => index + 1)
+        : pagesToRead;
+      const workerPages = mapPdfPageText(worker?.text, workerPageNumbers);
+      if (!workerPages) {
+        throw new Error('PDFWorker page boundaries did not match the requested physical pages');
+      }
+
+      let pages: PdfReadPage[];
+      let complete: boolean;
+      if (requestedPages === null) {
+        const merged = new Map<number, PdfReadPage>(cachedByPage);
+        workerPages.forEach(page => merged.set(page.page, page));
+        pages = Array.from({ length: workerTotal }, (_, index) => merged.get(index + 1))
+          .filter((page): page is PdfReadPage => !!page);
+        complete = pages.length === workerTotal;
+      } else {
+        const merged = new Map<number, PdfReadPage>(cachedByPage);
+        workerPages.forEach(page => merged.set(page.page, page));
+        pages = requestedPages.map(page => merged.get(page)).filter((page): page is PdfReadPage => !!page);
+        complete = pages.length === requestedPages.length;
+      }
+
+      return this.finishPdfRead(
+        attachmentKey,
+        pages,
+        indexedPages,
+        workerTotal,
+        cachedByPage.size > 0 ? 'cache+pdfworker' : 'pdfworker',
+        complete,
+      );
+    } catch (error: any) {
+      return {
+        status: 'failed',
+        attachmentKey,
+        indexedPages,
+        totalPages: knownTotal || undefined,
+        complete: false,
+        pages: [],
+        error: error?.message || String(error),
+      };
+    }
+  }
+
+  private finishPdfRead(
+    attachmentKey: string,
+    pages: PdfReadPage[],
+    indexedPages: number,
+    totalPages: number,
+    source: PdfReadSource,
+    complete: boolean,
+  ): PdfReadResult {
+    const hasText = pages.some(page => page.text.trim().length > 0);
+    return {
+      status: complete ? (hasText ? 'ok' : 'empty') : 'partial',
+      source,
+      attachmentKey,
+      indexedPages,
+      totalPages,
+      complete,
+      pages,
+    };
   }
 
   /**

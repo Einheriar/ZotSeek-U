@@ -15,6 +15,7 @@ import {
   runSearchTool,
   runFindSimilarTool,
   runIndexStatusTool,
+  runGetItemTool,
   isAllowedOrigin,
 } from './http-tools';
 
@@ -85,8 +86,71 @@ const TOOL_DEFINITIONS = [
             "'user' for the personal library, or 'group:<groupID>' to limit the search to one group library. " +
             'Omit to search all indexed libraries.',
         },
+        filter: {
+          type: 'object',
+          description:
+            'Post-filter the already-ranked result window. This is not an exhaustive library field query, so the returned set may contain fewer than max_results.',
+          properties: {
+            year_from: { type: 'integer' },
+            year_to: { type: 'integer' },
+            journal: {
+              type: 'string',
+              description: 'Publication, book, or proceedings title; substring match by default',
+            },
+            author: {
+              type: 'string',
+              description: 'Creator name; substring match by default',
+            },
+            exact: {
+              type: 'boolean',
+              default: false,
+              description: 'Use whole-field matching for journal and author, ignoring case',
+            },
+          },
+          additionalProperties: false,
+        },
       },
       required: ['query'],
+    },
+  },
+  {
+    name: 'get_item',
+    description:
+      'Read one Zotero parent item by stable library_key + item_key. Returns a normalized metadata snapshot and attachment list; optionally includes complete, unfiltered Child Notes and exact PDF pages or full text. PDF reads use the exact attachment selected during Full indexing when available, prefer Zotero\'s full-text cache, and fall back to one batched PDFWorker call. Read-only and local.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        item_key: {
+          type: 'string',
+          description: '8-character Zotero key of a parent bibliographic item',
+        },
+        library_key: {
+          type: 'string',
+          default: 'user',
+          description: "'user' for the personal library, or 'group:<groupID>'",
+        },
+        include_notes: {
+          type: 'boolean',
+          default: false,
+          description: 'Include every Child Note as complete visible text plus live heading structure',
+        },
+        include_pdf: {
+          type: 'string',
+          enum: ['none', 'pages', 'full'],
+          default: 'none',
+          description: 'Read no PDF text, a page range, or the complete exact PDF attachment',
+        },
+        pdf_pages: {
+          type: 'string',
+          description: 'Required for include_pdf=pages; one page or one continuous range, e.g. 3 or 3-5 (maximum 20 pages)',
+        },
+        pdf_attachment_key: {
+          type: 'string',
+          description: 'Exact PDF attachment key, normally copied from search.matchedChunk.pdfAttachmentKey',
+        },
+      },
+      required: ['item_key'],
+      additionalProperties: false,
     },
   },
   {
@@ -155,6 +219,8 @@ async function callTool(id: any, params: any): Promise<EndpointResponse> {
   try {
     if (name === 'search') {
       payload = await runSearchTool(args);
+    } else if (name === 'get_item') {
+      payload = await runGetItemTool(args);
     } else if (name === 'find_similar') {
       payload = await runFindSimilarTool(args);
     } else if (name === 'index_status') {

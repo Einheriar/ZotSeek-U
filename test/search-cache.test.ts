@@ -33,7 +33,7 @@ describe('library-scoped semantic search cache', () => {
       getAllCached: async () => {
         cachedReads++;
         return [
-          cachedChunk(1, 'USER0001', 1, [1, 0]),
+          { ...cachedChunk(1, 'USER0001', 1, [1, 0]), textSource: 'methods' as const },
           cachedChunk(2, 'GROUP001', 2, [1, 0]),
           cachedChunk(3, 'USER0002', 1, [0.8, 0.6]),
         ];
@@ -42,6 +42,12 @@ describe('library-scoped semantic search cache', () => {
         uncachedReads++;
         throw new Error('library-scoped search must not use uncached vector reads');
       },
+      getChunkTexts: async () => new Map([
+        ['1:0', {
+          text: 'Matched PDF passage',
+          pdfAttachmentKey: 'PDFKEY01',
+        }],
+      ]),
     };
     const pipeline = {
       isReady: () => true,
@@ -60,6 +66,8 @@ describe('library-scoped semantic search cache', () => {
     assert.equal(uncachedReads, 0);
     assert.deepEqual(results.map(r => r.itemKey), ['USER0001', 'USER0002']);
     assert.ok(results.every(r => r.libraryId === 1));
+    assert.equal(results[0].chunkText, 'Matched PDF passage');
+    assert.equal(results[0].pdfAttachmentKey, 'PDFKEY01');
   });
 
   test('keeps global search candidates from every cached library', async () => {

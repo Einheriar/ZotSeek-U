@@ -99,6 +99,11 @@ export interface StructuredNoteText {
   filteredReferenceChars: number;
 }
 
+export interface NoteParseOptions {
+  /** Keep indexing exclusions enabled by default; readers can request all visible sections. */
+  filterIndexSubtrees?: boolean;
+}
+
 type NoteBlock = {
   kind: 'heading' | 'text';
   text: string;
@@ -329,7 +334,11 @@ function parseNoteBlocks(noteHTML: string): NoteBlock[] {
 }
 
 /** Parse headings, filter non-semantic subtrees, and retain deterministic paths. */
-export function noteHTMLToStructuredText(noteHTML: string): StructuredNoteText {
+export function noteHTMLToStructuredText(
+  noteHTML: string,
+  options: NoteParseOptions = {},
+): StructuredNoteText {
+  const filterIndexSubtrees = options.filterIndexSubtrees !== false;
   const blocks = parseNoteBlocks(noteHTML || '');
   const headings = blocks.filter((block): block is NoteBlock & { level: number } =>
     block.kind === 'heading' && block.level !== undefined);
@@ -364,14 +373,14 @@ export function noteHTMLToStructuredText(noteHTML: string): StructuredNoteText {
       }
 
       while (stack.length > 0 && stack[stack.length - 1].level >= level) stack.pop();
-      if (isBasicInfoHeading(block.text)) {
+      if (filterIndexSubtrees && isBasicInfoHeading(block.text)) {
         skipLevel = level;
         skipKind = 'basic';
         filteredBasicChars += block.text.length;
         currentSection = null;
         continue;
       }
-      if (isReferenceHeading(block.text)) {
+      if (filterIndexSubtrees && isReferenceHeading(block.text)) {
         skipLevel = level;
         skipKind = 'reference';
         filteredReferenceChars += block.text.length;
@@ -391,7 +400,7 @@ export function noteHTMLToStructuredText(noteHTML: string): StructuredNoteText {
     }
     const meaningful = stack.filter(entry =>
       !(entry.level === 1 && isGenericRootHeading(entry.title)));
-    const isGenericRootPreamble = hasMeaningfulHeading && meaningful.length === 0 &&
+    const isGenericRootPreamble = filterIndexSubtrees && hasMeaningfulHeading && meaningful.length === 0 &&
       stack.some(entry => entry.level === 1 && isGenericRootHeading(entry.title));
     if (isGenericRootPreamble) {
       // Generated briefs often place a citation line between the generic h1
@@ -433,6 +442,11 @@ export function noteHTMLToStructuredText(noteHTML: string): StructuredNoteText {
     filteredBasicChars,
     filteredReferenceChars,
   };
+}
+
+/** Return the first explicit heading for read-side title fallback. */
+export function noteHTMLFirstHeading(noteHTML: string): string | undefined {
+  return parseNoteBlocks(noteHTML || '').find(block => block.kind === 'heading')?.text;
 }
 
 /** Filtered representation used by automatic Note change detection. */

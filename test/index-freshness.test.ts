@@ -46,6 +46,7 @@ describe('shared freshness fingerprints', () => {
       maxChunksPerPaper: 100,
       chunkStrategyVersion: 6,
       modelInputPolicy: 'policy-v1',
+      pdfSourceIdentityVersion: 0,
     };
     const current = { ...base, maxChunksPerPaper: 101 };
 
@@ -92,6 +93,36 @@ describe('shared freshness fingerprints', () => {
     );
   });
 
+  test('requires PDF provenance refresh only for an existing Full fingerprint', () => {
+    const currentFull: IndexConfigSnapshot = {
+      indexContractVersion: 4,
+      mode: 'full',
+      maxChunksPerPaper: 100,
+      chunkStrategyVersion: 7,
+      modelInputPolicy: 'policy-v1',
+      pdfSourceIdentityVersion: 1,
+    };
+    const oldFull = serializeIndexConfigFingerprint({
+      ...currentFull,
+      pdfSourceIdentityVersion: 0,
+    });
+    assert.equal(assessIndexConfigFingerprint(oldFull, currentFull), 'changed');
+    assert.equal(
+      assessIndexConfigFingerprint(legacyIndexConfigFingerprint(currentFull), currentFull),
+      'changed',
+    );
+
+    const notes = { ...currentFull, mode: 'notes' as const, pdfSourceIdentityVersion: 0 };
+    assert.equal(
+      assessIndexConfigFingerprint(serializeIndexConfigFingerprint(notes), notes),
+      'current',
+    );
+    assert.equal(
+      assessIndexConfigFingerprint(legacyIndexConfigFingerprint(notes), notes),
+      'legacy-current',
+    );
+  });
+
   test('proves only modern configuration changes whose sole difference is mode', () => {
     const base: IndexConfigSnapshot = {
       indexContractVersion: 4,
@@ -99,6 +130,7 @@ describe('shared freshness fingerprints', () => {
       maxChunksPerPaper: 100,
       chunkStrategyVersion: 7,
       modelInputPolicy: 'policy-v1',
+      pdfSourceIdentityVersion: 0,
     };
     const notes = { ...base, mode: 'notes' as const };
 
@@ -108,6 +140,13 @@ describe('shared freshness fingerprints', () => {
         serializeIndexConfigFingerprint(notes),
       ),
       { fromMode: 'full', toMode: 'notes' },
+    );
+    assert.deepEqual(
+      assessModeOnlyIndexConfigTransition(
+        serializeIndexConfigFingerprint(notes),
+        serializeIndexConfigFingerprint({ ...base, pdfSourceIdentityVersion: 1 }),
+      ),
+      { fromMode: 'notes', toMode: 'full' },
     );
     assert.equal(
       assessModeOnlyIndexConfigTransition(

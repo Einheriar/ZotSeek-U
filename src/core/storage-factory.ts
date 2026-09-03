@@ -35,6 +35,7 @@ export interface IVectorStore {
   getStartupFingerprint(libraryKey: string, itemKey: string, modelId?: string): Promise<import('./vector-store-sqlite').StartupFingerprint | null>;
   setStartupFingerprint(fingerprint: import('./vector-store-sqlite').StartupFingerprint): Promise<void>;
   getChunkTextsBySources(libraryKey: string, itemKey: string, sources: import('./vector-store-sqlite').TextSourceType[], modelId?: string): Promise<string[]>;
+  getIndexedPdfAttachmentKey(libraryKey: string, itemKey: string, modelId?: string): Promise<string | undefined>;
   getIndexStatusByIdentity(identities: Array<{libraryKey: string; itemKey: string}>): Promise<Map<string, import('./vector-store-sqlite').ItemIndexStatus>>;
   getByLibraryKey(libraryKey: string): Promise<import('./vector-store-sqlite').PaperEmbedding[]>;
 

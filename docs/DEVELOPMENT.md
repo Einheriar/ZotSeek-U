@@ -690,7 +690,7 @@ Opt-in MCP and REST endpoints registered on Zotero's built-in HTTP server (`Zote
 - `mcp-endpoint.ts` — stateless JSON-RPC 2.0 (MCP Streamable HTTP) endpoint exposing `search`, `find_similar`, `index_status` tools.
 - `rest-endpoints.ts` — plain `GET` endpoints for curl/scripts.
 
-Endpoint contracts and security notes live in [MCP.md](MCP.md). A 16-scenario self-test suite covers the protocol layer (`src/dev/suites/mcp-server.ts`, run via `Zotero.ZotSeek._selfTest.runSelfTest('mcp-server')` with the `devMode` pref enabled).
+Endpoint contracts and security notes live in [MCP.md](MCP.md). A 27-scenario self-test suite covers the protocol layer (`src/dev/suites/mcp-server.ts`, run via `Zotero.ZotSeek._selfTest.runSelfTest('mcp-server')` with the `devMode` pref enabled).
 
 ---
 

@@ -10,6 +10,7 @@ import { Logger } from '../utils/logger';
 import { noteHTMLToIndexText } from '../utils/note-text';
 import {
   CHUNK_STRATEGY_VERSION,
+  PDF_SOURCE_IDENTITY_VERSION,
   getChunkOptionsFromPrefs,
   getIndexingMode,
 } from '../utils/chunker';
@@ -278,6 +279,7 @@ export class AutoIndexManager {
         : 100,
       chunkStrategyVersion: CHUNK_STRATEGY_VERSION,
       modelInputPolicy: modelInputPolicyFingerprint(policy),
+      pdfSourceIdentityVersion: mode === 'full' ? PDF_SOURCE_IDENTITY_VERSION : 0,
     };
   }
 

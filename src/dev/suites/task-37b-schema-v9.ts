@@ -16,6 +16,7 @@ selfTest.register('task-37b-schema-current', async () => {
     await scenario('chunks table has model_id column', async () => {
       assertContains(await columns('chunks'), 'model_id', 'chunks.model_id missing');
       assertContains(await columns('chunks'), 'section_paths', 'chunks.section_paths missing');
+      assertContains(await columns('chunks'), 'pdf_attachment_key', 'chunks.pdf_attachment_key missing');
     }),
     await scenario('item_models table exists with expected columns', async () => {
       const cols = await columns('item_models');
@@ -23,10 +24,10 @@ selfTest.register('task-37b-schema-current', async () => {
       assertContains(cols, 'model_id');
       assertContains(cols, 'pages_indexed');
     }),
-    await scenario('schema_version is 11', async () => {
+    await scenario('schema_version is 12', async () => {
       const v = await Zotero.DB.valueQueryAsync(
         `SELECT value FROM ${DB}.metadata WHERE key = 'schema_version'`);
-      assertEq(String(v), '11');
+      assertEq(String(v), '12');
     }),
   ];
 });

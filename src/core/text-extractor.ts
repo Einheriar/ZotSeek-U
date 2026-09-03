@@ -219,10 +219,17 @@ export class TextExtractor {
 
         const noteTexts = await this.extractChildNoteTexts(item);
         const notesResult = chunkNoteTexts(title, noteTexts, chunkOptions);
+        const pdfChunks = pdfResult.chunks.filter(chunk => chunk.type !== 'summary');
+        const pdfAttachmentKey = selectedPdf?.selectedText?.attachmentKey;
+        if (pdfAttachmentKey) {
+          pdfChunks.forEach(chunk => {
+            chunk.pdfAttachmentKey = pdfAttachmentKey;
+          });
+        }
         const combinedResult = combineFullModeChunks({
           summaryChunks: pdfResult.chunks.filter(chunk => chunk.type === 'summary'),
           noteChunks: notesResult.chunks,
-          pdfChunks: pdfResult.chunks.filter(chunk => chunk.type !== 'summary'),
+          pdfChunks,
           notesWereTruncated: notesResult.wasTruncated,
           pdfWasTruncated: pdfResult.wasTruncated,
           pagesTotal: pdfResult.pagesTotal,

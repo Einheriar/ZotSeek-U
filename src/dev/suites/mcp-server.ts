@@ -9,7 +9,7 @@
  */
 import { selfTest, scenario, assertEq, assertTrue, Scenario } from '../self-test';
 import { handleMcpRequest } from '../../server/mcp-endpoint';
-import { handleSearchRequest, handleStatsRequest } from '../../server/rest-endpoints';
+import { handleItemRequest, handleSearchRequest, handleStatsRequest } from '../../server/rest-endpoints';
 import { handleOpenRequest, parseOpenParams, buildZoteroUri } from '../../server/open-endpoint';
 import { registerEndpoints, isRegistered, unregisterEndpoints } from '../../server/server-manager';
 import { searchEngine } from '../../core/search-engine';
@@ -53,10 +53,10 @@ selfTest.register('mcp-server', async () => {
     assertEq(status, 202, 'status');
   }));
 
-  scenarios.push(await scenario('tools/list returns the 3 tools', async () => {
+  scenarios.push(await scenario('tools/list returns the 4 tools', async () => {
     const { json } = await callMcp('tools/list');
     const names = json.result.tools.map((t: any) => t.name).sort();
-    assertEq(JSON.stringify(names), JSON.stringify(['find_similar', 'index_status', 'search']), 'tool names');
+    assertEq(JSON.stringify(names), JSON.stringify(['find_similar', 'get_item', 'index_status', 'search']), 'tool names');
     assertTrue(
       json.result.tools.every((t: any) => t.inputSchema?.type === 'object'),
       'every tool has an object inputSchema'
@@ -188,6 +188,36 @@ selfTest.register('mcp-server', async () => {
     assertEq(json.result.isError, true, 'isError flag');
   }));
 
+  scenarios.push(await scenario('get_item with bad key returns isError', async () => {
+    const { json } = await callMcp('tools/call', {
+      name: 'get_item',
+      arguments: { item_key: 'not-a-key' },
+    });
+    assertEq(json.result.isError, true, 'isError flag');
+  }));
+
+  scenarios.push(await scenario('get_item reads one real normalized parent item', async () => {
+    const keys = await Zotero.DB.columnQueryAsync(
+      "SELECT item_key FROM zotseek.items WHERE library_key = 'user' LIMIT 10"
+    ).then((rows: any) => rows || []);
+    const realKey = keys.map(String).find((key: string) => {
+      const item = Zotero.Items.getByLibraryAndKey(Zotero.Libraries.userLibraryID, key);
+      return item?.isRegularItem?.() && !item.isAttachment?.() && !item.isNote?.();
+    });
+    if (!realKey) return;
+    const { json } = await callMcp('tools/call', {
+      name: 'get_item',
+      arguments: { item_key: realKey, include_notes: true },
+    });
+    assertTrue(!json.result.isError, 'no tool error');
+    const payload = parseToolPayload(json);
+    assertEq(payload.itemKey, realKey, 'stable item key');
+    assertEq(payload.libraryKey, 'user', 'stable library key');
+    assertTrue(!!payload.metadata?.title, 'normalized metadata title');
+    assertTrue(Array.isArray(payload.attachments), 'attachment snapshot');
+    assertTrue(Array.isArray(payload.notes), 'notes array');
+  }));
+
   scenarios.push(await scenario('REST search handler validates q', async () => {
     const [status, , body] = await handleSearchRequest({
       headers: {},
@@ -205,6 +235,15 @@ selfTest.register('mcp-server', async () => {
     assertEq(status, 200, 'status');
     assertEq(contentType, 'application/json', 'content type');
     assertTrue(typeof JSON.parse(body).indexedPapers === 'number', 'indexedPapers present');
+  }));
+
+  scenarios.push(await scenario('REST item handler validates itemKey', async () => {
+    const [status, , body] = await handleItemRequest({
+      headers: {},
+      searchParams: new URLSearchParams(''),
+    });
+    assertEq(status, 400, 'status');
+    assertTrue(JSON.parse(body).error.includes('itemKey'), 'error mentions itemKey');
   }));
 
   scenarios.push(await scenario('open launcher parses and formats URIs correctly', async () => {
@@ -294,7 +333,7 @@ selfTest.register('mcp-server', async () => {
       });
       assertEq(resp.status, 200, 'HTTP status');
       const json = await resp.json();
-      assertEq(json.result.tools.length, 3, 'three tools over HTTP');
+      assertEq(json.result.tools.length, 4, 'four tools over HTTP');
     } finally {
       if (!wasRegistered) unregisterEndpoints();
     }

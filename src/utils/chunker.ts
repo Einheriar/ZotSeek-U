@@ -21,6 +21,8 @@ export interface Chunk {
   embedText?: string;
   /** Every original Note heading path represented by this chunk. */
   sectionPaths?: string[][];
+  /** Stable key of the exact main PDF attachment that produced this chunk. */
+  pdfAttachmentKey?: string;
   type: ChunkType;
   tokenCount?: number;
 
@@ -79,6 +81,9 @@ export type IndexingMode = 'abstract' | 'notes' | 'full';
 
 /** Bump whenever persisted chunk text, boundaries, or structure semantics change. */
 export const CHUNK_STRATEGY_VERSION = 7;
+
+/** Full-mode source provenance contract; scoped through freshness fingerprints. */
+export const PDF_SOURCE_IDENTITY_VERSION = 1;
 
 /** @deprecated Use CHUNK_STRATEGY_VERSION; kept for benchmark/source compatibility. */
 export const NOTE_CHUNK_STRATEGY_VERSION = CHUNK_STRATEGY_VERSION;

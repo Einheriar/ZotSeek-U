@@ -466,7 +466,7 @@ The matched passage is fetched lazily, only for the rows the user will actually 
     4. result.chunkText is now set → UI shows it on hover
 ```
 
-`getChunkTexts()` issues parallel single-column queries for `chunk_text` and the optional `section_paths`, scoped to the active model and bounded by `topK`, following the Zotero 8 single-column query convention. `chunk_text` has been stored since schema v6; schema v11 adds the nullable JSON `section_paths` column for structured Child Notes.
+`getChunkTexts()` issues parallel single-column queries for `chunk_text`, optional `section_paths`, and optional `pdf_attachment_key`, scoped to the active model and bounded by `topK`, following the Zotero 8 single-column query convention. Keeping these display/provenance fields out of the all-vector cache avoids scaling their memory cost with the full index. `chunk_text` has been stored since schema v6; schema v11 adds structured Child Note paths and schema v12 adds exact PDF-source provenance.
 
 The UI (`SearchResultsTable`) renders `chunkText` as a floating tooltip on row hover, windowed around the first matched query term and with those terms highlighted (keyword/hybrid modes only).
 
@@ -1057,7 +1057,7 @@ Issue #42 adds a second `runtime` to `ModelConfig` alongside the in-process Chro
 ZotSeek stores embeddings in a separate SQLite database (`zotseek.sqlite`) attached to Zotero's main connection. The schema is normalized into three tables:
 
 - **`items`** — one row per indexed paper, keyed by an internal autoincrement `item_pk`, with its stable identity (`library_key`, `item_key`) and metadata (title, abstract).
-- **`chunks`** — one row per embedding chunk per model, referencing `item_pk`, with faithful chunk text, optional Child Note `section_paths`, source label, base64-encoded Float32 embedding, and location metadata (page, paragraph, char offsets, bbox).
+- **`chunks`** — one row per embedding chunk per model, referencing `item_pk`, with faithful chunk text, optional Child Note `section_paths`, optional exact `pdf_attachment_key`, source label, base64-encoded Float32 embedding, and location metadata (page, paragraph, char offsets, bbox).
 - **`item_models`** — one row per (item, model), holding that pairing's indexing status: timestamp, content hash, and truncation/coverage fields (`was_truncated`, `pages_indexed`, `pages_total`).
 
 The indexing status lives on `item_models` rather than `items` because it is inherently per-model; see [Per-Model Embeddings (Schema v9)](#per-model-embeddings-schema-v9) below.
@@ -1090,6 +1090,10 @@ The per-item status columns (`was_truncated`, `pages_indexed`, `pages_total`) th
 ### Child Note Paths (Schema v11)
 
 Schema v11 adds nullable `chunks.section_paths`, encoded as JSON `string[][]`. Existing rows migrate in place with `NULL`; vectors are not silently rewritten. The independent `chunk_strategy_version:<modelId>` metadata marker determines whether a non-empty model partition may receive new writes. Missing or older markers pause incremental writes and prompt for a full rebuild, so chunks produced by different Note strategies are never mixed within one model partition.
+
+### Exact PDF Source (Schema v12)
+
+Schema v12 adds nullable `chunks.pdf_attachment_key`. New Full-mode PDF chunks store the stable attachment key selected by the main-PDF classifier; Summary, Metadata, and Note chunks keep `NULL`. Migration never guesses a source for existing rows. Search fetches the key only for visible matched chunks and exposes it as `matchedChunk.pdfAttachmentKey`, allowing `get_item` and deep links to read the exact PDF that produced the hit. A Full-only freshness contract marks old Full indexes for refresh, while Abstract and Metadata + Notes indexes remain current because they do not contain PDF chunks.
 
 ---
 

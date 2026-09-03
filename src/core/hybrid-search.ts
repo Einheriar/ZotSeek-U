@@ -49,6 +49,7 @@ export interface HybridSearchResult {
   // Text of the matched chunk (top results only) — for snippet display on hover
   chunkText?: string;
   sectionPaths?: string[][];
+  pdfAttachmentKey?: string;
 
   // Location information from matched chunk
   pageNumber?: number;        // 1-based page number
@@ -108,6 +109,7 @@ interface KeywordSearchHit {
   textSource?: TextSourceType;
   chunkText?: string;
   sectionPaths?: string[][];
+  pdfAttachmentKey?: string;
 }
 
 /**
@@ -185,6 +187,7 @@ export class HybridSearchEngine {
       chunkIndex: r.chunkIndex,
       chunkText: r.chunkText,
       sectionPaths: r.sectionPaths,
+      pdfAttachmentKey: r.pdfAttachmentKey,
       pageNumber: r.pageNumber,
       paragraphIndex: r.paragraphIndex,
     }));
@@ -217,6 +220,7 @@ export class HybridSearchEngine {
       textSource: r.textSource,
       chunkText: r.chunkText,
       sectionPaths: r.sectionPaths,
+      pdfAttachmentKey: r.pdfAttachmentKey,
     }));
 
     await this.populateItemMetadata(hybridResults.slice(0, opts.finalTopK));
@@ -229,7 +233,7 @@ export class HybridSearchEngine {
   private async semanticSearchQuery(
     query: string,
     opts: Required<Omit<HybridSearchOptions, 'collectionId' | 'libraryId' | 'mode'>> & HybridSearchOptions
-  ): Promise<Array<{ itemId: number; score: number; textSource?: TextSourceType; chunkIndex?: number; chunkText?: string; sectionPaths?: string[][]; pageNumber?: number; paragraphIndex?: number }>> {
+  ): Promise<Array<{ itemId: number; score: number; textSource?: TextSourceType; chunkIndex?: number; chunkText?: string; sectionPaths?: string[][]; pdfAttachmentKey?: string; pageNumber?: number; paragraphIndex?: number }>> {
     try {
       // Initialize search engine if needed
       if (!this.semanticSearch.isReady()) {
@@ -274,6 +278,7 @@ export class HybridSearchEngine {
         chunkIndex: r.chunkIndex,
         chunkText: r.chunkText,
         sectionPaths: r.sectionPaths,
+        pdfAttachmentKey: r.pdfAttachmentKey,
         pageNumber: r.pageNumber,
         paragraphIndex: r.paragraphIndex,
       }));
@@ -465,6 +470,7 @@ export class HybridSearchEngine {
             textSource: match.textSource,
             chunkText: match.chunkText,
             sectionPaths: match.sectionPaths,
+            pdfAttachmentKey: match.pdfAttachmentKey,
           };
           const previous = scoredResults.get(hit.itemId);
           if (!previous || hit.score > previous.score) {
@@ -503,7 +509,7 @@ export class HybridSearchEngine {
    * @param opts - Options including rrfK and semanticWeight
    */
   private reciprocalRankFusion(
-    semanticResults: Array<{ itemId: number; score: number; textSource?: TextSourceType; chunkIndex?: number; chunkText?: string; sectionPaths?: string[][]; pageNumber?: number; paragraphIndex?: number }>,
+    semanticResults: Array<{ itemId: number; score: number; textSource?: TextSourceType; chunkIndex?: number; chunkText?: string; sectionPaths?: string[][]; pdfAttachmentKey?: string; pageNumber?: number; paragraphIndex?: number }>,
     keywordResults: KeywordSearchHit[],
     opts: Required<Omit<HybridSearchOptions, 'collectionId' | 'libraryId' | 'mode'>>
   ): HybridSearchResult[] {
@@ -517,7 +523,7 @@ export class HybridSearchEngine {
 
     // Build maps for quick lookup
     // Key is either "itemId" or "itemId-chunkIndex" depending on mode
-    const semanticMap = new Map<string, { itemId: number; chunkIndex?: number; chunkText?: string; sectionPaths?: string[][]; rank: number; score: number; textSource?: TextSourceType; pageNumber?: number; paragraphIndex?: number }>();
+    const semanticMap = new Map<string, { itemId: number; chunkIndex?: number; chunkText?: string; sectionPaths?: string[][]; pdfAttachmentKey?: string; rank: number; score: number; textSource?: TextSourceType; pageNumber?: number; paragraphIndex?: number }>();
     semanticResults.forEach((r, index) => {
       const key = useChunkKey ? `${r.itemId}-${r.chunkIndex ?? 0}` : String(r.itemId);
       // In all-chunks mode, keep all entries; in MaxSim mode, keep only first (best) per item
@@ -527,6 +533,7 @@ export class HybridSearchEngine {
           chunkIndex: r.chunkIndex,
           chunkText: r.chunkText,
           sectionPaths: r.sectionPaths,
+          pdfAttachmentKey: r.pdfAttachmentKey,
           rank: index + 1,
           score: r.score,
           textSource: r.textSource,
@@ -595,6 +602,7 @@ export class HybridSearchEngine {
         chunkIndex: semantic?.chunkIndex,
         chunkText: semantic?.chunkText ?? keyword?.chunkText,
         sectionPaths: semantic?.sectionPaths ?? keyword?.sectionPaths,
+        pdfAttachmentKey: semantic?.pdfAttachmentKey ?? keyword?.pdfAttachmentKey,
         pageNumber: semantic?.pageNumber,
         paragraphIndex: semantic?.paragraphIndex,
       });
