@@ -51,7 +51,20 @@ export const LOCAL_MODEL_INPUT_CONFIGS: Readonly<Record<string, ModelInputConfig
 export function getModelInputConfig(model: ModelConfig): ModelInputConfig {
   if (model.runtime === 'server') {
     if (!model.serverMaxInputTokens || !model.serverRecommendedChunkTokens) {
-      throw new Error(`Server model "${model.id}" is missing its input contract`);
+      throw new Error(`Local Server model "${model.id}" is missing its input contract`);
+    }
+    return {
+      maxInputTokens: model.serverMaxInputTokens,
+      recommendedChunkTokens: model.serverRecommendedChunkTokens,
+      maxChunkChars: 8000,
+      quantization: 'server-managed',
+      tokenizerType: 'server-managed',
+      supportsExactTokenCount: false,
+    };
+  }
+  if (model.runtime === 'cloud') {
+    if (!model.serverMaxInputTokens || !model.serverRecommendedChunkTokens) {
+      throw new Error(`Cloud model "${model.id}" is missing its input contract`);
     }
     return {
       maxInputTokens: model.serverMaxInputTokens,

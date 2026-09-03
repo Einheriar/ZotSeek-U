@@ -964,4 +964,60 @@ describe('scoped index reconciliation', () => {
       indexFreshnessTracker.clearAll();
     }
   });
+
+  test('forceFull rebuilds an already-current item and persists fresh coverage', async () => {
+    const zotero = installZoteroStub({
+      'zotseek.indexingMode': 'abstract',
+      'zotseek.embeddingModel': 'multilingual-e5-base',
+      'zotseek.maxChunksPerPaper': 150,
+      'zotseek.excludeBooks': false,
+      'zotseek.excludeTag': '',
+    });
+    const paper = createPaper(1);
+    zotero.Libraries = {
+      userLibraryID: 1,
+      get: () => ({ libraryID: 1, libraryType: 'user' }),
+    };
+    zotero.Items = {
+      get: () => paper,
+      getAsync: async () => [],
+      getIDFromLibraryAndKey: () => paper.id,
+    };
+
+    let fingerprintWrites = 0;
+    let fingerprintReads = 0;
+    const store = {
+      getIndexedIdentities: async () => [{ libraryKey: 'user', itemKey: paper.key }],
+      getMetadata: async () => 'abstract',
+      getIndexStatusByIdentity: async () => new Map(),
+      getStartupFingerprint: async () => { fingerprintReads++; return null; },
+      setStartupFingerprint: async () => { fingerprintWrites++; },
+    };
+    autoIndexManager.setVectorStore(store);
+    const originalExtract = textExtractor.extractChunksFromItem;
+    (textExtractor as any).extractChunksFromItem = async () => ({
+      chunks: [{ type: 'summary', text: 'Summary 1' }],
+      wasTruncated: false,
+    });
+    const rebuilt: number[][] = [];
+    try {
+      const result = await autoIndexManager.reconcileItems([paper], {
+        forceFull: true,
+        fullIndexCallback: async candidates => {
+          rebuilt.push(candidates.map(item => item.id));
+          return candidates.map(item => item.id);
+        },
+        noteIndexCallback: async () => [],
+      });
+      assert.deepEqual(rebuilt, [[paper.id]]);
+      assert.equal(result.rebuilt, 1);
+      assert.equal(result.failed, 0);
+      assert.equal(fingerprintReads, 0);
+      assert.equal(fingerprintWrites, 1);
+    } finally {
+      (textExtractor as any).extractChunksFromItem = originalExtract;
+      autoIndexManager.setVectorStore(null);
+      indexFreshnessTracker.clearAll();
+    }
+  });
 });

@@ -19,8 +19,15 @@ import {
   getActiveModel,
   getActiveModelId,
   getActiveModelSelectionId,
+  CLOUD_SLOT_SELECTION_ID,
   SERVER_SLOT_SELECTION_ID,
 } from './model-registry';
+import {
+  allowsStartupAutoIndex,
+  hasCurrentCloudConsent,
+  isCloudAutoIndexAllowed,
+  isCloudConnectionVerified,
+} from './cloud-model-config';
 import { modelInputPolicyFingerprint, resolveModelInputPolicy } from './model-input-policy';
 import { textExtractor } from './text-extractor';
 import { isModifiedAfterVerification } from '../utils/timestamp';
@@ -113,6 +120,8 @@ export type ScopedReconciliationOptions = {
   purgeMissingScope?: 'user' | 'all' | false;
   fullIndexCallback?: IndexCallback;
   noteIndexCallback?: IndexCallback;
+  /** Treat every already-indexed eligible item as needing a full replacement. */
+  forceFull?: boolean;
 };
 
 const STARTUP_DELAY_MS = 10_000;
@@ -188,7 +197,12 @@ export class AutoIndexManager {
 
   private isEnabled(): boolean {
     try {
-      return Zotero.Prefs.get('zotseek.autoIndex', true) === true;
+      return allowsStartupAutoIndex(
+        Zotero.Prefs.get('zotseek.autoIndex', true) === true,
+        getActiveModelSelectionId() === CLOUD_SLOT_SELECTION_ID,
+        isCloudAutoIndexAllowed(),
+        hasCurrentCloudConsent() && isCloudConnectionVerified(),
+      );
     } catch {
       return false;
     }
@@ -713,7 +727,7 @@ export class AutoIndexManager {
     }
     if (getActiveModelSelectionId() === SERVER_SLOT_SELECTION_ID &&
         getActiveModelId() === SERVER_SLOT_SELECTION_ID) {
-      this.logger.info('Reconciliation skipped: the selected Server model is incomplete');
+      this.logger.info('Reconciliation skipped: the selected Local Server model is incomplete');
       return this.emptyResult(true);
     }
 
@@ -815,6 +829,11 @@ export class AutoIndexManager {
 
         const quick = await this.quickSnapshot(item, mode);
         snapshots.set(item.id, { quick });
+        if (options.forceFull === true) {
+          indexFreshnessTracker.markDirty(identity);
+          rebuildItems.push(item);
+          continue;
+        }
         const storedFingerprint = await this.vectorStore.getStartupFingerprint(
           identity.libraryKey,
           identity.itemKey,

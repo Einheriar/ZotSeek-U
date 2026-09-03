@@ -568,7 +568,7 @@ After a successful installation, ZotSeek switches to the selected model and
 handles coverage/indexing as a separate confirmation. Existing embeddings for
 other models remain in their own `model_id` partitions.
 
-#### Server-backed model configuration
+#### Local Server model configuration
 
 Advanced users configure local OpenAI-compatible embedding services in
 `<Zotero profile>/zotseek-server-models.json`. The plugin creates the template
@@ -582,14 +582,46 @@ query/document prefixes; `apiKey` is optional and the UI label is derived.
 runtime cache. The menu persists the `server-slot` selection sentinel, while
 storage and embedding use only the ready model's real `server:` id. Do not add
 GUI-only defaults, infer missing model facts or fall back to a local model when
-Server is incomplete. Explicit embedding actions show a localized summary and
+Local Server is incomplete. Explicit embedding actions show a localized summary and
 offer **Open file location**; the Settings path has the same action. Only that
 explicit button reveals the JSON in the OS file manager, while Close, Escape
 and the title-bar close path are inert. Raw validator details remain available
 to logs and MCP/REST callers rather than being spliced into localized UI text.
-Startup/background work skips incomplete Server work without a modal. Runtime
+Startup/background work skips incomplete Local Server work without a modal. Runtime
 initialization checks both `GET /v1/models` and the embedding dimensions.
 Template edits require a Zotero restart.
+
+#### Cloud model configuration
+
+Cloud is separate from Local Server. Its stable selection value is `cloud-slot`
+while the vector-space ID is derived from provider, model name and dimensions.
+The Alibaba Cloud Model Studio preset starts with `qwen3.7-text-embedding`,
+1024 dimensions, a 128000-token input limit and batches of 20, using direct
+OpenAI-compatible `POST /embeddings` requests; no OpenAI SDK is required.
+Provider, Base URL, model name and dimensions are shown in the collapsed Cloud
+Settings section. Maximum input tokens, query/document prefixes and batch size
+are in its nested advanced section. Recommended chunk tokens are derived as
+`min(3000, floor(maxInputTokens * 0.85))` and cannot be edited independently.
+
+`cloud-model-config.ts` owns non-secret preferences and validates HTTPS Bailian
+endpoints. `cloud-credential-store.ts` uses Zotero Login Manager plus the public
+`Zotero.OSKeyStore` wrapper when available. Zotero 9.0 instead loads its bundled
+Mozilla `OSKeyStore.sys.mjs` and stores only version-tagged ciphertext; never add
+an API-key preference or plaintext fallback. `cloud-embedding-client.ts`
+enforces the configured batch size, response ordering, finite vectors of the
+configured dimensions, redirect rejection, timeout/cancellation and bounded
+429/5xx retries. The explicit connection probe sends one full configured batch
+of fixed probe strings, validating both the provider batch limit and dimensions.
+Do not log request bodies, query text, authorization headers, provider error
+messages or credentials.
+
+Selection requires versioned privacy/BYOK/cost consent, a securely stored key
+and a successful fixed-text probe. Cloud startup maintenance additionally
+requires `zotseek.cloud.autoIndex`; it defaults to false even when global
+automatic maintenance is enabled. Full Cloud rebuilds use forced reconciliation
+instead of clearing the store. `replaceItemModelChunks()` publishes one paper
+atomically only after every chunk succeeds, preserving old complete coverage
+and every other model partition across failure or cancellation.
 
 ### 4. Search Engine (`src/core/search-engine.ts`)
 

@@ -69,8 +69,10 @@ export function modelInputPolicyFingerprint(policy: ResolvedModelInputPolicy): s
     policy.maxChunkChars,
     policy.supportsExactTokenCount ? 'exact' : 'estimated',
   ];
-  // Server document prefixes are user-editable input-contract data. A change
+  // Remote document prefixes are user-editable input-contract data. A change
   // alters every stored document vector and must be visible to reconciliation.
-  if (policy.runtime === 'server') parts.push(`doc=${encodeURIComponent(policy.docPrefix)}`);
+  if (policy.runtime === 'server' || policy.runtime === 'cloud') {
+    parts.push(`doc=${encodeURIComponent(policy.docPrefix)}`);
+  }
   return parts.join(':');
 }

@@ -10,6 +10,9 @@ import { DEFAULT_MODEL_ID, getActiveModel, getModel, ModelConfig, modelBasePath,
   ModelLocation } from './model-registry';
 import { findModelLocation, ensureModelsResourceSubstitution } from './model-download';
 import { ServerEmbeddingClient } from './server-embedding-client';
+import { CloudEmbeddingClient } from './cloud-embedding-client';
+import { cloudCredentialStore } from './cloud-credential-store';
+import { hasCurrentCloudConsent, isCloudConnectionVerified } from './cloud-model-config';
 import { getModelInputConfig, type ModelInputConfig } from './model-input-config';
 import {
   resolveModelInputPolicy,
@@ -54,6 +57,7 @@ export class EmbeddingPipeline {
   private inputPolicy: ResolvedModelInputPolicy = resolveModelInputPolicy(this.model);
   private worker: any = null;
   private serverClient: ServerEmbeddingClient | null = null;
+  private cloudClient: CloudEmbeddingClient | null = null;
   private workerReady = false;
   private pendingJobs = new Map<string, PendingWorkerJob>();
   private ready = false;
@@ -105,6 +109,9 @@ export class EmbeddingPipeline {
       if (this.model.runtime === 'server') {
         this.logger.info(`Initializing server-backed embedding pipeline (${this.model.baseUrl})`);
         await this.initServerClient();  // Will throw on failure (unreachable / dimension mismatch)
+      } else if (this.model.runtime === 'cloud') {
+        this.logger.info(`Initializing Cloud embedding pipeline (${this.model.cloudProvider})`);
+        await this.initCloudClient();
       } else {
         // Downloaded models resolve over resource://zotseek-models/. If the
         // files are absent, Transformers.js fails with its own wording naming
@@ -269,26 +276,51 @@ export class EmbeddingPipeline {
   private async initServerClient(): Promise<void> {
     const { baseUrl, serverModelName, apiKey } = this.model;
     if (!baseUrl || !serverModelName) {
-      throw new Error(`Server model '${this.model.id}' is missing its server configuration`);
+      throw new Error(`Local Server model '${this.model.id}' is missing its server configuration`);
     }
     const client = new ServerEmbeddingClient({ baseUrl, serverModelName, apiKey });
     const availableModels = await client.listModels();
     if (!availableModels.includes(serverModelName)) {
       throw new Error(
-        `Server model '${serverModelName}' is not listed by ${baseUrl}. ` +
+        `Local Server model '${serverModelName}' is not listed by ${baseUrl}. ` +
         'Load that model in the inference server or correct zotseek-server-models.json.'
       );
     }
     const dims = await client.probe();
     if (dims !== this.model.dimensions) {
       throw new Error(
-        `Server model '${serverModelName}' now returns ${dims}-dimensional embeddings, ` +
+        `Local Server model '${serverModelName}' now returns ${dims}-dimensional embeddings, ` +
         `but this ZotSeek model was added with ${this.model.dimensions}. ` +
         `The model behind this name has changed: update zotseek-server-models.json ` +
         `with a new model id (a re-index will be required).`
       );
     }
     this.serverClient = client;
+  }
+
+  /** Create the Cloud client without a paid probe; Settings owns explicit connection testing. */
+  private async initCloudClient(): Promise<void> {
+    const { baseUrl, cloudModelName, cloudBatchSize } = this.model;
+    if (!baseUrl || !cloudModelName || !cloudBatchSize) {
+      throw new Error(`Cloud model '${this.model.id}' is missing its provider configuration.`);
+    }
+    if (!hasCurrentCloudConsent()) {
+      throw new Error('Cloud disclosure has not been accepted. Open ZotSeek Settings and select Cloud again.');
+    }
+    if (!isCloudConnectionVerified()) {
+      throw new Error('Cloud connection is not verified. Test it in ZotSeek Settings before use.');
+    }
+    const apiKey = await cloudCredentialStore.get();
+    if (!apiKey) {
+      throw new Error('Cloud API key is missing. Open ZotSeek Settings and configure Cloud Model.');
+    }
+    this.cloudClient = new CloudEmbeddingClient({
+      baseUrl,
+      modelName: cloudModelName,
+      dimensions: this.model.dimensions,
+      apiKey,
+      batchSize: cloudBatchSize,
+    });
   }
 
   /**
@@ -397,6 +429,17 @@ export class EmbeddingPipeline {
       const [embedding] = await this.serverClient!.embed([prepared], retries);
       return { embedding, modelId: this.model.id, processingTimeMs: Date.now() - start };
     }
+    if (this.model.runtime === 'cloud') {
+      if (!this.cloudClient) await this.init();
+      const start = Date.now();
+      const prepared = prepareWorkerInput(text, kind, {
+        queryPrefix: this.model.queryPrefix,
+        docPrefix: this.model.docPrefix,
+      });
+      const retries = kind === 'query' ? 1 : 3;
+      const [embedding] = await this.cloudClient!.embed([prepared], retries);
+      return { embedding, modelId: this.model.id, processingTimeMs: Date.now() - start };
+    }
     for (let attempt = 0; ; attempt++) {
       if (!this.ready || !this.workerReady) {
         await this.recoverWorker();
@@ -432,6 +475,7 @@ export class EmbeddingPipeline {
       this.worker = null;
     }
     this.serverClient = null;
+    this.cloudClient = null;
     this.workerReady = false;
     this.ready = false;
     this.initPromise = null;
@@ -485,21 +529,34 @@ export class EmbeddingPipeline {
     return getActiveModel().runtime === 'server';
   }
 
+  /** True for HTTP runtimes that can embed multiple document chunks per call. */
+  supportsBatchEmbedding(): boolean {
+    const runtime = getActiveModel().runtime;
+    return runtime === 'server' || runtime === 'cloud';
+  }
+
+  /** Abort only remote Cloud requests; local runtimes keep their existing lifecycle. */
+  cancelPendingRequests(): void {
+    this.cloudClient?.cancelPending();
+  }
+
   /**
-   * Batched document embedding: server runtime only. This is where the
-   * native Metal/CUDA speedup materializes: one HTTP request carries many
-   * chunks instead of one. Prefixes are applied here; pass raw chunk text.
+   * Batched document embedding for Local Server and Cloud HTTP runtimes.
+   * Prefixes are applied here; callers pass raw chunk text.
    */
   async embedDocuments(texts: string[]): Promise<number[][]> {
     if (!this.ready) await this.init();
-    if (this.model.runtime !== 'server' || !this.serverClient) {
-      throw new Error('embedDocuments is only available with a server-backed model');
-    }
     const prepared = texts.map(text => prepareWorkerInput(text, 'doc', {
       queryPrefix: this.model.queryPrefix,
       docPrefix: this.model.docPrefix,
     }));
-    return this.serverClient.embed(prepared);
+    if (this.model.runtime === 'server' && this.serverClient) {
+      return this.serverClient.embed(prepared);
+    }
+    if (this.model.runtime === 'cloud' && this.cloudClient) {
+      return this.cloudClient.embed(prepared);
+    }
+    throw new Error('embedDocuments is only available with an HTTP-backed model');
   }
 
   /**
@@ -536,6 +593,7 @@ export class EmbeddingPipeline {
       this.worker = null;
     }
     this.serverClient = null;
+    this.cloudClient = null;
     this.workerReady = false;
     this.ready = false;
     this.initPromise = null;
@@ -554,7 +612,8 @@ export class EmbeddingPipeline {
       this.logger.warn(`setModel: unknown model id '${modelId}', keeping active model`);
       return;
     }
-    if (found.id === this.model.id && this.ready && this.workerReady) return;
+    if (found.id === this.model.id && this.ready &&
+        (found.runtime !== 'onnx' || this.workerReady)) return;
     this.logger.info(`Switching embedding model to ${found.id}`);
     // The active model is defined by the pref; init() reads it via getActiveModel().
     // Persist it here so the worker reload picks up the requested model.
@@ -592,6 +651,7 @@ export class EmbeddingPipeline {
       this.worker = null;
     }
     this.serverClient = null;
+    this.cloudClient = null;
     this.rejectPendingJobs(new Error('Pipeline destroyed'));
     tokenizerService.reset();
   }

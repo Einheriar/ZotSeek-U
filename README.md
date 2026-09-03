@@ -18,6 +18,10 @@ Zotero 不仅可以用于保存、整理和管理文献，也可以作为本地�
 
 *The purpose of this project is to make Zotero foundational infrastructure for the AI era of reference management. Zotero should not only store, organize, and manage literature, but also serve as a local research knowledge base for embeddings, semantic search, hybrid retrieval, and MCP-based agent access.*
 
+Embedding 默认仍可完全在本机运行；高级用户也可选择 Local Server，或在明确确认数据上传和云厂商计费边界后，以 BYOK 方式使用 Cloud Embedding。Cloud API Key 使用 Zotero 的系统安全凭据存储，不写入普通偏好或项目文件。
+
+*Embeddings can remain fully local by default. Advanced users may instead choose Local Server, or use BYOK Cloud Embedding after explicitly acknowledging data transfer and provider billing. Cloud API keys use Zotero's OS-backed credential storage and are not written to ordinary preferences or project files.*
+
 ## 当前方向
 
 基于个人的文献阅读习惯，本项目重点维护 **hybrid 混合检索模式**，并以 **Metadata + Notes** 作为主要索引模式。日常阅读文献时，通常会使用 LLM 生成一份文献简报，并将其作为文献的长期阅读记录。因此，本项目将 Zotero 中的元数据和 Notes 作为语义检索的重要基础，同时保留 PDF 全文索引和扩展能力。

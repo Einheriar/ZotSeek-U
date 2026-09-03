@@ -42,7 +42,7 @@ describe('model input policy resolution', () => {
     assert.match(modelInputPolicyFingerprint(e5), /^v1:multilingual-e5-base:420:512:8000:exact$/);
   });
 
-  test('server document prefixes are part of the index policy fingerprint', () => {
+  test('remote document prefixes are part of the index policy fingerprint', () => {
     const base = getModel('multilingual-e5-base')!;
     const server = {
       ...base,
@@ -59,5 +59,13 @@ describe('model input policy resolution', () => {
     }));
     assert.notEqual(first, changed);
     assert.match(first, /doc=passage%3A%20$/);
+
+    const cloud = { ...server, id: 'cloud:test', runtime: 'cloud' as const };
+    const cloudFirst = modelInputPolicyFingerprint(resolveModelInputPolicy(cloud));
+    const cloudChanged = modelInputPolicyFingerprint(resolveModelInputPolicy({
+      ...cloud,
+      docPrefix: 'document: ',
+    }));
+    assert.notEqual(cloudFirst, cloudChanged);
   });
 });

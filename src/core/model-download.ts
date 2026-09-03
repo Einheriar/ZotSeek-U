@@ -196,7 +196,7 @@ export function ensureModelsResourceSubstitution(): string | null {
  * JSON config files may still be absent (404 skip) without affecting this.
  */
 export async function isModelOnDisk(model: ModelConfig): Promise<boolean> {
-  if (model.runtime === 'server') return true; // nothing on disk; the server hosts the weights
+  if (model.runtime !== 'onnx') return true; // Server/Cloud providers host the weights
   return (await findModelLocation(model)) !== null;
 }
 

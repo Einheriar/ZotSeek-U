@@ -52,3 +52,17 @@ pref("extensions.zotero.zotseek.mcpServer.enabled", false);
 pref("extensions.zotero.zotseek.embeddingModel", "multilingual-e5-base");
 pref("extensions.zotero.zotseek.modelDefaultMigrationE5", false);
 pref("extensions.zotero.zotseek.modelInputPolicyMigrationV1", false);
+
+// Cloud Embedding is a separate, explicit BYOK boundary. The API key is never
+// stored in prefs; it lives in Zotero Login Manager + OSKeyStore.
+pref("extensions.zotero.zotseek.cloud.baseUrl", "https://dashscope.aliyuncs.com/compatible-mode/v1");
+pref("extensions.zotero.zotseek.cloud.provider", "alibaba-bailian");
+pref("extensions.zotero.zotseek.cloud.modelName", "qwen3.7-text-embedding");
+pref("extensions.zotero.zotseek.cloud.dimensions", 1024);
+pref("extensions.zotero.zotseek.cloud.maxInputTokens", 128000);
+pref("extensions.zotero.zotseek.cloud.queryPrefix", "");
+pref("extensions.zotero.zotseek.cloud.docPrefix", "");
+pref("extensions.zotero.zotseek.cloud.batchSize", 20);
+pref("extensions.zotero.zotseek.cloud.connectionVerified", false);
+pref("extensions.zotero.zotseek.cloud.autoIndex", false);
+pref("extensions.zotero.zotseek.cloud.consentVersion", 0);

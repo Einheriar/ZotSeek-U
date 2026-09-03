@@ -1,5 +1,10 @@
+import {
+  cloudModelId,
+  getCloudModelSettings,
+} from './cloud-model-config';
+
 /**
- * Model registry: single source of truth for selectable local embedding models.
+ * Model registry: single source of truth for selectable embedding models.
  * See docs (SEARCH_ARCHITECTURE) for the curated set and per-model parameters.
  */
 declare const Zotero: any;
@@ -7,7 +12,7 @@ declare const Zotero: any;
 export interface ModelConfig {
   id: string;              // stored as model_id in the DB (short id)
   label: string;           // UI label
-  runtime: 'onnx' | 'server'; // 'onnx' = in-process ChromeWorker; 'server' = local inference server
+  runtime: 'onnx' | 'server' | 'cloud';
   hfPath: string;          // Hugging Face repo path, e.g. 'Xenova/bge-m3'
   dimensions: number;
   pooling: 'mean' | 'cls';
@@ -26,6 +31,11 @@ export interface ModelConfig {
   apiKey?: string;           // optional bearer token (vLLM)
   serverMaxInputTokens?: number;
   serverRecommendedChunkTokens?: number;
+
+  // cloud-runtime only
+  cloudProvider?: string;
+  cloudModelName?: string;
+  cloudBatchSize?: number;
 }
 
 const COMMON_FILES = [
@@ -74,23 +84,28 @@ export const MODELS: ModelConfig[] = [
 export const DEFAULT_MODEL_ID = 'multilingual-e5-base';
 /** Stable preference/menu value for the single Server configuration slot. */
 export const SERVER_SLOT_SELECTION_ID = 'server-slot';
+/** Stable preference/menu value for the fixed Cloud configuration slot. */
+export const CLOUD_SLOT_SELECTION_ID = 'cloud-slot';
 
 export class ServerModelNotReadyError extends Error {
   readonly code = 'SERVER_MODEL_NOT_READY' as const;
 
   constructor() {
-    super('The Server model is selected, but its model information is incomplete.');
+    super('The Local Server model is selected, but its model information is incomplete.');
     this.name = 'ServerModelNotReadyError';
   }
 }
 
 export function getAllModels(): ModelConfig[] {
-  return [...MODELS, ...getServerModels()];
+  return [...MODELS, ...getServerModels(), ...getCloudModels()];
 }
 
 export function getModel(id: string): ModelConfig | undefined {
   if (id === SERVER_SLOT_SELECTION_ID) return getServerModels()[0];
-  return MODELS.find(m => m.id === id) || getServerModels().find(m => m.id === id);
+  if (id === CLOUD_SLOT_SELECTION_ID) return getCloudModels()[0];
+  return MODELS.find(m => m.id === id)
+    || getServerModels().find(m => m.id === id)
+    || getCloudModels().find(m => m.id === id);
 }
 
 export function isAllowedHfPath(hfPath: string): boolean {
@@ -110,6 +125,9 @@ export function getActiveModelSelectionId(): string {
       if (v === SERVER_SLOT_SELECTION_ID || v.startsWith('server:')) {
         return SERVER_SLOT_SELECTION_ID;
       }
+      if (v === CLOUD_SLOT_SELECTION_ID || v.startsWith('cloud:')) {
+        return CLOUD_SLOT_SELECTION_ID;
+      }
       if (MODELS.some(model => model.id === v)) return v;
     }
   } catch (e: any) {
@@ -125,8 +143,11 @@ export function getActiveModelSelectionId(): string {
  */
 export function getActiveModelId(): string {
   const selectionId = getActiveModelSelectionId();
-  if (selectionId !== SERVER_SLOT_SELECTION_ID) return selectionId;
-  return getServerModels()[0]?.id || SERVER_SLOT_SELECTION_ID;
+  if (selectionId === SERVER_SLOT_SELECTION_ID) {
+    return getServerModels()[0]?.id || SERVER_SLOT_SELECTION_ID;
+  }
+  if (selectionId === CLOUD_SLOT_SELECTION_ID) return getCloudModels()[0].id;
+  return selectionId;
 }
 
 export function getActiveModel(): ModelConfig {
@@ -136,6 +157,7 @@ export function getActiveModel(): ModelConfig {
     if (!serverModel) throw new ServerModelNotReadyError();
     return serverModel;
   }
+  if (selectionId === CLOUD_SLOT_SELECTION_ID) return getCloudModels()[0];
   return MODELS.find(model => model.id === selectionId) || MODELS.find(model => model.id === DEFAULT_MODEL_ID)!;
 }
 
@@ -147,7 +169,9 @@ export function setActiveModelId(id: string): void {
   try {
     const selectionId = id === SERVER_SLOT_SELECTION_ID || id.startsWith('server:')
       ? SERVER_SLOT_SELECTION_ID
-      : id;
+      : (id === CLOUD_SLOT_SELECTION_ID || id.startsWith('cloud:')
+        ? CLOUD_SLOT_SELECTION_ID
+        : id);
     Zotero.Prefs.set('zotseek.embeddingModel', selectionId, true);
   } catch (e: any) {
     Zotero.debug('[ZotSeek] setActiveModelId error: ' + (e?.message || e));
@@ -164,7 +188,7 @@ export function setActiveModelId(id: string): void {
  * until its files are placed in ZotSeek's model directory.
  */
 export function requiresLocalFiles(model: ModelConfig): boolean {
-  return model.runtime !== 'server' && !model.bundled;
+  return model.runtime === 'onnx' && !model.bundled;
 }
 
 /**
@@ -329,6 +353,33 @@ export function getServerModelEntries(): ServerModelEntry[] {
 
 export function getServerModels(): ModelConfig[] {
   return getServerModelEntries().map(serverEntryToModelConfig);
+}
+
+/** The fixed Cloud slot is a separate vector space and never reuses Server configuration. */
+export function getCloudModels(): ModelConfig[] {
+  const settings = getCloudModelSettings();
+  return [{
+    id: cloudModelId(settings),
+    label: `Cloud (${settings.provider} · ${settings.modelName})`,
+    runtime: 'cloud',
+    dimensions: settings.dimensions,
+    pooling: 'mean',
+    normalize: true,
+    queryPrefix: settings.queryPrefix,
+    docPrefix: settings.docPrefix,
+    hfPath: '',
+    onnxFile: '',
+    files: [],
+    bundled: false,
+    approxSizeMB: 0,
+    multilingual: true,
+    baseUrl: settings.baseUrl,
+    cloudProvider: settings.provider,
+    cloudModelName: settings.modelName,
+    cloudBatchSize: settings.batchSize,
+    serverMaxInputTokens: settings.maxInputTokens,
+    serverRecommendedChunkTokens: settings.recommendedChunkTokens,
+  }];
 }
 
 export function addServerModel(entry: ServerModelEntry): void {

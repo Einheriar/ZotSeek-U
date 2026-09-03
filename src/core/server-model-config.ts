@@ -103,7 +103,7 @@ function validateModel(candidate: any, at = 'model'): { model: ServerModelEntry 
   return {
     model: {
       id,
-      label: `Server (${serverModelName})`,
+      label: `Local Server (${serverModelName})`,
       baseUrl,
       serverModelName,
       dimensions: candidate.dimensions,
@@ -332,7 +332,7 @@ export function getSelectedServerModelConfigurationIssue(): ServerModelConfigura
 /** Plain error text for MCP/REST and non-UI callers. */
 export function serverModelConfigurationErrorMessage(issue: ServerModelConfigurationIssue): string {
   return (
-    `Server (${issue.state}) is selected, but its model information is incomplete. ` +
+    `Local Server (${issue.state}) is selected, but its model information is incomplete. ` +
     `Edit ${issue.path} and restart Zotero.\n${formatServerModelConfigErrors(issue.errors)}`
   );
 }

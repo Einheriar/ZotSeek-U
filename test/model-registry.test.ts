@@ -6,6 +6,7 @@ import {
   MODELS,
   DEFAULT_MODEL_ID,
   SERVER_SLOT_SELECTION_ID,
+  CLOUD_SLOT_SELECTION_ID,
   getAllModels,
   getModel,
   isAllowedHfPath,
@@ -27,6 +28,7 @@ import {
   brokenSubstitutionMessage,
   legacyLocationMessage,
 } from '../src/core/model-registry';
+import { setCloudModelSettings } from '../src/core/cloud-model-config';
 
 let zotero = installZoteroStub();
 // Re-install per test so pref state cannot leak between them.
@@ -63,6 +65,7 @@ describe('the curated model set', () => {
     // model_id partitions the chunks table; a collision would mix vector spaces.
     for (const m of MODELS) {
       assert.ok(!m.id.startsWith('server:'), `${m.id} shadows the server namespace`);
+      assert.ok(!m.id.startsWith('cloud:'), `${m.id} shadows the cloud namespace`);
     }
   });
 
@@ -142,6 +145,38 @@ describe('the active model pref', () => {
   test('normalizes a legacy concrete Server preference to the fixed slot', () => {
     zotero.prefs.set('zotseek.embeddingModel', 'server:legacy');
     assert.equal(getActiveModelSelectionId(), SERVER_SLOT_SELECTION_ID);
+  });
+
+  test('normalizes the Cloud slot while preserving its stable vector-space id', () => {
+    setActiveModelId(CLOUD_SLOT_SELECTION_ID);
+    assert.equal(zotero.prefs.get('zotseek.embeddingModel'), CLOUD_SLOT_SELECTION_ID);
+    assert.equal(getActiveModelSelectionId(), CLOUD_SLOT_SELECTION_ID);
+    assert.equal(getActiveModelId(), 'cloud:alibaba-bailian:qwen3.7-text-embedding:1024');
+    assert.equal(getActiveModel().runtime, 'cloud');
+
+    zotero.prefs.set('zotseek.embeddingModel', 'cloud:legacy');
+    assert.equal(getActiveModelSelectionId(), CLOUD_SLOT_SELECTION_ID);
+  });
+
+  test('resolves editable Cloud settings behind the stable Cloud slot', () => {
+    setCloudModelSettings({
+      provider: 'alibaba-bailian',
+      baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      modelName: 'another-model',
+      dimensions: 768,
+      maxInputTokens: 1000,
+      queryPrefix: 'query: ',
+      docPrefix: 'doc: ',
+      batchSize: 8,
+    });
+    setActiveModelId(CLOUD_SLOT_SELECTION_ID);
+    const model = getActiveModel();
+    assert.equal(getActiveModelSelectionId(), CLOUD_SLOT_SELECTION_ID);
+    assert.equal(model.id, 'cloud:alibaba-bailian:another-model:768');
+    assert.equal(model.queryPrefix, 'query: ');
+    assert.equal(model.docPrefix, 'doc: ');
+    assert.equal(model.cloudBatchSize, 8);
+    assert.equal(model.serverRecommendedChunkTokens, 850);
   });
 });
 
@@ -255,6 +290,10 @@ describe('models that need their weights on disk', () => {
   test('server-backed models never need local files', () => {
     // The weights live on the server; there is nothing to put on disk.
     assert.equal(requiresLocalFiles({ runtime: 'server', bundled: false } as any), false);
+  });
+
+  test('cloud-backed models never need local files', () => {
+    assert.equal(requiresLocalFiles({ runtime: 'cloud', bundled: false } as any), false);
   });
 
   test('the message names the model and points at the restored download UI', () => {

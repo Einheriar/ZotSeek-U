@@ -32,6 +32,7 @@ import { autoIndexManager, IndexCallbackResult } from './core/auto-index-manager
 import { assessModeOnlyIndexConfigTransition } from './core/index-freshness';
 import { planModeTransitionReuse } from './core/index-mode-transition';
 import { indexFreshnessNotifier } from './core/index-freshness-notifier';
+import { metadataIdentityCache } from './core/metadata-identity-cache';
 import { getString } from './utils/locale';
 import { openDismissibleNotice } from './utils/prompt-notice';
 // Use stable progress window from toolkit to avoid crashes
@@ -50,6 +51,7 @@ import {
 import { showServerModelConfigurationPromptIfNeeded } from './ui/server-model-prompt';
 import { identityFromItem, libraryKeyFromLocalID, localItemIDFromIdentity } from './core/identity-resolver';
 import {
+  getActiveModel,
   getActiveModelId,
   getActiveModelSelectionId,
   SERVER_SLOT_SELECTION_ID,
@@ -85,6 +87,7 @@ import './dev/suites/task-37e-model-download';
 import './dev/suites/task-42a-loopback';
 import './dev/suites/task-42b-server-registry';
 import './dev/suites/task-42c-server-client';
+import './dev/suites/task-45-cloud';
 import './dev/suites/task-47-z10-db-hooks';
 import { collectCollectionItems } from './utils/collection-items';
 import {
@@ -175,7 +178,7 @@ interface EmbedChunksResult {
   failedItems: Set<string>;
 }
 
-// One HTTP request carries up to this many chunks on the server runtime.
+// Local Server accepts this many chunks; Cloud applies its provider limit internally.
 const SERVER_EMBED_GROUP = 32;
 
 /**
@@ -185,7 +188,8 @@ const SERVER_EMBED_GROUP = 32;
  * Worker runtime: per-chunk with one retry; a chunk that fails twice is
  * skipped and reported (embedding compute is local, failures are per-chunk).
  *
- * Server runtime: groups of SERVER_EMBED_GROUP per request. Errors are NOT
+ * HTTP runtimes: groups of SERVER_EMBED_GROUP at the pipeline boundary; the
+ * Cloud client further splits these groups to the provider maximum. Errors are NOT
  * swallowed per chunk: the client already retried with backoff, and a dead
  * server must stop the run cleanly (ServerUnavailableError propagates to the
  * caller's outer catch). Falling back to the in-process model is forbidden -
@@ -203,7 +207,7 @@ async function embedChunks(
   let failedChunks = 0;
   const failedItems = new Set<string>();
 
-  if (embeddingPipeline.isServerBacked()) {
+  if (embeddingPipeline.supportsBatchEmbedding()) {
     for (let i = 0; i < chunks.length; i += SERVER_EMBED_GROUP) {
       if (getActiveModelId() !== expectedModelId || embeddingPipeline.getModelId() !== expectedModelId) {
         throw new Error('Embedding model changed during indexing; the batch was stopped before saving.');
@@ -328,6 +332,10 @@ class ZotSeekPlugin {
       'zotseek.modelInputPolicyMigrationV1': false,
       'zotseek.indexScope': 'user', // 'user' (My Library) or 'all' (all libraries)
       'zotseek.serverModels': '[]', // Validated one-entry runtime cache for the fixed Server slot
+      'zotseek.cloud.baseUrl': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      'zotseek.cloud.connectionVerified': false,
+      'zotseek.cloud.autoIndex': false,
+      'zotseek.cloud.consentVersion': 0,
       'zotseek.autoCompact': true, // Reclaim space in zotseek.sqlite during Zotero's idle maintenance (Zotero 10+)
       // Experimental: run embeddings on the GPU via WebGPU (Zotero 11+ only).
       // Off by default: Firefox 153's WebGPU is 6-11x SLOWER than the WASM
@@ -414,7 +422,7 @@ class ZotSeekPlugin {
     }
     if (serverConfig.kind === 'unknown') {
       this.logger.warn(
-        `Server model template loaded with ${serverConfig.errors.length} error(s): ` +
+        `Local Server model template loaded with ${serverConfig.errors.length} error(s): ` +
         serverConfig.errors.join(' | '),
       );
     }
@@ -447,6 +455,10 @@ class ZotSeekPlugin {
     } catch (e: any) {
       this.logger.error(`models resource substitution failed: ${e?.message || e}; downloaded models will not load`);
     }
+
+    // Keep the process-wide identity snapshot coherent across UI and HTTP
+    // search engines before either entry point can issue a query.
+    metadataIdentityCache.start();
 
     // Local MCP/REST endpoints for AI agents (opt-in via preferences)
     initServerManager();
@@ -1130,6 +1142,10 @@ class ZotSeekPlugin {
       return;
     }
     if (!this.ensureOperationalModel(true)) return;
+    if (getActiveModel().runtime === 'cloud') {
+      await this.performCloudRebuild(true);
+      return;
+    }
     const Z = getZotero();
 
     const confirmed = openIndexConfirmationPrompt(
@@ -1149,6 +1165,10 @@ class ZotSeekPlugin {
   /** Clear and rebuild, optionally retaining the existing scope confirmation. */
   private async performRebuild(confirmIndexScope: boolean): Promise<void> {
     if (!this.ensureOperationalModel(true)) return;
+    if (getActiveModel().runtime === 'cloud') {
+      await this.performCloudRebuild(confirmIndexScope);
+      return;
+    }
 
     // First clear the index
     const progressWindow = new StableProgressWindow({
@@ -1475,6 +1495,58 @@ class ZotSeekPlugin {
     return 'user';
   }
 
+  /** Resolve the current library scope once so confirmation and execution agree. */
+  private async getLibraryIndexTarget(): Promise<{
+    items: any[];
+    bulkScope: BulkScope;
+    scopeLabel: string;
+  } | null> {
+    const Z = getZotero();
+    if (!Z) return null;
+    if (this.getIndexScope() === 'all') {
+      return {
+        items: await this.zoteroAPI.getAllLibraryItems(),
+        bulkScope: { type: 'all-libraries' },
+        scopeLabel: getString('indexing-scopeAll'),
+      };
+    }
+    const libraryId = Z.Libraries.userLibraryID;
+    return {
+      items: await this.zoteroAPI.getLibraryItems(libraryId),
+      bulkScope: { type: 'library', libraryId },
+      scopeLabel: getString('indexing-scopeUser'),
+    };
+  }
+
+  /**
+   * Rebuild Cloud coverage without clearing any model partition first.
+   * Each paper is replaced atomically only after all of its embeddings exist.
+   */
+  private async performCloudRebuild(confirm: boolean): Promise<void> {
+    const Z = getZotero();
+    const target = await this.getLibraryIndexTarget();
+    if (!Z || !target) return;
+    const exclusionPolicy = readIndexExclusionPolicy(Z);
+    const eligibleCount = target.items.filter(item =>
+      item?.isRegularItem?.() && !isItemExcludedFromIndex(item, exclusionPolicy)
+    ).length;
+    if (confirm) {
+      const accepted = openIndexConfirmationPrompt(
+        Services?.prompt,
+        Z.getMainWindow(),
+        getString('indexing-cloudRebuildConfirmTitle'),
+        getString('indexing-cloudRebuildConfirmMsg', {
+          count: eligibleCount,
+          scope: target.scopeLabel,
+        }),
+        getString('indexing-rebuildConfirmButton'),
+        getString('indexing-confirmCancel'),
+      );
+      if (!accepted) return;
+    }
+    await this.indexItems(target.items, target.bulkScope, true);
+  }
+
   /**
    * Index all libraries (user + groups)
    */
@@ -1489,23 +1561,9 @@ class ZotSeekPlugin {
     const Z = getZotero();
     if (!Z) return;
 
-    const scope = this.getIndexScope();
-    const userLibraryID = Z.Libraries.userLibraryID;
-
-    let items: any[];
-    let bulkScope: BulkScope;
-    let scopeLabel: string;
-    if (scope === 'all') {
-      this.logger.info('Indexing all libraries');
-      items = await this.zoteroAPI.getAllLibraryItems();
-      bulkScope = { type: 'all-libraries' };
-      scopeLabel = getString('indexing-scopeAll');
-    } else {
-      this.logger.info('Indexing user library only');
-      items = await this.zoteroAPI.getLibraryItems(userLibraryID);
-      bulkScope = { type: 'library', libraryId: userLibraryID };
-      scopeLabel = getString('indexing-scopeUser');
-    }
+    const target = await this.getLibraryIndexTarget();
+    if (!target) return;
+    const { items, bulkScope, scopeLabel } = target;
     this.logger.info(`Found ${items.length} items to index`);
 
     if (!skipConfirmation) {
@@ -1629,6 +1687,7 @@ class ZotSeekPlugin {
   private async indexItems(
     items: any[],
     scope?: BulkScope,
+    forceFull = false,
   ): Promise<import('./core/auto-index-manager').StartupCheckResult | null> {
     if (!this.ensureOperationalModel(true)) return null;
     if (this.indexOperationActive) {
@@ -1663,6 +1722,7 @@ class ZotSeekPlugin {
         purgeMissingScope,
         fullIndexCallback: candidates => this.indexItemsCandidates(candidates, recoverableScope),
         noteIndexCallback: candidates => this.indexNoteChangesSilent(candidates),
+        forceFull,
       });
       if (recoverableScope && shouldClearBulkIndexScope(result)) {
         try {
@@ -1738,6 +1798,7 @@ class ZotSeekPlugin {
       stoppingLabel: getString('indexing-pausingAction'),
       stopTooltip: getString('indexing-pauseTooltip'),
       stopCallback: () => {
+        embeddingPipeline.cancelPendingRequests();
         // Persist even small explicit scopes when the user deliberately pauses.
         // The normal crash-recovery threshold remains unchanged.
         if (scope) {
@@ -2671,7 +2732,7 @@ class ZotSeekPlugin {
       showServerModelConfigurationPromptIfNeeded();
     } else if (!this.serverBackgroundSkipLogged) {
       this.logger.info(
-        `Background embedding work skipped: Server (${issue?.state || 'NONE'}) is selected; ` +
+        `Background embedding work skipped: Local Server (${issue?.state || 'NONE'}) is selected; ` +
         `edit ${issue?.path || 'the profile template'}`,
       );
       this.serverBackgroundSkipLogged = true;
@@ -2722,6 +2783,7 @@ class ZotSeekPlugin {
     // Cancel a scheduled/running startup reconciliation pass.
     autoIndexManager.stop();
     indexFreshnessNotifier.stop();
+    metadataIdentityCache.stop();
 
     // Release the main-thread tokenizer and its bounded text-count cache.
     tokenizerService.reset();

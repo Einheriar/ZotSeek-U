@@ -36,7 +36,7 @@ describe('single-slot server model configuration', () => {
     const parsed = parseServerModelConfig(config(validModel));
     assert.equal(parsed.kind, 'ready');
     assert.equal(parsed.model?.baseUrl, 'http://127.0.0.1:1234');
-    assert.equal(parsed.model?.label, 'Server (bge-m3)');
+    assert.equal(parsed.model?.label, 'Local Server (bge-m3)');
     assert.equal(parsed.model?.maxInputTokens, 8192);
   });
 
