@@ -1,67 +1,154 @@
-# ZotSeek-CHS
+# ZotSeek-U
 
-ZotSeek-CHS 是 [ZotSeek 原项目](https://github.com/introfini/ZotSeek) 的一个独立 fork，面向中文用户和本地科研文献检索场景进行持续开发。
+> **Universal, multilingual, and evidence-grounded retrieval for Zotero.**
 
-*ZotSeek-CHS is an independent fork of the [original ZotSeek project](https://github.com/introfini/ZotSeek), developed for Chinese users and local academic literature retrieval.*
+**English** | [简体中文](README-CN.md)
 
-本项目 README 只介绍当前 fork 的定位和开发方向。完整的功能说明、安装方法、使用文档和上游项目信息，请直接访问原项目仓库。
+## Mission
 
-*This README only describes the identity and development direction of this fork. For complete feature descriptions, installation instructions, usage documentation, and upstream project information, please visit the original repository.*
+> **Make Zotero foundational infrastructure for reference management in the AI era.**
 
-## 项目宗旨
+ZotSeek-U is an independent fork of [ZotSeek](https://github.com/introfini/ZotSeek). It brings multilingual semantic search to your local Zotero library and grounds retrieval results in metadata, Notes, matched passages, and PDF page numbers.
 
-本项目的宗旨是：
+## Why I Maintain This Fork
 
-> **让 Zotero 成为文献管理 AI 时代的基础设施。**
+We have probably all struggled to find a paper we know we have read: we remember a concept or a small detail, but not the title or the right keywords. Finding it again can take far too much effort. Vector-based Semantic Search is a great solution to this problem. Since 2024, I have wanted to search the literature stored in my own Zotero library as naturally as asking Consensus a question.
 
-Zotero 不仅可以用于保存、整理和管理文献，也可以作为本地科研知识库，为 Embedding、语义搜索、混合检索和 MCP 调用提供可靠的数据基础。
+I tried Zotero-MCP, but it requires an additional Python process with non-trivial resource usage and is mainly accessed through MCP. Other Zotero semantic-search plugins also did not work as well as I hoped. ZotSeek is the best plugin I have seen in this area. It fulfills almost everything I imagined semantic literature search inside Zotero could be.
 
-*The purpose of this project is to make Zotero foundational infrastructure for the AI era of reference management. Zotero should not only store, organize, and manage literature, but also serve as a local research knowledge base for embeddings, semantic search, hybrid retrieval, and MCP-based agent access.*
+However, the original ZotSeek still differed from my workflow in several ways:
 
-Embedding 默认仍可完全在本机运行；高级用户也可选择 Local Server，或在明确确认数据上传和云厂商计费边界后，以 BYOK 方式使用 Cloud Embedding。Cloud API Key 使用 Zotero 的系统安全凭据存储，不写入普通偏好或项目文件。
+1. Some chunking paths relied on fixed rules to estimate tokens. This is efficient and reliable for English, but it can underestimate the actual token count of Chinese and other languages. With models such as E5 that have a relatively small context window, over-limit input is truncated by the tokenizer and the end of a chunk can be lost.
 
-*Embeddings can remain fully local by default. Advanced users may instead choose Local Server, or use BYOK Cloud Embedding after explicitly acknowledging data transfer and provider billing. Cloud API keys use Zotero's OS-backed credential storage and are not written to ordinary preferences or project files.*
+2. A Zotero library grows over time, and many researchers accumulate a large collection of valuable Notes. The original indexing modes did not fully use this material, while PDF full-text indexing can require orders of magnitude more computation than Metadata indexing. I wanted a middle ground that balances cost and content coverage.
 
-## 当前方向
+3. The original project emphasizes privacy and local processing, but did not provide a way for users to bring their own API key and use Cloud Embedding. I believe many users would like to try this option, while anyone with privacy concerns can continue using the fully local features.
 
-基于个人的文献阅读习惯，本项目重点维护 **hybrid 混合检索模式**，并以 **Metadata + Notes** 作为主要索引模式。日常阅读文献时，通常会使用 LLM 生成一份文献简报，并将其作为文献的长期阅读记录。因此，本项目将 Zotero 中的元数据和 Notes 作为语义检索的重要基础，同时保留 PDF 全文索引和扩展能力。
+4. The original Hybrid Search combined Semantic Search with heuristically adapted Zotero search results through RRF. Its measured recall was already good, but there was still room for improvement.
 
-*Based on the author's personal literature-reading workflow, this project primarily maintains hybrid retrieval and uses Metadata + Notes as the main indexing mode. An LLM-generated literature brief is often kept as a long-term reading record. Therefore, Zotero metadata and notes are treated as important foundations for semantic retrieval while PDF full-text indexing and future extensions remain supported.*
+For these reasons, I created and continue to maintain this fork, mainly adding:
 
-最终目标是构建一个可由外部 Agent 调用、能够返回原文依据，并且可以通过 Zotero 元数据、Note 内容、匹配片段和 PDF 页码进行验证的本地 MCP 环境。
+- reliable support for Chinese, Japanese, Korean, Thai, Russian, and other languages, using the model's own tokenizer to count tokens whenever available;
+- a `Metadata + Notes` indexing mode and a redesigned hybrid search mode;
+- optional BYOK Cloud Embedding;
+- Hybrid Search based on Semantic Search + BM25.
 
-*The ultimate goal is to provide a local MCP environment that external agents can call, whose results include source evidence and can be verified through Zotero metadata, note content, matched passages, and PDF page locations.*
+I have run many experiments on chunking, Embedding, and retrieval quality. Their methods and results will be published progressively on the project Blog.
 
-## 主要目标
+## Main Goals
 
-1. 支持中文和多语言文献的语义检索。
+1. Support semantic retrieval for Chinese and multilingual literature.
 
-   *Support semantic retrieval for Chinese and multilingual literature.*
+2. Explore unified indexing of titles, abstracts, tags, PDF full text, and Child Notes.
 
-2. 探索标题、摘要、标签、PDF 全文和 Child Notes 的统一索引方式。
+3. Study how text preprocessing, structured chunking, and Embedding input affect retrieval quality.
 
-   *Explore unified indexing of titles, abstracts, tags, PDF full text, and child notes.*
+4. Improve Embedding, semantic search, hybrid retrieval, and MCP access to provide external AI Agents with verifiable literature search results.
 
-3. 研究文本预处理、结构化分块和 Embedding 输入方式对检索效果的影响。
+## Usage
 
-   *Study how text preprocessing, structured chunking, and embedding inputs affect retrieval quality.*
+ZotSeek-U includes an Embedding model out of the box and defaults to the **Metadata + Notes** indexing mode. The default model is Multilingual E5 base. It supports multiple languages and runs at a reasonable speed; its main limitation is a context window of only 512 tokens. Run **Check and Update Index**, then start searching with Hybrid Search.
 
-4. 改进 Embedding、语义搜索、混合检索和 MCP 调用等环节，为外部 AI Agent 提供可验证的文献检索结果。
+### 1. Choose an Embedding Model
 
-   *Improve embeddings, semantic search, hybrid retrieval, and MCP access to provide external AI agents with verifiable literature retrieval results.*
+Open **Zotero Settings → ZotSeek → Models** and choose an Embedding option:
 
-## 项目状态
+- **Multilingual E5 base**: the bundled default multilingual model, ready to use after installation;
+- **Nomic v1.5**: oriented toward English literature and downloaded separately;
+- **BGE-M3**: a larger multilingual model, also downloaded separately;
+- **Local Server**: use a local inference service such as LM Studio, Ollama, llama.cpp, or vLLM;
+- **Cloud**: call a cloud Embedding service with your own API key.
 
-由于个人能力和资源所限，本项目主要通过 **Vibe Coding** 的方式推进，是一个面向个人工作流的实验性项目。功能、架构和实验结论可能持续变化，不保证与上游 ZotSeek 保持同步，也不承诺提供稳定的生产环境支持。
+![Choose an Embedding model](docs/images/readme-model-picker.png)
 
-*Due to limitations in personal resources and expertise, this project is developed primarily through **Vibe Coding** as an experimental project for a personal workflow. Its features, architecture, and experimental conclusions may change over time. It does not guarantee synchronization with upstream ZotSeek or stable production support.*
+Most users can use the bundled model directly. After choosing another model, build an index for that model. Embeddings from different models are stored separately and are never compared with each other.
 
-当前版本最低要求 **Zotero 9.0**，支持 Zotero 9 和 Zotero 10。
+#### Optional: Cloud Embedding
 
-*The current release requires **Zotero 9.0 or newer** and supports Zotero 9 and Zotero 10.*
+Cloud Embedding is optional. Indexed content and semantic queries are sent to the cloud provider and may incur provider charges. ZotSeek-U does not charge users or receive a share of those fees. Users with privacy concerns can leave this feature disabled.
 
-## 上游项目
+Set the API key, test the connection, and then select the Cloud model. The API key is stored through Zotero's secure credential storage and is not written to ordinary preferences or project files.
 
-[访问 ZotSeek 原项目](https://github.com/introfini/ZotSeek)
+![Cloud Embedding settings](docs/images/readme-cloud-settings.png)
+
+The advanced fields describe the model context, dimensions, prefixes, and batch size. Keep the preset values unless you understand the actual API contract of the cloud model.
+
+![Advanced Cloud Embedding settings](docs/images/readme-cloud-advanced-settings.png)
+
+### 2. Choose an Indexing Mode
+
+Open **Zotero Settings → ZotSeek → Indexing** and choose what should be embedded:
+
+- **Abstract only**: primarily indexes Metadata; fastest and smallest;
+- **Metadata + Notes**: adds the paper's Child Notes without processing the PDF; recommended for everyday use;
+- **Full text**: adds PDF content to Metadata and Notes; provides the widest coverage but requires the most time and storage.
+
+The indexing mode determines what enters the index. It is different from choosing Hybrid, Semantic, or Keyword mode at search time.
+
+![Choose an indexing mode](docs/images/readme-indexing-modes.png)
+
+### 3. Build and Maintain the Index
+
+After selecting a model and indexing mode, confirm the library scope under **Status**, then click **Check and Update Index**. It adds missing items, updates changed Metadata, Notes, and indexing configuration, and skips unchanged items.
+
+![Check and update the index](docs/images/readme-index-maintenance.png)
+
+Use **Check and Update Index** for routine maintenance. Use **Rebuild Index** only when ZotSeek-U explicitly asks for it, when the indexing strategy changes substantially, or when you need to start over. Updating or rebuilding with a Cloud model may incur provider charges.
+
+### 4. Search Your Library
+
+Click the ZotSeek icon in the Zotero toolbar, enter a natural-language question, and choose a search mode:
+
+- **Hybrid Search**: combines Semantic Search with BM25; recommended by default;
+- **Semantic Search**: useful for concepts, meanings, and matches expressed in different words;
+- **Keyword Search**: useful for exact titles, terms, and abbreviations.
+
+Results can be grouped by paper section or shown by exact location with matched passages and PDF page numbers. A result set can also be saved as a new Zotero Collection.
+
+![ZotSeek search dialog](docs/images/readme-search-dialog.png)
+
+### 5. Connect an AI Agent
+
+ZotSeek-U uses Zotero's built-in local HTTP server to provide read-only search to MCP clients, without requiring an additional Python service. Zotero must remain open while the connection is in use.
+
+First, open **Zotero Settings → Advanced** and enable **Allow other applications on this computer to communicate with Zotero**.
+
+![Allow local applications to communicate with Zotero](docs/images/readme-zotero-local-api.png)
+
+Then open **Zotero Settings → ZotSeek → Integrations & Maintenance** and enable **Allow AI agents to search and read your library**. This feature is off by default and takes effect without restarting Zotero.
+
+![Enable AI Agent Access](docs/images/readme-ai-agent-access.png)
+
+The settings page displays a connection command containing the MCP endpoint for the local HTTP server currently provided by Zotero. Copy the address shown there when configuring a client; do not assume that the port is always the same. The address normally ends with `/zotseek/mcp`.
+
+Claude Code:
+
+```bash
+claude mcp add --transport http --scope user zotseek <MCP_URL_FROM_ZOTSEEK_SETTINGS>
+```
+
+OpenAI Codex:
+
+```bash
+codex mcp add zotseek --url <MCP_URL_FROM_ZOTSEEK_SETTINGS>
+```
+
+Other MCP clients that support Streamable HTTP can use the same address shown in ZotSeek settings. Native MCP clients normally need only the URL. If a client sends requests through an embedded browser environment, also add this request header:
+
+```text
+Zotero-Allowed-Request=true
+```
+
+![Connect ZotSeek in an MCP client](docs/images/readme-mcp-client.png)
+
+The MCP interface can search literature, read item Metadata and Child Notes, retrieve specific PDF pages, and return links that open the result in Zotero. It listens only on localhost, and all tools are read-only: they cannot modify your library or index.
+
+## Project Status
+
+Due to the limits of my personal expertise and resources, this project is developed primarily through **Vibe Coding** as an experimental project for my own workflow. Features, architecture, and experimental conclusions may continue to change. I do not guarantee synchronization with upstream ZotSeek or stable production support.
+
+The current release requires **Zotero 9.0 or newer** and supports Zotero 9 and Zotero 10.
+
+## Upstream
 
 [Visit the original ZotSeek project](https://github.com/introfini/ZotSeek)
