@@ -52,7 +52,7 @@ export interface PaperEmbedding {
   // LOCAL convenience (resolved at runtime, not stored as identity)
   itemId?: number;          // Current Zotero.Item.id for this row in this session
 
-  chunkIndex: number;       // 0 = summary (title+abstract), 1+ = fulltext chunks
+  chunkIndex: number;       // 0 starts Summary (title+eligible abstract+tags); later chunks are source-specific
   /** @deprecated Use libraryKey for identity. This field is populated at read
    *  time from libraryKey but is not stored in v8. Will be removed in v2.1. */
   libraryId?: number;

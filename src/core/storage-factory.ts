@@ -58,6 +58,7 @@ export interface IVectorStore {
   getItemsMissingModel(modelId: string): Promise<Array<{ libraryKey: string; itemKey: string }>>;
   getCoverage(modelId: string): Promise<{ covered: number; total: number }>;
   getPerModelStats(): Promise<Array<{ modelId: string; items: number; chunks: number; storageBytes: number }>>;
+  deleteModelEmbeddings(modelId: string): Promise<number>;
 
   // Bulk / housekeeping
   getAll(): Promise<import('./vector-store-sqlite').PaperEmbedding[]>;

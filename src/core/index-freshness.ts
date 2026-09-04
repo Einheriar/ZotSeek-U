@@ -8,6 +8,7 @@
 
 import type { StableIdentity } from './identity-resolver';
 import type { StartupFingerprint } from './vector-store-sqlite';
+import { buildIndexedMetadataSnapshot } from '../utils/indexed-metadata';
 
 export type FreshnessIndexingMode = 'abstract' | 'notes' | 'full';
 
@@ -196,14 +197,11 @@ export function assessIndexConfigFingerprint(
 }
 
 export function metadataFingerprint(item: any): string {
-  const tags = (item?.getTags?.() || [])
-    .map((tag: any) => String(tag?.tag || '').trim())
-    .filter(Boolean)
-    .sort((a: string, b: string) => a.localeCompare(b));
+  const metadata = buildIndexedMetadataSnapshot(item);
   return hashFreshnessText(JSON.stringify({
-    title: String(item?.getField?.('title') || ''),
-    abstract: String(item?.getField?.('abstractNote') || ''),
-    tags,
+    title: metadata.title,
+    abstract: metadata.abstract,
+    tags: metadata.tags,
   }));
 }
 

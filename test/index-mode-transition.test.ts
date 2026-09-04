@@ -62,44 +62,47 @@ describe('index mode transition reuse planning', () => {
     assert.deepEqual(plan.chunksToEmbed.map(chunk => chunk.index), [0]);
   });
 
-  test('embeds the new Metadata Summary and Notes when expanding Abstract to Notes', () => {
+  test('reuses the shared Summary and embeds Notes when expanding Abstract to Notes', () => {
     const target = [
       targetChunk(0, 'Title\n\nAbstract\n\nTags: EEG', 'summary'),
       targetChunk(1, 'Reading note', 'note'),
     ];
-    const existing = [storedChunk(0, 'Title\n\nAbstract', 'summary')];
+    const existing = [storedChunk(0, 'Title\n\nAbstract\n\nTags: EEG', 'summary')];
     const plan = planModeTransitionReuse(target, existing, 'model-a');
 
-    assert.equal(plan.reusableByTargetIndex.size, 0);
+    assert.equal(plan.reusableByTargetIndex.size, 1);
     assert.deepEqual(
       plan.chunksToEmbed.map(chunk => chunk.text),
-      ['Title\n\nAbstract\n\nTags: EEG', 'Reading note'],
+      ['Reading note'],
     );
   });
 
-  test('embeds the new Metadata, Notes and PDF when expanding Abstract to Full', () => {
+  test('reuses the shared Summary and embeds Notes and PDF when expanding Abstract to Full', () => {
     const target = [
       targetChunk(0, 'Title\n\nAbstract\n\nTags: EEG', 'summary'),
       targetChunk(1, 'Reading note', 'note'),
       targetChunk(2, 'PDF passage', 'content'),
     ];
-    const existing = [storedChunk(0, 'Title\n\nAbstract', 'summary')];
+    const existing = [storedChunk(0, 'Title\n\nAbstract\n\nTags: EEG', 'summary')];
     const plan = planModeTransitionReuse(target, existing, 'model-a');
 
-    assert.equal(plan.reusableByTargetIndex.size, 0);
-    assert.deepEqual(plan.chunksToEmbed, target);
+    assert.equal(plan.reusableByTargetIndex.size, 1);
+    assert.deepEqual(
+      plan.chunksToEmbed.map(chunk => chunk.text),
+      ['Reading note', 'PDF passage'],
+    );
   });
 
-  test('embeds only the target Abstract Summary when shrinking Notes to Abstract', () => {
-    const target = [targetChunk(0, 'Title\n\nAbstract', 'summary')];
+  test('reuses the shared Summary when shrinking Notes to Abstract', () => {
+    const target = [targetChunk(0, 'Title\n\nAbstract\n\nTags: EEG', 'summary')];
     const existing = [
       storedChunk(0, 'Title\n\nAbstract\n\nTags: EEG', 'summary'),
       storedChunk(1, 'Reading note', 'note'),
     ];
     const plan = planModeTransitionReuse(target, existing, 'model-a');
 
-    assert.equal(plan.reusableByTargetIndex.size, 0);
-    assert.deepEqual(plan.chunksToEmbed, target);
+    assert.equal(plan.reusableByTargetIndex.size, 1);
+    assert.deepEqual(plan.chunksToEmbed, []);
   });
 
   test('reuses Notes when expanding to Full and embeds only the new PDF', () => {

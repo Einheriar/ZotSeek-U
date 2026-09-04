@@ -2,9 +2,9 @@
  * Pure planning helpers for indexing-mode transitions.
  *
  * Callers must separately prove that the old and new index configurations
- * differ only by mode. Once that gate passes, an unchanged target chunk can
- * carry its existing vector forward while all descriptive metadata is rebuilt
- * from the target extraction.
+ * differ only by mode. Under strategy 9 every mode shares the same Metadata
+ * Summary, while this exact matcher remains the final safety gate for Summary,
+ * Note and PDF vector reuse.
  */
 
 import type { Chunk, ChunkType } from '../utils/chunker';

@@ -21,6 +21,7 @@ import {
   assessChunkStrategyState,
   CHUNK_STRATEGY_VERSION,
   getIndexingMode,
+  type ChunkStrategyState,
   type IndexingMode,
 } from './utils/chunker';
 import { getZotero } from './utils/zotero-helper';
@@ -846,18 +847,9 @@ class ZotSeekPlugin {
     showNotice: boolean,
     forceNotice = false,
   ): Promise<boolean> {
-    await this.ensureStoreReady();
-    if (!this.vectorStore) return false;
-
-    const modelId = getActiveModelId();
-    const metadataKey = `chunk_strategy_version:${modelId}`;
-    const stats = await this.vectorStore.getPerModelStats();
-    const chunkCount = stats.find(stat => stat.modelId === modelId)?.chunks ?? 0;
-    const storedVersion = Number(await this.vectorStore.getMetadata(metadataKey));
-    const state = assessChunkStrategyState(
-      chunkCount,
-      Number.isFinite(storedVersion) ? storedVersion : undefined,
-    );
+    const status = await this.getActiveChunkStrategyStatus();
+    if (!status || !this.vectorStore) return false;
+    const { modelId, metadataKey, state } = status;
 
     if (state === 'initialize') {
       await this.vectorStore.setMetadata(metadataKey, CHUNK_STRATEGY_VERSION);
@@ -873,6 +865,30 @@ class ZotSeekPlugin {
       this.showDismissibleNotice(getString('indexing-chunkStrategyRebuildRequired'));
     }
     return current;
+  }
+
+  /** Read the active model's partition state without mutating its marker. */
+  private async getActiveChunkStrategyStatus(): Promise<{
+    modelId: string;
+    metadataKey: string;
+    state: ChunkStrategyState;
+  } | null> {
+    await this.ensureStoreReady();
+    if (!this.vectorStore) return null;
+
+    const modelId = getActiveModelId();
+    const metadataKey = `chunk_strategy_version:${modelId}`;
+    const stats = await this.vectorStore.getPerModelStats();
+    const chunkCount = stats.find(stat => stat.modelId === modelId)?.chunks ?? 0;
+    const storedVersion = Number(await this.vectorStore.getMetadata(metadataKey));
+    return {
+      modelId,
+      metadataKey,
+      state: assessChunkStrategyState(
+        chunkCount,
+        Number.isFinite(storedVersion) ? storedVersion : undefined,
+      ),
+    };
   }
 
   onMainWindowLoad(window: Window): void {
@@ -1143,11 +1159,41 @@ class ZotSeekPlugin {
       return;
     }
     if (!this.ensureOperationalModel(true)) return;
-    if (getActiveModel().runtime === 'cloud') {
+    const Z = getZotero();
+    const strategyStatus = await this.getActiveChunkStrategyStatus();
+    if (!strategyStatus) return;
+    const cloudRuntime = getActiveModel().runtime === 'cloud';
+    const strategyMigration = strategyStatus.state === 'rebuild-required';
+
+    if (cloudRuntime && !strategyMigration) {
       await this.performCloudRebuild(true);
       return;
     }
-    const Z = getZotero();
+
+    if (cloudRuntime) {
+      const target = await this.getLibraryIndexTarget();
+      if (!Z || !target) return;
+      const exclusionPolicy = readIndexExclusionPolicy(Z);
+      const eligibleCount = target.items.filter(item =>
+        item?.isRegularItem?.() && !isItemExcludedFromIndex(item, exclusionPolicy)
+      ).length;
+      const confirmed = openIndexConfirmationPrompt(
+        Services?.prompt,
+        Z.getMainWindow(),
+        getString('indexing-cloudRebuildConfirmTitle'),
+        getString('indexing-cloudStrategyRebuildConfirmMsg', {
+          count: eligibleCount,
+          scope: target.scopeLabel,
+        }),
+        getString('indexing-rebuildConfirmButton'),
+        getString('indexing-confirmCancel'),
+      );
+      if (!confirmed) return;
+
+      // The Cloud-specific prompt already confirms scope, deletion, and cost.
+      await this.performRebuild(false, true);
+      return;
+    }
 
     const confirmed = openIndexConfirmationPrompt(
       Services?.prompt,
@@ -1164,14 +1210,44 @@ class ZotSeekPlugin {
   }
 
   /** Clear and rebuild, optionally retaining the existing scope confirmation. */
-  private async performRebuild(confirmIndexScope: boolean): Promise<void> {
+  private async performRebuild(
+    confirmIndexScope: boolean,
+    cloudStrategyMigrationConfirmed = false,
+  ): Promise<void> {
     if (!this.ensureOperationalModel(true)) return;
-    if (getActiveModel().runtime === 'cloud') {
+    const strategyStatus = await this.getActiveChunkStrategyStatus();
+    if (!strategyStatus) return;
+    const cloudRuntime = getActiveModel().runtime === 'cloud';
+    if (cloudRuntime &&
+        strategyStatus.state !== 'rebuild-required') {
       await this.performCloudRebuild(confirmIndexScope);
       return;
     }
+    if (cloudRuntime && !cloudStrategyMigrationConfirmed) {
+      // A Cloud strategy migration deletes old coverage and may incur fees.
+      // Only rebuildIndex() can provide the dedicated confirmation.
+      this.logger.warn('Cloud chunk-strategy migration requires explicit cost confirmation');
+      this.showDismissibleNotice(getString('indexing-chunkStrategyRebuildRequired'));
+      return;
+    }
 
-    // First clear the index
+    const Z = getZotero();
+    const target = await this.getLibraryIndexTarget();
+    if (!Z || !target) return;
+    if (confirmIndexScope) {
+      const confirmed = openIndexConfirmationPrompt(
+        Services?.prompt,
+        Z.getMainWindow(),
+        getString('indexing-updateTitle'),
+        getString('indexing-updateConfirmMsg', { scope: target.scopeLabel }),
+        getString('indexing-updateConfirmButton'),
+        getString('indexing-confirmCancel'),
+      );
+      if (!confirmed) return;
+    }
+
+    // A strategy migration cannot mix old/new chunks. Clear only the active
+    // model so unrelated model partitions remain intact.
     const progressWindow = new StableProgressWindow({
       title: getString('indexing-rebuildingTitle'),
     });
@@ -1181,17 +1257,22 @@ class ZotSeekPlugin {
       await this.ensureStoreReady();
 
       if (this.vectorStore) {
-        await this.vectorStore.clear();
+        const activeModelId = strategyStatus.modelId;
+        if (getActiveModelId() !== activeModelId) {
+          throw new Error('Embedding model changed before rebuild; no index was deleted.');
+        }
+        await this.vectorStore.deleteModelEmbeddings(activeModelId);
         await this.ensureChunkStrategyWritable(false);
         itemTreeIndexColumn.invalidate();
-        this.logger.info('Index cleared for rebuild');
+        this.logger.info(`Model index cleared for rebuild: ${activeModelId}`);
         progressWindow.addLine(getString('indexing-existingCleared'), 'chrome://zotero/skin/tick.png');
 
         // Close the progress window briefly
         progressWindow.close();
 
-        // Now trigger re-indexing of the entire library
-        await this.onIndexLibrary(!confirmIndexScope);
+        // The exact scope was resolved and, when requested, confirmed before
+        // deletion. indexItems records it for pause/failure recovery.
+        await this.indexItems(target.items, target.bulkScope);
       }
     } catch (error: any) {
       this.logger.error(`Failed to rebuild index: ${error}`);

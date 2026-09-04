@@ -5,9 +5,9 @@
  * the final token and character ceilings.
  * 
  * Three indexing modes:
- * - abstract: Title + Abstract only (fast, good for most uses)
- * - notes: Title + Abstract + Tags + Child Notes (no PDF processing)
- * - full: Title + Abstract + Tags + Child Notes + PDF sections
+ * - abstract: Shared Metadata Summary only (fast, good for most uses)
+ * - notes: Shared Metadata Summary + Child Notes (no PDF processing)
+ * - full: Shared Metadata Summary + Child Notes + PDF sections
  */
 
 import type { NoteSection, StructuredNoteText } from './note-text';
@@ -83,7 +83,7 @@ export interface ChunkResult {
 export type IndexingMode = 'abstract' | 'notes' | 'full';
 
 /** Bump whenever persisted chunk text, boundaries, or structure semantics change. */
-export const CHUNK_STRATEGY_VERSION = 8;
+export const CHUNK_STRATEGY_VERSION = 9;
 
 /** Full-mode source provenance contract; scoped through freshness fingerprints. */
 export const PDF_SOURCE_IDENTITY_VERSION = 1;
@@ -615,12 +615,10 @@ export function chunkDocumentEx(
   // Purpose: "What is this paper about?"
   // Note: Summary chunks don't have fulltext location (they come from metadata)
   // ═══════════════════════════════════════════════════════════════════════
-  // Abstract-only indexing keeps the upstream noise guard for placeholder
-  // abstracts. Notes/full mode may pass a short but useful metadata body such
-  // as a tag, so those modes only require non-empty text.
-  const summaryBodyIsUseful = mode === 'abstract'
-    ? !!abstract && abstract.trim().length >= 50
-    : !!abstract && abstract.trim().length > 0;
+  // TextExtractor already applies the shared abstract noise guard and tag
+  // policy. The chunker must accept any non-empty canonical Metadata body so
+  // a short but useful tag is not discarded in Abstract mode.
+  const summaryBodyIsUseful = !!abstract && abstract.trim().length > 0;
   const summaryText = summaryBodyIsUseful
     ? `${titlePrefix}\n\n${abstract}`
     : titlePrefix;
@@ -1638,9 +1636,12 @@ export function chunkDocumentWithPagesEx(
   let wasTruncated = false;
   const totalPagesAvailable = pages ? pages.length : 0;
 
-  // Prepare title prefix (shorter for paragraph chunks)
+  // Prepare the shorter title prefix used only by PDF body chunks.
   const titlePrefix = title.length > 200
     ? title.substring(0, 200) + '...'
+    : title;
+  const summaryTitlePrefix = title.length > 300
+    ? title.substring(0, 300) + '...'
     : title;
 
   const bodyTitlePrefix = pdfTitlePrefixEnabled ? titlePrefix : '';
@@ -1653,8 +1654,8 @@ export function chunkDocumentWithPagesEx(
   // CHUNK 1: Summary (always included)
   // ═══════════════════════════════════════════════════════════════════════
   const summaryText = abstract && abstract.trim().length > 0
-    ? `${titlePrefix}\n\n${abstract}`
-    : titlePrefix;
+    ? `${summaryTitlePrefix}\n\n${abstract}`
+    : summaryTitlePrefix;
 
   chunks.push({
     index: 0,

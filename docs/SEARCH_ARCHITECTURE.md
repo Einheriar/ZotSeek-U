@@ -625,7 +625,8 @@ The production strategy is:
 The parent title breadcrumb is added after body chunking, so it does not consume
 the recommended Note body budget or change boundaries. The model hard limit
 still governs the final inference input. The brief's filtered “基本信息” section
-is not restored. The selected strategy is versioned; strategy 8 introduces R1.
+is not restored. The selected strategy is versioned; strategy 8 introduces R1,
+while strategy 9 unifies the Metadata Summary across all indexing modes.
 If an existing model partition contains old chunks without the current strategy
 marker, ZotSeek keeps it searchable but pauses writes and background
 reconciliation until the user explicitly rebuilds the index.
@@ -659,6 +660,13 @@ truncated even when no PDF is available to consume the unused total capacity.
 
 ### Incremental Indexing-Mode Transitions
 
+Every strategy-9 mode starts from the same Metadata Summary: the title, the
+abstract only when `trim().length >= 50`, and trimmed/sorted Zotero tags except
+those whose trimmed text starts with `#`. Authors, years, journals and DOI are
+not appended to this embedding input. Workflow tags remain available in Zotero,
+`get_item`, exclusion rules and keyword paths; the filter only defines semantic
+Summary content.
+
 Changing `abstract`, `notes` or `full` does not automatically discard every
 vector. For each indexed item, ZotSeek first requires a modern per-item config
 fingerprint proving that mode is the only changed setting. The index contract,
@@ -674,13 +682,23 @@ truncation state and timestamps come from the new target extraction. Unmatched
 target chunks alone are sent to the embedding pipeline. If every target chunk
 matches, a shrinking transition does not load the model.
 
-This retains the historical mode semantics, including Abstract's short-summary
-guard and exclusion of tags. In particular, Full to Abstract never reads PDF or
-Child Notes and needs at most the target Summary embeddings. Notes to Full adds
-PDF while reusing compatible Metadata and the first 30 Notes. Full to Notes can
-reuse its stored Notes but must embed any target Notes beyond Full's 30-Note cap.
+Under strategy 9, every mode-only transition reuses the exact shared Summary.
+Abstract to Notes adds Notes; Abstract to Full adds up to 30 Note chunks and PDF;
+Notes to Abstract removes Notes; Full to Abstract removes Notes and PDF. Notes
+to Full reuses compatible Metadata and the first 30 target Notes while adding
+PDF. Full to Notes removes PDF, reuses existing Notes and embeds only target
+Notes beyond Full's 30-Note cap. The target mode is always extracted first, so
+the shared per-paper chunk cap and source priority still determine the final set.
 The per-item replacement remains atomic, so a missing new embedding cannot
 destroy a complete old item index.
+
+Strategy 8 cannot be updated incrementally into strategy 9. Its old index stays
+searchable until the user confirms a rebuild. Rebuild deletes only the active
+model's embeddings and fingerprints, initializes that empty partition as
+strategy 9, and leaves other model partitions intact. An interrupted rebuild
+contains only strategy-9 chunks and retains a pending scope for recovery. Cloud
+strategy migration additionally warns that old Cloud coverage is removed first
+and that re-embedding may incur provider charges.
 
 References v2, page-furniture v1 and same-page packing are internal production
 switches that default on and can be disabled independently for deterministic
@@ -795,7 +813,7 @@ Unlike generic chunkers that split at arbitrary character boundaries, our chunke
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │                                                              │  │
 │  │  CHUNK 1: summary                                            │  │
-│  │  ├── Title + Abstract                                        │  │
+│  │  ├── Title + eligible Abstract + non-# Tags                   │  │
 │  │  └── "What is this paper about?"                             │  │
 │  │                                                              │  │
 │  │  CHUNK 2-3: methods                                          │  │
@@ -822,7 +840,7 @@ Unlike generic chunkers that split at arbitrary character boundaries, our chunke
 
 | Chunk Type | Contains | Source Display | Purpose |
 |------------|----------|----------------|---------|
-| `summary` | Title + Abstract | "Abstract" | What is this paper about? |
+| `summary` | Title + abstract (50+ chars) + non-`#` tags | "Abstract" | What is this paper about? |
 | `methods` | Intro, Background, Methods | "Methods" | How did they do it? |
 | `findings` | Results, Discussion, Conclusions | "Results" | What did they find? |
 | `content` | Fallback (no sections detected) | "Content" | Generic content |

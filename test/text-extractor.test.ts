@@ -4,6 +4,10 @@ import { describe, test } from 'node:test';
 import { installZoteroStub } from './helpers/zotero-stub';
 import { TextExtractor } from '../src/core/text-extractor';
 import type { ChunkOptions } from '../src/utils/chunker';
+import {
+  buildIndexedMetadataSnapshot,
+  INDEXED_ABSTRACT_MIN_CHARS,
+} from '../src/utils/indexed-metadata';
 
 const chunkOptions: ChunkOptions = {
   maxTokens: 420,
@@ -45,6 +49,92 @@ function bodyPage(pageNumber: number, header: string) {
 }
 
 describe('TextExtractor PDF main-text production chain', () => {
+  test('builds the same non-hash Metadata Summary in all three modes', async () => {
+    const zotero = installZoteroStub();
+    zotero.Items.getAsync = async () => [];
+    const longTitle = 'Shared Metadata title '.repeat(20);
+    const longAbstract = 'A sufficiently long abstract shared by all three indexing modes.';
+    const item = {
+      ...paper(),
+      getField: (field: string) => {
+        if (field === 'title') return longTitle;
+        if (field === 'abstractNote') return longAbstract;
+        return '';
+      },
+      getTags: () => [
+        { tag: '#review' },
+        { tag: ' EEG ' },
+        { tag: 'Hyperscanning' },
+        { tag: '   ' },
+      ],
+    } as any;
+    const extractor = new TextExtractor();
+    (extractor as any).zoteroAPI = {
+      getSelectedMainPdfText: async () => ({
+        selection: { decision: 'abstain', abstainReason: 'no-main' },
+        selectedText: null,
+      }),
+    };
+
+    const results = await Promise.all((['abstract', 'notes', 'full'] as const)
+      .map(mode => extractor.extractChunksFromItem(item, mode, chunkOptions)));
+    const summaries = results.map(result => result!.chunks
+      .filter(chunk => chunk.type === 'summary')
+      .map(chunk => chunk.text));
+
+    assert.deepEqual(summaries[0], summaries[1]);
+    assert.deepEqual(summaries[1], summaries[2]);
+    assert.match(summaries[0].join('\n'), /Tags: EEG, Hyperscanning/);
+    assert.doesNotMatch(summaries[0].join('\n'), /#review/);
+  });
+
+  test('drops only short abstracts while retaining short ordinary Tags', () => {
+    const item = {
+      getField: (field: string) => field === 'title' ? 'Paper' : 'Too short.',
+      getTags: () => [{ tag: '#todo' }, { tag: ' EEG ' }],
+    };
+    const snapshot = buildIndexedMetadataSnapshot(item);
+    assert.equal(snapshot.abstract, null);
+    assert.equal(snapshot.body, 'Tags: EEG');
+    assert.deepEqual(snapshot.tags, ['EEG']);
+
+    const boundary = buildIndexedMetadataSnapshot({
+      getField: (field: string) => field === 'title'
+        ? 'Paper'
+        : 'x'.repeat(INDEXED_ABSTRACT_MIN_CHARS),
+      getTags: () => [],
+    });
+    assert.equal(boundary.abstract, 'x'.repeat(INDEXED_ABSTRACT_MIN_CHARS));
+  });
+
+  test('lets a multi-chunk Metadata Summary consume the shared paper quota first', async () => {
+    const zotero = installZoteroStub();
+    zotero.Items.getAsync = async () => [{
+      key: 'NOTE0001',
+      deleted: false,
+      isNote: () => true,
+      getNote: () => '<p>This child note should lose its slot to the Metadata Summary.</p>',
+    }];
+    const item = {
+      ...paper(),
+      getField: (field: string) => field === 'title' ? 'Quota paper' : '',
+      getTags: () => [{ tag: `topic-${'x'.repeat(240)}` }],
+      getNotes: () => [2],
+    } as any;
+    const extractor = new TextExtractor();
+    const result = await extractor.extractChunksFromItem(item, 'notes', {
+      ...chunkOptions,
+      maxTokens: 30,
+      maxChunks: 2,
+      tokenCounter: text => Math.ceil(text.length / 4),
+    });
+
+    assert.ok(result);
+    assert.equal(result.chunks.length, 2);
+    assert.ok(result.chunks.every(chunk => chunk.type === 'summary'));
+    assert.equal(result.wasTruncated, true);
+  });
+
   test('selects the conservative counter only for Cloud runtime', async () => {
     installZoteroStub({ 'zotseek.embeddingModel': 'cloud-slot' });
     const cloudOptions = await (new TextExtractor() as any).resolveChunkOptions(undefined);

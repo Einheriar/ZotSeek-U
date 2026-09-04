@@ -2,9 +2,9 @@
  * Text Extractor - Extract text from Zotero items for embedding
  * 
  * Supports three indexing modes:
- * - abstract: Title + Abstract only (fast, good for most uses)
- * - notes: Title + Abstract + Tags + Child Notes (no PDF processing)
- * - full: Title + Abstract + Tags + Child Notes + PDF sections
+ * - abstract: Shared Metadata Summary only (fast, good for most uses)
+ * - notes: Shared Metadata Summary + Child Notes (no PDF processing)
+ * - full: Shared Metadata Summary + Child Notes + PDF sections
  */
 
 import { Logger } from '../utils/logger';
@@ -30,6 +30,7 @@ import {
   assertPdfReferencePipelineModes,
   preprocessPdfPages,
 } from '../utils/pdf-preprocessor';
+import { buildIndexedMetadataSnapshot } from '../utils/indexed-metadata';
 
 declare const Zotero: any;
 
@@ -150,8 +151,12 @@ export class TextExtractor {
     options?: ChunkOptions
   ): Promise<ExtractedChunks | null> {
     try {
-      const title = item.getField('title') || 'Untitled';
+      const metadata = buildIndexedMetadataSnapshot(item, 'Untitled');
+      const title = metadata.title;
+      // Keep the original Zotero abstract in descriptive storage. Only the
+      // shared Metadata body applies the 50-character embedding noise guard.
       const abstract = item.getField('abstractNote') || null;
+      const metadataBody = metadata.body;
 
       // Get indexing mode from preference if not specified
       const indexingMode = mode ?? getIndexingMode(Zotero);
@@ -163,7 +168,6 @@ export class TextExtractor {
       let pagesTotal = 0;
 
       if (indexingMode === 'full') {
-        const metadataBody = this.buildMetadataBody(item, abstract);
         let pdfResult;
 
         // The selector consumes each sibling PDFWorker-direct result once and
@@ -244,9 +248,8 @@ export class TextExtractor {
         pagesIndexed = combinedResult.pagesIndexed;
         pagesTotal = combinedResult.pagesTotal;
       } else if (indexingMode === 'notes') {
-        // Metadata + Notes mode never touches PDF APIs. Tags are useful
-        // semantic metadata, while authors/years remain in hybrid keyword search.
-        const metadataBody = this.buildMetadataBody(item, abstract);
+        // Metadata + Notes mode never touches PDF APIs. Authors and years
+        // remain in hybrid keyword search rather than the shared Summary.
 
         const summaryResult = chunkDocumentEx(
           title,
@@ -274,8 +277,9 @@ export class TextExtractor {
         pagesIndexed = 0;
         pagesTotal = 0;
       } else {
-        // Abstract mode - no fulltext needed
-        const result = chunkDocumentEx(title, abstract, null, indexingMode, chunkOptions);
+        // Abstract mode uses the same Metadata Summary and never touches Notes
+        // or PDF APIs.
+        const result = chunkDocumentEx(title, metadataBody, null, indexingMode, chunkOptions);
         chunks = result.chunks;
         wasTruncated = result.wasTruncated;
         pagesIndexed = result.pagesIndexed;
@@ -325,20 +329,6 @@ export class TextExtractor {
       }
       return null;
     }
-  }
-
-  /** Build the searchable metadata body shared by Notes and Full modes. */
-  private buildMetadataBody(item: ZoteroItem, abstract: string | null): string | null {
-    const tags = (item.getTags?.() || [])
-      .map(tag => tag?.tag?.trim())
-      .filter((tag): tag is string => !!tag)
-      .sort((a, b) => a.localeCompare(b));
-    const metadataBody = [
-      abstract,
-      tags.length > 0 ? `Tags: ${tags.join(', ')}` : null,
-    ].filter((part): part is string => !!part && part.trim().length > 0).join('\n\n');
-
-    return metadataBody || null;
   }
 
   /**

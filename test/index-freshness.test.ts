@@ -217,17 +217,21 @@ describe('shared freshness fingerprints', () => {
     }), 'current');
   });
 
-  test('detects title, abstract, and tag metadata changes deterministically', () => {
+  test('fingerprints only the shared indexable Metadata deterministically', () => {
     const item = (title: string, abstract: string, tags: string[]) => ({
       getField: (field: string) => field === 'title' ? title : abstract,
       getTags: () => tags.map(tag => ({ tag })),
     });
-    const original = metadataFingerprint(item('Title', 'Abstract', ['b', 'a']));
-    assert.equal(original, metadataFingerprint(item('Title', 'Abstract', ['a', 'b'])));
+    const abstract = 'A sufficiently long abstract that belongs in every indexing mode.';
+    const original = metadataFingerprint(item('Title', abstract, ['b', '#review', 'a']));
+    assert.equal(
+      original,
+      metadataFingerprint(item('Title', abstract, ['a', 'b', '#different-workflow-state'])),
+    );
     for (const changed of [
-      metadataFingerprint(item('New title', 'Abstract', ['a', 'b'])),
-      metadataFingerprint(item('Title', 'New abstract', ['a', 'b'])),
-      metadataFingerprint(item('Title', 'Abstract', ['a', 'c'])),
+      metadataFingerprint(item('New title', abstract, ['a', 'b'])),
+      metadataFingerprint(item('Title', `${abstract} Changed.`, ['a', 'b'])),
+      metadataFingerprint(item('Title', abstract, ['a', 'c'])),
     ]) {
       assert.notEqual(original, changed);
       assert.equal(assessQuickFreshness({
@@ -239,6 +243,15 @@ describe('shared freshness fingerprints', () => {
         storedFingerprint: stored({ metadataFingerprint: original }),
       }), 'metadata-changed');
     }
+
+    assert.equal(
+      metadataFingerprint(item('Title', 'Short abstract one.', ['a', '#one'])),
+      metadataFingerprint(item('Title', 'Different short text.', ['a', '#two'])),
+    );
+    assert.notEqual(
+      metadataFingerprint(item('Title', 'x'.repeat(49), ['a'])),
+      metadataFingerprint(item('Title', 'x'.repeat(50), ['a'])),
+    );
   });
 
   test('baselines a state-only Note change when normalized content is equal', () => {

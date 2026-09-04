@@ -15,6 +15,16 @@ All notable changes to ZotSeek - Semantic Search for Zotero will be documented i
   chunk strategy 6.
 
 ### Changed
+- All three indexing modes now share one Metadata Summary contract: title,
+  abstracts of at least 50 characters, and trimmed/sorted Zotero tags except
+  tags starting with `#`. Abstract mode therefore gains ordinary tag recall;
+  Notes and Full use the same Summary before adding their source-specific
+  Child Note and PDF chunks. Workflow tags remain available to exclusion rules,
+  raw item reads, and Zotero keyword search.
+- Chunk strategy 9 records the shared Metadata contract. Rebuilding clears only
+  the active model's embeddings and freshness fingerprints, preserving other
+  model partitions. A Cloud strategy migration explicitly warns that old Cloud
+  coverage is removed first and re-embedding may incur provider charges.
 - Server-backed embedding models now use an advanced JSON template in the
   Zotero profile. The template explicitly declares connection details,
   dimensions, input limits, recommended chunk size, and task prefixes; the

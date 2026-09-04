@@ -96,10 +96,11 @@ describe('chunkDocument, abstract mode', () => {
     assert.match(chunks[0].text, /An abstract long enough/);
   });
 
-  test('falls back to the title alone when the abstract is too short to be useful', () => {
-    // Under 50 characters the abstract is treated as noise and dropped.
+  test('accepts any non-empty body after Metadata normalization', () => {
+    // The shared Metadata builder owns the 50-character abstract guard. This
+    // lower-level chunker must retain short canonical bodies such as Tags.
     const chunks = chunkDocument('A Title', 'Too short.', null, 'abstract');
-    assert.equal(chunks[0].text, 'A Title');
+    assert.equal(chunks[0].text, 'A Title\n\nToo short.');
   });
 
   test('truncates a very long title instead of emitting it whole', () => {
@@ -262,8 +263,8 @@ describe('preference reading', () => {
 });
 
 describe('persisted chunk strategy state', () => {
-  test('uses strategy 8 for R1 Note embedding breadcrumbs', () => {
-    assert.equal(CHUNK_STRATEGY_VERSION, 8);
+  test('uses strategy 9 for the shared Metadata Summary contract', () => {
+    assert.equal(CHUNK_STRATEGY_VERSION, 9);
   });
 
   test('initializes an empty partition even when it has no marker', () => {
