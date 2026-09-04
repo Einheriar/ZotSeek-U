@@ -15,6 +15,8 @@ describe('indexing-mode product search policy', () => {
     assert.equal(resolveProductHybridPolicy('full'), 'full-identity-notes2-pdf');
     assert.equal(resolveProductHybridPolicy('full', 'semantic'), 'explicit-semantic');
     assert.equal(resolveProductHybridPolicy('notes', 'keyword'), 'explicit-keyword');
+    assert.equal(normalizeProductIndexingMode(undefined), 'notes');
+    assert.equal(resolveProductHybridPolicy(undefined), 'notes-identity-h1');
     assert.equal(normalizeProductIndexingMode('translated-label'), 'abstract');
   });
 

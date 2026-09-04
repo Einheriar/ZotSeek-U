@@ -1,5 +1,19 @@
 export type CanonicalIndexingMode = 'abstract' | 'notes' | 'full';
 
+export const DEFAULT_INDEXING_MODE: CanonicalIndexingMode = 'notes';
+
+/**
+ * Resolve the current preference without allowing an unknown machine value to
+ * silently widen the indexed content. Missing values use the product default;
+ * malformed non-empty values fail closed to abstract-only indexing.
+ */
+export function normalizeCurrentIndexingMode(value: unknown): CanonicalIndexingMode {
+  if (value === undefined || value === null || value === '') {
+    return DEFAULT_INDEXING_MODE;
+  }
+  return isCanonicalIndexingMode(value) ? value : 'abstract';
+}
+
 /** Normalize persisted machine values, including pre-fork legacy values. */
 export function normalizeStoredIndexingMode(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
@@ -21,7 +35,7 @@ export function normalizeStoredIndexingMode(value: unknown): string | undefined 
   }
 }
 
-export function isCanonicalIndexingMode(value: string): value is CanonicalIndexingMode {
+export function isCanonicalIndexingMode(value: unknown): value is CanonicalIndexingMode {
   return value === 'abstract' || value === 'notes' || value === 'full';
 }
 

@@ -33,6 +33,7 @@ import {
   normalizeProductIndexingMode,
   resolveProductHybridPolicy,
 } from './search-policy';
+import { DEFAULT_INDEXING_MODE } from '../utils/indexing-mode';
 
 declare const Zotero: any;
 
@@ -295,7 +296,7 @@ export class HybridSearchEngine {
     try {
       return normalizeProductIndexingMode(Zotero.Prefs.get('zotseek.indexingMode', true));
     } catch {
-      return 'abstract';
+      return DEFAULT_INDEXING_MODE;
     }
   }
 

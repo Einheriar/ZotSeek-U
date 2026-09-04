@@ -1,4 +1,5 @@
 import type { TextSourceType } from './vector-store-sqlite';
+import { normalizeCurrentIndexingMode } from '../utils/indexing-mode';
 
 export type ProductIndexingMode = 'abstract' | 'notes' | 'full';
 export type ProductHybridPolicy = 'explicit-semantic' | 'explicit-keyword' |
@@ -13,7 +14,7 @@ export const PDF_SOURCES: TextSourceType[] = [
 export const FULL_NOTES_HEAD_SLOTS = 2;
 
 export function normalizeProductIndexingMode(value: unknown): ProductIndexingMode {
-  return value === 'notes' || value === 'full' ? value : 'abstract';
+  return normalizeCurrentIndexingMode(value);
 }
 
 export function resolveProductHybridPolicy(

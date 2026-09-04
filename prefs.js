@@ -11,7 +11,7 @@ pref("extensions.zotero.zotseek.autoIndex", false);
 pref("extensions.zotero.zotseek.indexScope", "user");
 
 // Indexing mode: "abstract", "notes" (metadata + child notes), or "full" (notes + PDF sections)
-pref("extensions.zotero.zotseek.indexingMode", "abstract");
+pref("extensions.zotero.zotseek.indexingMode", "notes");
 
 // Chunking options. When maxTokens has no user value, ZotSeek resolves the
 // active model's recommendation and clamps explicit overrides to its hard limit.

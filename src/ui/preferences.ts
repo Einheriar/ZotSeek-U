@@ -9,6 +9,7 @@ import {
   CanonicalIndexingMode,
   hasIndexingModeMismatch,
   isCanonicalIndexingMode,
+  normalizeCurrentIndexingMode,
 } from '../utils/indexing-mode';
 import { autoIndexManager } from '../core/auto-index-manager';
 import {
@@ -658,7 +659,7 @@ class PreferencesManager {
 
     // Read current preference values
     const prefs = {
-      indexingMode: Z.Prefs.get('zotseek.indexingMode', true) || 'abstract',
+      indexingMode: normalizeCurrentIndexingMode(Z.Prefs.get('zotseek.indexingMode', true)),
       defaultSearchMode,
       maxChunksPerPaper: Z.Prefs.get('zotseek.maxChunksPerPaper', true) ?? 100,
       topK: Z.Prefs.get('zotseek.topK', true) ?? 20,
@@ -720,7 +721,9 @@ class PreferencesManager {
     const Z = getZotero();
     if (!Z) return;
 
-    const currentMode = Z.Prefs.get('zotseek.indexingMode', true) || 'abstract';
+    const currentMode = normalizeCurrentIndexingMode(
+      Z.Prefs.get('zotseek.indexingMode', true),
+    );
 
     const cards = [
       {
@@ -1262,10 +1265,7 @@ class PreferencesManager {
 
       if (stats.indexedMode) {
         const rawCurrentMode = Z.Prefs.get('zotseek.indexingMode', true);
-        const currentMode: CanonicalIndexingMode =
-          rawCurrentMode === 'notes' || rawCurrentMode === 'full'
-            ? rawCurrentMode
-            : 'abstract';
+        const currentMode: CanonicalIndexingMode = normalizeCurrentIndexingMode(rawCurrentMode);
         const modeLabels: Record<CanonicalIndexingMode, string> = {
           'abstract': getString('pref-abstractOnly'),
           'notes': getString('pref-notes'),

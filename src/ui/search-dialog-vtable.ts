@@ -17,6 +17,11 @@ import { Logger } from '../utils/logger';
 import { getZotero } from '../utils/zotero-helper';
 import { getString } from '../utils/locale';
 import { isValidSearchQuery } from '../utils/query-validation';
+import {
+  DEFAULT_INDEXING_MODE,
+  isCanonicalIndexingMode,
+  normalizeCurrentIndexingMode,
+} from '../utils/indexing-mode';
 import { showServerModelConfigurationPromptIfNeeded } from './server-model-prompt';
 import {
   addItemsToCollection as sharedAddItemsToCollection,
@@ -56,7 +61,7 @@ export class ZotSeekDialogVTable {
   private granularity: 'section' | 'location' = 'section';
 
   // Indexing mode affects whether the page/paragraph granularity toggle is shown.
-  private indexingMode: 'abstract' | 'notes' | 'full' = 'abstract';
+  private indexingMode: 'abstract' | 'notes' | 'full' = DEFAULT_INDEXING_MODE;
 
   // Item ID to exclude from results (e.g., the paper being read when using "Find Related Papers")
   private excludeItemId: number | undefined = undefined;
@@ -104,11 +109,14 @@ export class ZotSeekDialogVTable {
         // Load indexing mode to determine if granularity toggle should be shown
         const indexMode = Z.Prefs.get('zotseek.indexingMode', true);
         this.logger.info(`Loaded indexingMode preference: "${indexMode}" (type: ${typeof indexMode})`);
-        if (indexMode === 'abstract' || indexMode === 'notes' || indexMode === 'full') {
-          this.indexingMode = indexMode;
-        } else {
+        this.indexingMode = normalizeCurrentIndexingMode(indexMode);
+        if (
+          indexMode !== undefined &&
+          indexMode !== null &&
+          indexMode !== '' &&
+          !isCanonicalIndexingMode(indexMode)
+        ) {
           // Unknown machine values fail closed to the narrowest content mode.
-          this.indexingMode = 'abstract';
           this.logger.warn(`Unknown indexingMode "${indexMode}", defaulting to "abstract"`);
         }
       }

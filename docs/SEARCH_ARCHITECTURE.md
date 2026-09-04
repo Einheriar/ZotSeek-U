@@ -1332,7 +1332,7 @@ Maximum: 1.00 (100%)
 
 | Preference | Default | Description |
 |------------|---------|-------------|
-| `indexingMode` | `"full"` | `"abstract"`, `"notes"`, or `"full"` |
+| `indexingMode` | `"notes"` | `"abstract"`, `"notes"`, or `"full"` |
 | `maxTokens` | model-aware | Recommended body tokens, clamped by the model policy |
 | `maxChunksPerPaper` | `100` | Max chunks per paper |
 

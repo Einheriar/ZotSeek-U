@@ -254,20 +254,10 @@ describe('preference reading', () => {
     assert.equal(getIndexingMode(fakeZotero({ 'zotseek.indexingMode': 'full' })), 'full');
   });
 
-  test('falls back to abstract mode, NOT to the documented default of full', () => {
-    // Pinning current behaviour, which contradicts the shipped default.
-    // getIndexingMode is `mode === 'full' ? 'full' : 'abstract'`, written for
-    // v1.0.0 when abstract was the default. The default became 'full' later
-    // (src/index.ts) but this fallback was never updated, so a missing or
-    // corrupt pref silently downgrades indexing to abstract-only, which is a
-    // large and invisible search-quality loss.
-    //
-    // In practice the startup defaults loop sets the pref, so this only bites
-    // when it is cleared or has an unexpected value. Change this test when the
-    // fallback is fixed.
-    assert.equal(getIndexingMode(fakeZotero({})), 'abstract');
+  test('uses notes for a missing preference and fails closed for unknown values', () => {
+    assert.equal(getIndexingMode(fakeZotero({})), 'notes');
     assert.equal(getIndexingMode(fakeZotero({ 'zotseek.indexingMode': 'nonsense' })), 'abstract');
-    assert.equal(getIndexingMode(undefined), 'abstract');
+    assert.equal(getIndexingMode(undefined), 'notes');
   });
 });
 

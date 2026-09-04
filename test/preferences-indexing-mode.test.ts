@@ -2,11 +2,23 @@ import './helpers/zotero-stub';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
+  DEFAULT_INDEXING_MODE,
   hasIndexingModeMismatch,
+  normalizeCurrentIndexingMode,
   normalizeStoredIndexingMode,
 } from '../src/utils/indexing-mode';
 
 describe('preferences indexing-mode mismatch', () => {
+  test('uses notes only for a missing current preference', () => {
+    assert.equal(DEFAULT_INDEXING_MODE, 'notes');
+    assert.equal(normalizeCurrentIndexingMode(undefined), 'notes');
+    assert.equal(normalizeCurrentIndexingMode(null), 'notes');
+    assert.equal(normalizeCurrentIndexingMode(''), 'notes');
+    assert.equal(normalizeCurrentIndexingMode('abstract'), 'abstract');
+    assert.equal(normalizeCurrentIndexingMode('full'), 'full');
+    assert.equal(normalizeCurrentIndexingMode('future-mode'), 'abstract');
+  });
+
   test('normalizes persisted and legacy machine values', () => {
     assert.equal(normalizeStoredIndexingMode('abstract'), 'abstract');
     assert.equal(normalizeStoredIndexingMode('notes'), 'notes');

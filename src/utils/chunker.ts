@@ -11,6 +11,7 @@
  */
 
 import type { NoteSection, StructuredNoteText } from './note-text';
+import { normalizeCurrentIndexingMode } from './indexing-mode';
 
 export type ChunkType = 'summary' | 'methods' | 'findings' | 'content' | 'note';
 
@@ -1473,8 +1474,7 @@ export function getChunkOptionsFromPrefs(Zotero: any): ChunkOptions {
  */
 export function getIndexingMode(Zotero: any): IndexingMode {
   const mode = Zotero?.Prefs?.get('zotseek.indexingMode', true);
-  if (mode === 'full' || mode === 'notes') return mode;
-  return 'abstract';
+  return normalizeCurrentIndexingMode(mode);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

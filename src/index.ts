@@ -25,6 +25,7 @@ import {
 } from './utils/chunker';
 import { getZotero } from './utils/zotero-helper';
 import {
+  DEFAULT_INDEXING_MODE,
   isCanonicalIndexingMode,
   normalizeStoredIndexingMode,
 } from './utils/indexing-mode';
@@ -321,7 +322,7 @@ class ZotSeekPlugin {
       'zotseek.minSimilarityPercent': 70,  // 70% = 0.7
       'zotseek.topK': 20,
       'zotseek.autoIndex': false,
-      'zotseek.indexingMode': 'full',  // 'abstract', 'notes', or 'full'
+      'zotseek.indexingMode': DEFAULT_INDEXING_MODE,  // 'abstract', 'notes', or 'full'
       'zotseek.maxChunksPerPaper': 100,
       'zotseek.excludeBooks': true,        // Exclude books from search/indexing by default
       'zotseek.excludeTag': 'zotseek-exclude', // Tag name to exclude items from indexing
