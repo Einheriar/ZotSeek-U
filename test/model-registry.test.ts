@@ -61,6 +61,12 @@ describe('the curated model set', () => {
     assert.ok(getModel(DEFAULT_MODEL_ID), `${DEFAULT_MODEL_ID} is not a known model`);
   });
 
+  test('Nomic downloads from its public repository without changing its local layout path', () => {
+    const nomic = getModel('nomic-embed-text-v1.5')!;
+    assert.equal(nomic.hfPath, 'Xenova/nomic-embed-text-v1.5');
+    assert.equal(nomic.downloadHfPath, 'nomic-ai/nomic-embed-text-v1.5');
+  });
+
   test('no bundled model id collides with the server namespace', () => {
     // model_id partitions the chunks table; a collision would mix vector spaces.
     for (const m of MODELS) {

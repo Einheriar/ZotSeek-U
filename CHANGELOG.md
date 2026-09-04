@@ -34,6 +34,9 @@ All notable changes to ZotSeek - Semantic Search for Zotero will be documented i
   model input policy fingerprint.
 
 ### Fixed
+- Nomic v1.5 downloads and manual-download guidance now use the public
+  `nomic-ai/nomic-embed-text-v1.5` repository while preserving the existing
+  `Xenova/nomic-embed-text-v1.5` local layout and model identity.
 - **Indexing-mode mismatch warnings now compare stable machine values.** The
   database and business logic retain `abstract`, `notes`, or `full`, while the
   current locale supplies display labels at the settings boundary. This avoids

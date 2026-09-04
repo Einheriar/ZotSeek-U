@@ -30,8 +30,13 @@ export function getLocalModelMenuState(
   return onDisk ? 'installed' : 'download';
 }
 
-export function getModelDownloadPageUrl(model: Pick<ModelConfig, 'hfPath'>): string {
-  const path = model.hfPath.split('/').map(encodeURIComponent).join('/');
+export function getModelDownloadPageUrl(
+  model: Pick<ModelConfig, 'hfPath' | 'downloadHfPath'>,
+): string {
+  const path = (model.downloadHfPath || model.hfPath)
+    .split('/')
+    .map(encodeURIComponent)
+    .join('/');
   return `https://huggingface.co/${path}/tree/main`;
 }
 

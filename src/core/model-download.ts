@@ -235,7 +235,10 @@ export async function ensureModelDownloaded(
   let done = 0;
 
   for (const rel of model.files) {
-    const url = `${HF_BASE}/${model.hfPath}/resolve/main/${rel}`;
+    // Nomic's established local Transformers.js layout uses the Xenova
+    // namespace, but its public downloadable artifacts live in nomic-ai.
+    const downloadHfPath = model.downloadHfPath || model.hfPath;
+    const url = `${HF_BASE}/${downloadHfPath}/resolve/main/${rel}`;
     const dest = PathUtils.join(dir, ...rel.split('/'));
     const tmp = `${dest}.part`;
 

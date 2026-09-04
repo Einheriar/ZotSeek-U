@@ -27,6 +27,16 @@ describe('local model menu state', () => {
       'https://huggingface.co/Xenova/bge-m3/tree/main',
     );
   });
+
+  test('uses a separate public download repository when configured', () => {
+    assert.equal(
+      getModelDownloadPageUrl({
+        hfPath: 'Xenova/nomic-embed-text-v1.5',
+        downloadHfPath: 'nomic-ai/nomic-embed-text-v1.5',
+      }),
+      'https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/tree/main',
+    );
+  });
 });
 
 describe('model download choice prompt', () => {

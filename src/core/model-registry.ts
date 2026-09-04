@@ -13,7 +13,8 @@ export interface ModelConfig {
   id: string;              // stored as model_id in the DB (short id)
   label: string;           // UI label
   runtime: 'onnx' | 'server' | 'cloud';
-  hfPath: string;          // Hugging Face repo path, e.g. 'Xenova/bge-m3'
+  hfPath: string;          // Transformers.js/local layout path, e.g. 'Xenova/bge-m3'
+  downloadHfPath?: string; // Hugging Face download repo when it differs from hfPath
   dimensions: number;
   pooling: 'mean' | 'cls';
   normalize: boolean;
@@ -51,6 +52,7 @@ export const MODELS: ModelConfig[] = [
     label: 'Nomic v1.5 (English, balanced)',
     runtime: 'onnx',
     hfPath: 'Xenova/nomic-embed-text-v1.5',
+    downloadHfPath: 'nomic-ai/nomic-embed-text-v1.5',
     dimensions: 768, pooling: 'mean', normalize: true,
     queryPrefix: 'search_query: ', docPrefix: 'search_document: ',
     onnxFile: 'onnx/model_quantized.onnx',
