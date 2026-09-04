@@ -31,6 +31,13 @@ export interface BriefGenerationClientDependencies {
   abortController?: any;
 }
 
+export interface BriefGenerationRequestOptions {
+  /** Retry count after the initial attempt. The default of 3 means 4 attempts total. */
+  retries?: number;
+  /** Per-request ceiling for reasoning plus visible output. */
+  maxCompletionTokens?: number;
+}
+
 export interface BriefGenerationUsage {
   promptTokens?: number;
   completionTokens?: number;
@@ -145,6 +152,8 @@ export class BriefGenerationClient {
   private readonly activeControllers = new Set<any>();
   private readonly cancelledControllers = new Set<any>();
   private readonly timedOutControllers = new Set<any>();
+  private cancellationGeneration = 0;
+  private readonly retryWaiters = new Set<() => void>();
 
   constructor(
     private readonly config: BriefGenerationClientConfig,
@@ -165,7 +174,10 @@ export class BriefGenerationClient {
     this.abortController = abortControllerCtor(dependencies.abortController);
   }
 
-  private async request(messages: BriefGenerationMessage[]): Promise<BriefGenerationResult> {
+  private async request(
+    messages: BriefGenerationMessage[],
+    maxCompletionTokens: number,
+  ): Promise<BriefGenerationResult> {
     const endpoint = `${this.baseUrl}/chat/completions`;
     const Controller = this.abortController;
     const controller = Controller ? new Controller() : null;
@@ -185,7 +197,7 @@ export class BriefGenerationClient {
         body: JSON.stringify({
           model: this.config.modelName,
           messages,
-          max_tokens: this.config.maxOutputTokens,
+          max_completion_tokens: maxCompletionTokens,
           enable_thinking: this.config.thinkingEnabled,
           stream: false,
         }),
@@ -215,7 +227,7 @@ export class BriefGenerationClient {
         );
       }
       const maxResponseChars = this.config.maxResponseChars
-        ?? Math.max(16_384, this.config.maxOutputTokens * 8);
+        ?? Math.max(16_384, maxCompletionTokens * 8);
       if (body.length > maxResponseChars) {
         throw new BriefGenerationRequestError(
           'Cloud provider returned an unexpectedly large brief generation response.',
@@ -303,10 +315,15 @@ export class BriefGenerationClient {
   private async requestWithRetry(
     messages: BriefGenerationMessage[],
     retries: number,
+    maxCompletionTokens: number,
+    cancellationGeneration: number,
   ): Promise<BriefGenerationResult> {
     for (let attempt = 0; attempt <= retries; attempt++) {
+      if (cancellationGeneration !== this.cancellationGeneration) {
+        throw new BriefGenerationCancelledError();
+      }
       try {
-        return await this.request(messages);
+        return await this.request(messages, maxCompletionTokens);
       } catch (error: any) {
         if (error instanceof BriefGenerationCancelledError ||
             error instanceof BriefGenerationTruncatedError) throw error;
@@ -319,15 +336,35 @@ export class BriefGenerationClient {
           && error.retryAfterMs !== undefined
           ? error.retryAfterMs
           : RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)];
-        await this.sleepImpl(delay);
+        await this.waitForRetryDelay(delay, cancellationGeneration);
       }
     }
     throw new BriefGenerationUnavailableError();
   }
 
+  private async waitForRetryDelay(
+    delayMs: number,
+    cancellationGeneration: number,
+  ): Promise<void> {
+    if (cancellationGeneration !== this.cancellationGeneration) {
+      throw new BriefGenerationCancelledError();
+    }
+    let wakeForCancellation: () => void = () => {};
+    const cancelled = new Promise<void>(resolve => { wakeForCancellation = resolve; });
+    this.retryWaiters.add(wakeForCancellation);
+    try {
+      await Promise.race([this.sleepImpl(delayMs), cancelled]);
+    } finally {
+      this.retryWaiters.delete(wakeForCancellation);
+    }
+    if (cancellationGeneration !== this.cancellationGeneration) {
+      throw new BriefGenerationCancelledError();
+    }
+  }
+
   async generate(
     messages: BriefGenerationMessage[],
-    retries = 3,
+    options: BriefGenerationRequestOptions | number = {},
   ): Promise<BriefGenerationResult> {
     if (!Array.isArray(messages) || messages.length === 0 ||
         messages.some(message => !message ||
@@ -335,10 +372,28 @@ export class BriefGenerationClient {
           typeof message.content !== 'string' || !message.content.trim())) {
       throw new Error('Brief generation messages must contain a role and non-empty text.');
     }
+    // Keep numeric arguments compatible with the D0 client while callers move
+    // to named options that make "retries" and total attempts unambiguous.
+    const normalized = typeof options === 'number' ? { retries: options } : options;
+    const retries = normalized.retries ?? 3;
+    const maxCompletionTokens = normalized.maxCompletionTokens
+      ?? this.config.maxOutputTokens;
     if (!Number.isSafeInteger(retries) || retries < 0) {
       throw new Error('Brief generation retry count must be a non-negative integer.');
     }
-    return await this.requestWithRetry(messages, retries);
+    if (!Number.isSafeInteger(maxCompletionTokens) || maxCompletionTokens <= 0 ||
+        maxCompletionTokens > this.config.maxOutputTokens) {
+      throw new Error(
+        'Brief generation request maximum completion tokens must be a positive integer ' +
+        'within the configured output budget.',
+      );
+    }
+    return await this.requestWithRetry(
+      messages,
+      retries,
+      maxCompletionTokens,
+      this.cancellationGeneration,
+    );
   }
 
   async probe(): Promise<BriefGenerationResult> {
@@ -348,11 +403,14 @@ export class BriefGenerationClient {
         content: 'You are a connectivity probe. Think briefly, then follow the user request exactly.',
       },
       { role: 'user', content: 'Reply with exactly ZOTSEEK_BRIEF_THINKING_OK' },
-    ], 0);
+    ], { retries: 0, maxCompletionTokens: Math.min(1024, this.config.maxOutputTokens) });
   }
 
   /** Abort in-flight HTTP calls. A later generate() call starts normally. */
   cancelPending(): void {
+    this.cancellationGeneration++;
+    for (const wake of this.retryWaiters) wake();
+    this.retryWaiters.clear();
     for (const controller of this.activeControllers) {
       this.cancelledControllers.add(controller);
       try { controller.abort(); } catch { /* request completion handles cleanup */ }

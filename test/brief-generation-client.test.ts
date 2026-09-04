@@ -62,11 +62,34 @@ describe('brief generation client', () => {
     assert.equal(request.url, `${config.baseUrl}/chat/completions`);
     assert.equal(body.model, config.modelName);
     assert.equal(body.enable_thinking, true);
-    assert.equal(body.max_tokens, config.maxOutputTokens);
+    assert.equal(body.max_completion_tokens, config.maxOutputTokens);
+    assert.equal(body.max_tokens, undefined);
     assert.equal(body.stream, false);
     assert.equal(result.content, 'generated brief');
     assert.equal(result.reasoningContent, 'private reasoning');
     assert.equal(result.usage?.reasoningTokens, 12);
+  });
+
+  test('supports a bounded request-level completion budget', async () => {
+    let request: any;
+    const client = new BriefGenerationClient(config, {
+      fetch: async (_url, init) => {
+        request = init;
+        return response(200, success());
+      },
+    });
+    await client.generate(
+      [{ role: 'user', content: 'classify' }],
+      { retries: 0, maxCompletionTokens: 512 },
+    );
+    assert.equal(JSON.parse(request.body).max_completion_tokens, 512);
+    await assert.rejects(
+      () => client.generate(
+        [{ role: 'user', content: 'too large' }],
+        { maxCompletionTokens: config.maxOutputTokens + 1 },
+      ),
+      /within the configured output budget/,
+    );
   });
 
   test('rejects a length finish reason instead of accepting a partial brief', async () => {
@@ -116,6 +139,51 @@ describe('brief generation client', () => {
     assert.equal(result.content, 'generated brief');
     assert.deepEqual(delays, [2000]);
     assert.equal(parseBriefRetryAfter('999'), 60000);
+  });
+
+  test('defaults to three retries after the initial attempt', async () => {
+    let attempts = 0;
+    const delays: number[] = [];
+    const client = new BriefGenerationClient(config, {
+      sleep: async ms => { delays.push(ms); },
+      fetch: async () => {
+        attempts++;
+        return response(503, { error: { code: 'unavailable' } });
+      },
+    });
+    await assert.rejects(
+      () => client.generate([{ role: 'user', content: 'evidence' }]),
+      BriefGenerationUnavailableError,
+    );
+    assert.equal(attempts, 4);
+    assert.deepEqual(delays, [1000, 3000, 8000]);
+  });
+
+  test('cancels retry backoff before another billable request is sent', async () => {
+    let attempts = 0;
+    let backoffStarted!: () => void;
+    const enteredBackoff = new Promise<void>(resolve => { backoffStarted = resolve; });
+    const client = new BriefGenerationClient(config, {
+      sleep: async () => {
+        backoffStarted();
+        return await new Promise<void>(() => {});
+      },
+      fetch: async () => {
+        attempts++;
+        return attempts === 1
+          ? response(503, { error: { code: 'unavailable' } })
+          : response(200, success());
+      },
+    });
+    const pending = client.generate([{ role: 'user', content: 'evidence' }]);
+    await enteredBackoff;
+    client.cancelPending();
+    await assert.rejects(pending, BriefGenerationCancelledError);
+    assert.equal(attempts, 1);
+    assert.equal(
+      (await client.generate([{ role: 'user', content: 'later request' }], 0)).content,
+      'generated brief',
+    );
   });
 
   test('cancels an in-flight request and allows a later request', async () => {

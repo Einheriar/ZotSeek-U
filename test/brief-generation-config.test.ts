@@ -5,6 +5,7 @@ import { installZoteroStub } from './helpers/zotero-stub';
 import {
   BRIEF_MAX_INPUT_TOKENS,
   BRIEF_MAX_OUTPUT_TOKENS,
+  BRIEF_CLASSIFIER_MAX_COMPLETION_TOKENS,
   BRIEF_MODEL_NAME,
   getBriefGenerationSettings,
   hasCurrentBriefConsent,
@@ -53,6 +54,13 @@ describe('brief generation configuration', () => {
     };
     assert.throws(() => setBriefGenerationSettings({ ...valid, modelName: ' ' }), /must not be empty/);
     assert.throws(() => setBriefGenerationSettings({ ...valid, maxInputTokens: 0 }), /positive integer/);
+    assert.throws(
+      () => setBriefGenerationSettings({
+        ...valid,
+        maxOutputTokens: BRIEF_CLASSIFIER_MAX_COMPLETION_TOKENS - 1,
+      }),
+      /must be at least/,
+    );
     assert.throws(() => setBriefGenerationSettings({ ...valid, maxOutputTokens: 100000 }), /smaller/);
   });
 

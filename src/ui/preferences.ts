@@ -60,6 +60,7 @@ import {
 } from '../core/cloud-model-config';
 import { CloudEmbeddingClient } from '../core/cloud-embedding-client';
 import { cloudCredentialStore, maskCloudApiKey } from '../core/cloud-credential-store';
+import { setBriefConnectionVerified } from '../core/brief-generation-config';
 import { confirmCloudDisclosure, promptForCloudApiKey } from './cloud-model-prompt';
 
 declare const Services: any;
@@ -182,6 +183,7 @@ async function promptAndSaveCloudApiKey(doc: any): Promise<boolean> {
   try {
     await cloudCredentialStore.set(apiKey);
     setCloudConnectionVerified(false);
+    setBriefConnectionVerified(false);
     await renderCloudSettings(doc);
     return true;
   } catch (error: any) {

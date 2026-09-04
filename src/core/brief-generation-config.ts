@@ -5,6 +5,7 @@ declare const Zotero: any;
 export const BRIEF_MODEL_NAME = 'deepseek-v4-flash-0731';
 export const BRIEF_MAX_INPUT_TOKENS = 1_000_000;
 export const BRIEF_MAX_OUTPUT_TOKENS = 16_384;
+export const BRIEF_CLASSIFIER_MAX_COMPLETION_TOKENS = 4096;
 export const BRIEF_THINKING_ENABLED = true;
 export const BRIEF_PIPELINE_VERSION = 1;
 export const BRIEF_CONSENT_VERSION = 1;
@@ -75,6 +76,11 @@ export function validateBriefGenerationSettings(
   if (!Number.isSafeInteger(input.maxOutputTokens) || input.maxOutputTokens <= 0) {
     throw new BriefGenerationConfigError(
       'Brief generation maximum output tokens must be a positive integer.',
+    );
+  }
+  if (input.maxOutputTokens < BRIEF_CLASSIFIER_MAX_COMPLETION_TOKENS) {
+    throw new BriefGenerationConfigError(
+      `Brief generation maximum output tokens must be at least ${BRIEF_CLASSIFIER_MAX_COMPLETION_TOKENS}.`,
     );
   }
   if (input.maxOutputTokens >= input.maxInputTokens) {

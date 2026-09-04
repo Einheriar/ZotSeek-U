@@ -59,6 +59,17 @@ function copyStaticFiles() {
     }
   }
 
+  // Prompt source files stay editable at the repository root, while the
+  // packaged copies live under chrome://zotseek/content/prompts/ at runtime.
+  const promptsSrc = path.resolve(__dirname, '../prompts');
+  const promptsDest = path.resolve(buildDir, 'content/prompts');
+  if (!fs.existsSync(promptsSrc)) {
+    throw new Error(`Bundled prompt files missing: ${promptsSrc}`);
+  }
+  fs.rmSync(promptsDest, { recursive: true, force: true });
+  fs.cpSync(promptsSrc, promptsDest, { recursive: true });
+  console.log('Copied prompts/');
+
   // Copy manifest.json
   const manifestSrc = path.resolve(__dirname, '../manifest.json');
   const manifestDest = path.resolve(buildDir, 'manifest.json');
