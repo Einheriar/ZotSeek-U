@@ -338,6 +338,12 @@ class ZotSeekPlugin {
       'zotseek.cloud.connectionVerified': false,
       'zotseek.cloud.autoIndex': false,
       'zotseek.cloud.consentVersion': 0,
+      'zotseek.cloud.brief.modelName': 'deepseek-v4-flash-0731',
+      'zotseek.cloud.brief.maxInputTokens': 1000000,
+      'zotseek.cloud.brief.maxOutputTokens': 16384,
+      'zotseek.cloud.brief.thinkingEnabled': true,
+      'zotseek.cloud.brief.connectionVerified': false,
+      'zotseek.cloud.brief.consentVersion': 0,
       'zotseek.autoCompact': true, // Reclaim space in zotseek.sqlite during Zotero's idle maintenance (Zotero 10+)
       // Experimental: run embeddings on the GPU via WebGPU (Zotero 11+ only).
       // Off by default: Firefox 153's WebGPU is 6-11x SLOWER than the WASM

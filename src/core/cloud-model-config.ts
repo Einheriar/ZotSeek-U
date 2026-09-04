@@ -1,5 +1,7 @@
 /** Stable, non-secret configuration for the fixed Cloud embedding slot. */
 
+import { BRIEF_CONNECTION_VERIFIED_PREF } from './brief-generation-config';
+
 declare const Zotero: any;
 
 export const CLOUD_PROVIDER_ID = 'alibaba-bailian';
@@ -199,6 +201,9 @@ export function setCloudModelSettings(input: CloudModelSettingsInput): CloudMode
   Zotero.Prefs.set(BATCH_SIZE_PREF, settings.batchSize, true);
   if (JSON.stringify(previous) !== JSON.stringify(settings)) {
     Zotero.Prefs.set(VERIFIED_PREF, false, true);
+    if (previous.provider !== settings.provider || previous.baseUrl !== settings.baseUrl) {
+      Zotero.Prefs.set(BRIEF_CONNECTION_VERIFIED_PREF, false, true);
+    }
   }
   return settings;
 }
