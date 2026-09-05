@@ -60,10 +60,11 @@ pref("extensions.zotero.zotseek.cloud.provider", "alibaba-bailian");
 pref("extensions.zotero.zotseek.cloud.modelName", "qwen3.7-text-embedding");
 pref("extensions.zotero.zotseek.cloud.dimensions", 1024);
 pref("extensions.zotero.zotseek.cloud.maxInputTokens", 128000);
-pref("extensions.zotero.zotseek.cloud.queryPrefix", "");
-pref("extensions.zotero.zotseek.cloud.docPrefix", "");
-pref("extensions.zotero.zotseek.cloud.batchSize", 20);
+pref("extensions.zotero.zotseek.cloud.queryRole", "query");
+pref("extensions.zotero.zotseek.cloud.documentRole", "document");
+pref("extensions.zotero.zotseek.cloud.batchSize", 10);
 pref("extensions.zotero.zotseek.cloud.connectionVerified", false);
+pref("extensions.zotero.zotseek.cloud.connectionVerifiedContract", 0);
 pref("extensions.zotero.zotseek.cloud.autoIndex", false);
 pref("extensions.zotero.zotseek.cloud.consentVersion", 0);
 

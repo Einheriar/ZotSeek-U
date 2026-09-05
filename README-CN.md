@@ -61,6 +61,12 @@ ZotSeek-U 是 [ZotSeek](https://github.com/introfini/ZotSeek) 的一个独立 fo
 
 ![选择 Embedding 模型](docs/images/readme-model-picker.png)
 
+#### 模型选择参考：性能 benchmark
+
+下图可作为选择 Embedding 模型时的性能参考。测试在 **AMD Ryzen 7 4800H（R7 4800H）**、16 个逻辑线程的电脑上进行，使用 CPU/WASM Q8 推理，并对同一组 10 篇英文 PDF（83 页、494,816 个抽取字符）完整运行一次。图中比较索引计算耗时和进程 Working Set；实际结果会受硬件、文库规模、PDF 长度和后台负载影响，不能视为所有设备的保证值。本 benchmark 未测试检索质量。
+
+![Embedding 模型 benchmark](docs/images/model-benchmark-patchwork_en.png)
+
 大多数用户可以直接使用内置模型。选择新的模型后，需要为该模型建立自己的索引；不同模型的 Embeddings 会分开保存，不会混合比较。
 
 #### 可选：Cloud Embedding

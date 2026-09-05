@@ -171,16 +171,19 @@ describe('the active model pref', () => {
       modelName: 'another-model',
       dimensions: 768,
       maxInputTokens: 1000,
-      queryPrefix: 'query: ',
-      docPrefix: 'doc: ',
+      queryRole: 'search_query',
+      documentRole: 'search_document',
       batchSize: 8,
     });
     setActiveModelId(CLOUD_SLOT_SELECTION_ID);
     const model = getActiveModel();
     assert.equal(getActiveModelSelectionId(), CLOUD_SLOT_SELECTION_ID);
     assert.equal(model.id, 'cloud:alibaba-bailian:another-model:768');
-    assert.equal(model.queryPrefix, 'query: ');
-    assert.equal(model.docPrefix, 'doc: ');
+    assert.equal(model.queryPrefix, '');
+    assert.equal(model.docPrefix, '');
+    assert.equal(model.cloudQueryRole, 'search_query');
+    assert.equal(model.cloudDocumentRole, 'search_document');
+    assert.equal(model.cloudApiAdapterVersion, 'dashscope-native-text-type-v1');
     assert.equal(model.cloudBatchSize, 8);
     assert.equal(model.serverRecommendedChunkTokens, 850);
   });

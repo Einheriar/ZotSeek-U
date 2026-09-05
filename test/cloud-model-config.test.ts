@@ -8,6 +8,9 @@ import {
   calculateCloudRecommendedChunkTokens,
   cloudModelId,
   CLOUD_DEFAULT_BASE_URL,
+  CLOUD_BATCH_SIZE,
+  CLOUD_DEFAULT_DOCUMENT_ROLE,
+  CLOUD_DEFAULT_QUERY_ROLE,
   CLOUD_MAX_INPUT_TOKENS,
   CLOUD_MODEL_ID,
   getCloudModelSettings,
@@ -28,6 +31,10 @@ describe('cloud model configuration', () => {
     const settings = getCloudModelSettings();
     assert.equal(settings.baseUrl, CLOUD_DEFAULT_BASE_URL);
     assert.equal(settings.maxInputTokens, CLOUD_MAX_INPUT_TOKENS);
+    assert.equal(settings.batchSize, CLOUD_BATCH_SIZE);
+    assert.equal(CLOUD_BATCH_SIZE, 10);
+    assert.equal(settings.queryRole, CLOUD_DEFAULT_QUERY_ROLE);
+    assert.equal(settings.documentRole, CLOUD_DEFAULT_DOCUMENT_ROLE);
     assert.equal(settings.recommendedChunkTokens, 3000);
     assert.equal(CLOUD_MODEL_ID, 'cloud:alibaba-bailian:qwen3.7-text-embedding:1024');
     assert.equal(cloudModelId(settings), CLOUD_MODEL_ID);
@@ -80,12 +87,14 @@ describe('cloud model configuration', () => {
       modelName: 'custom-embedding-model',
       dimensions: 768,
       maxInputTokens: 2048,
-      queryPrefix: 'query: ',
-      docPrefix: 'passage: ',
+      queryRole: ' search_query ',
+      documentRole: ' search_document ',
       batchSize: 10,
     });
     assert.deepEqual(getCloudModelSettings(), settings);
     assert.equal(settings.recommendedChunkTokens, 1740);
+    assert.equal(settings.queryRole, 'search_query');
+    assert.equal(settings.documentRole, 'search_document');
     assert.equal(cloudModelId(settings), 'cloud:alibaba-bailian:custom-embedding-model:768');
     assert.equal(isCloudConnectionVerified(), false);
   });
@@ -97,14 +106,35 @@ describe('cloud model configuration', () => {
       modelName: 'model',
       dimensions: 1024,
       maxInputTokens: 8192,
-      queryPrefix: '',
-      docPrefix: '',
+      queryRole: '',
+      documentRole: '',
       batchSize: 20,
     };
     assert.throws(() => setCloudModelSettings({ ...base, modelName: ' ' }), /must not be empty/);
     assert.throws(() => setCloudModelSettings({ ...base, dimensions: 0 }), /positive integer/);
     assert.throws(() => setCloudModelSettings({ ...base, batchSize: 257 }), /1 to 256/);
     assert.throws(() => setCloudModelSettings({ ...base, provider: 'custom' }), /Unsupported/);
+    assert.throws(
+      () => setCloudModelSettings({ ...base, queryRole: 'bad\nrole' }),
+      /unsupported characters/,
+    );
+  });
+
+  test('blank API roles are persisted as an explicit request to omit the parameter', () => {
+    const settings = setCloudModelSettings({
+      provider: 'alibaba-bailian',
+      baseUrl: CLOUD_DEFAULT_BASE_URL,
+      modelName: 'model',
+      dimensions: 1024,
+      maxInputTokens: 8192,
+      queryRole: '',
+      documentRole: '',
+      batchSize: 10,
+    });
+    assert.equal(settings.queryRole, '');
+    assert.equal(settings.documentRole, '');
+    assert.equal(getCloudModelSettings().queryRole, '');
+    assert.equal(getCloudModelSettings().documentRole, '');
   });
 
   test('requires both global and Cloud-specific startup authorization', () => {

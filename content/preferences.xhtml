@@ -310,16 +310,21 @@
           </html:div>
         </html:div>
         <html:div style="display:grid;grid-template-columns:150px minmax(0,1fr);gap:7px 10px;align-items:start;min-width:0;">
-          <html:span data-l10n-id="zotseek-pref-cloudQueryPrefix" style="padding-top:5px;">Query Prefix</html:span>
-          <html:input id="zotseek-cloud-query-prefix" type="text" style="width:100%;box-sizing:border-box;min-width:0;"/>
+          <html:span data-l10n-id="zotseek-pref-cloudQueryApiRole" style="padding-top:5px;">Query API Role</html:span>
+          <html:input id="zotseek-cloud-query-role" type="text" style="width:100%;box-sizing:border-box;min-width:0;"/>
         </html:div>
         <html:div style="display:grid;grid-template-columns:180px minmax(0,1fr);gap:7px 10px;align-items:start;min-width:0;">
-          <html:span data-l10n-id="zotseek-pref-cloudDocumentPrefix" style="padding-top:5px;">Document Prefix</html:span>
-          <html:input id="zotseek-cloud-doc-prefix" type="text" style="width:100%;box-sizing:border-box;min-width:0;"/>
+          <html:span data-l10n-id="zotseek-pref-cloudDocumentApiRole" style="padding-top:5px;">Document API Role</html:span>
+          <html:input id="zotseek-cloud-document-role" type="text" style="width:100%;box-sizing:border-box;min-width:0;"/>
         </html:div>
         <html:div style="display:grid;grid-template-columns:150px minmax(0,1fr);gap:7px 10px;align-items:start;min-width:0;">
           <html:span data-l10n-id="zotseek-pref-cloudBatchSize" style="padding-top:5px;">Maximum inputs per batch</html:span>
           <html:input id="zotseek-cloud-batch-size" type="number" min="1" max="256" step="1" style="width:100%;box-sizing:border-box;min-width:0;"/>
+        </html:div>
+        <html:div style="display:flex;align-items:start;min-width:0;">
+          <button id="zotseek-cloud-reset-api-roles"
+                  data-l10n-id="zotseek-pref-cloudResetApiRoles"
+                  label="Restore Bailian role defaults"/>
         </html:div>
       </html:div>
     </html:details>

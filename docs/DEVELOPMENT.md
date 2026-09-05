@@ -596,22 +596,35 @@ Template edits require a Zotero restart.
 Cloud is separate from Local Server. Its stable selection value is `cloud-slot`
 while the vector-space ID is derived from provider, model name and dimensions.
 The Alibaba Cloud Model Studio preset starts with `qwen3.7-text-embedding`,
-1024 dimensions, a 128000-token input limit and batches of 20, using direct
-OpenAI-compatible `POST /embeddings` requests; no OpenAI SDK is required.
+1024 dimensions, a 128000-token input limit and batches of 10, using direct
+provider-native DashScope text-embedding requests; no DashScope or OpenAI SDK
+is required. The persisted Base URL remains the provider's OpenAI-compatible
+URL because literature-brief generation shares it; the Bailian embedding
+adapter derives the same host's native `/api/v1` endpoint internally.
 Provider, Base URL, model name and dimensions are shown in the collapsed Cloud
-Settings section. Maximum input tokens, query/document prefixes and batch size
-are in its nested advanced section. Recommended chunk tokens are derived as
+Settings section. Maximum input tokens, query/document API roles and batch size
+are in its nested advanced section, with an action to restore Bailian's default
+`query`/`document` roles. Recommended chunk tokens are derived as
 `min(3000, floor(maxInputTokens * 0.85))` and cannot be edited independently.
+
+Cloud API roles and manual text prefixes are separate contracts. The Bailian
+adapter fixes the parameter name as `text_type`; a non-empty configured value
+is sent in `parameters`, while an empty value omits it. Cloud text is never
+modified with an E5-style prefix. Requests explicitly set `output_type=dense`
+and leave `instruct` unset. Query and document inputs are sent in homogeneous
+batches. Changing either role clears Cloud connection verification; the
+document role and adapter version are also included in the index policy
+fingerprint.
 
 `cloud-model-config.ts` owns non-secret preferences and validates HTTPS Bailian
 endpoints. `cloud-credential-store.ts` uses Zotero Login Manager plus the public
 `Zotero.OSKeyStore` wrapper when available. Zotero 9.0 instead loads its bundled
 Mozilla `OSKeyStore.sys.mjs` and stores only version-tagged ciphertext; never add
 an API-key preference or plaintext fallback. `cloud-embedding-client.ts`
-enforces the configured batch size, response ordering, finite vectors of the
+enforces the configured batch size, native `text_index` response ordering, finite vectors of the
 configured dimensions, redirect rejection, timeout/cancellation and bounded
-429/5xx retries. The explicit connection probe sends one full configured batch
-of fixed probe strings, validating both the provider batch limit and dimensions.
+429/5xx retries. The explicit connection probe sends one fixed document string
+and one fixed query string in separate calls, validating both role paths and dimensions.
 Do not log request bodies, query text, authorization headers, provider error
 messages or credentials.
 

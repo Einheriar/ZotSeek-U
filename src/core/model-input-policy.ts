@@ -1,5 +1,6 @@
 /** Pure model-aware chunk policy resolution. */
 
+import { CLOUD_OUTPUT_TYPE } from './cloud-model-config';
 import { requiresInstructionPrefix, type ModelConfig } from './model-registry';
 import { getModelInputConfig } from './model-input-config';
 
@@ -19,6 +20,8 @@ export interface ResolvedModelInputPolicy {
   usesUserOverride: boolean;
   runtime: ModelConfig['runtime'];
   docPrefix: string;
+  cloudDocumentRole?: string;
+  cloudApiAdapterVersion?: string;
 }
 
 export function normalizeRequestedChunkTokens(value: unknown): number | undefined {
@@ -50,6 +53,8 @@ export function resolveModelInputPolicy(
     usesUserOverride: requestedOverride !== undefined,
     runtime: model.runtime,
     docPrefix: model.docPrefix,
+    cloudDocumentRole: model.cloudDocumentRole,
+    cloudApiAdapterVersion: model.cloudApiAdapterVersion,
   };
 }
 
@@ -75,10 +80,21 @@ export function modelInputPolicyFingerprint(policy: ResolvedModelInputPolicy): s
   if (policy.runtime === 'cloud' && !policy.supportsExactTokenCount) {
     parts.push(`estimate=cloud-multilingual-v${CLOUD_TOKEN_ESTIMATOR_VERSION}`);
   }
-  // Remote document prefixes are user-editable input-contract data. A change
-  // alters every stored document vector and must be visible to reconciliation.
-  if (policy.runtime === 'server' || policy.runtime === 'cloud') {
+  // Local-server prefixes are textual model-contract data. A change alters
+  // every stored document vector and must be visible to reconciliation.
+  if (policy.runtime === 'server') {
     parts.push(`doc=${encodeURIComponent(policy.docPrefix)}`);
+  }
+  // Cloud task roles are provider API parameters, not text prefixes. Persist
+  // the complete document-side contract so adapter/role changes cannot mix
+  // incompatible vectors in one model partition.
+  if (policy.runtime === 'cloud') {
+    parts.push(
+      `adapter=${encodeURIComponent(policy.cloudApiAdapterVersion || 'unknown')}`,
+      `role=${encodeURIComponent(policy.cloudDocumentRole || '')}`,
+      `output=${CLOUD_OUTPUT_TYPE}`,
+      'instruct=none',
+    );
   }
   return parts.join(':');
 }

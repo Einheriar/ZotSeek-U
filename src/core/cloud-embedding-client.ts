@@ -1,6 +1,11 @@
-/** OpenAI-compatible Cloud embedding client with Bailian-specific safety limits. */
+/** Cloud embedding client using the provider-specific Bailian native adapter. */
 
 import { assertCloudBaseUrl } from './cloud-model-config';
+import {
+  buildDashScopeEmbeddingBody,
+  dashScopeEmbeddingEndpoint,
+  type CloudEmbeddingKind,
+} from './dashscope-embedding-adapter';
 
 declare const Zotero: any;
 
@@ -13,7 +18,21 @@ export interface CloudEmbeddingClientConfig {
   dimensions: number;
   apiKey: string;
   batchSize: number;
+  queryRole: string;
+  documentRole: string;
   requestTimeoutMs?: number;
+}
+
+export interface CloudEmbeddingBatchReceipt {
+  requestId?: string;
+  totalTokens?: number;
+  inputCount: number;
+  kind: CloudEmbeddingKind;
+}
+
+export interface CloudEmbeddingRequestOptions {
+  kind?: CloudEmbeddingKind;
+  retries?: number;
 }
 
 export interface CloudEmbeddingClientDependencies {
@@ -21,6 +40,7 @@ export interface CloudEmbeddingClientDependencies {
   sleep?: SleepLike;
   now?: () => number;
   abortController?: any;
+  onBatchSuccess?: (receipt: CloudEmbeddingBatchReceipt) => void;
 }
 
 export class CloudEmbeddingRequestError extends Error {
@@ -94,6 +114,7 @@ export class CloudEmbeddingClient {
   private readonly sleepImpl: SleepLike;
   private readonly now: () => number;
   private readonly abortController: any;
+  private readonly onBatchSuccess?: (receipt: CloudEmbeddingBatchReceipt) => void;
   private readonly activeControllers = new Set<any>();
   private readonly cancelledControllers = new Set<any>();
 
@@ -113,10 +134,11 @@ export class CloudEmbeddingClient {
     this.sleepImpl = dependencies.sleep || (ms => new Promise(resolve => setTimeout(resolve, ms)));
     this.now = dependencies.now || Date.now;
     this.abortController = abortControllerCtor(dependencies.abortController);
+    this.onBatchSuccess = dependencies.onBatchSuccess;
   }
 
-  private async requestBatch(texts: string[]): Promise<number[][]> {
-    const endpoint = `${this.baseUrl}/embeddings`;
+  private async requestBatch(texts: string[], kind: CloudEmbeddingKind): Promise<number[][]> {
+    const endpoint = dashScopeEmbeddingEndpoint(this.baseUrl);
     const Controller = this.abortController;
     const controller = Controller ? new Controller() : null;
     if (controller) this.activeControllers.add(controller);
@@ -129,11 +151,12 @@ export class CloudEmbeddingClient {
           'Authorization': `Bearer ${this.config.apiKey}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          model: this.config.modelName,
-          input: texts,
+        body: JSON.stringify(buildDashScopeEmbeddingBody({
+          modelName: this.config.modelName,
           dimensions: this.config.dimensions,
-        }),
+          queryRole: this.config.queryRole,
+          documentRole: this.config.documentRole,
+        }, texts, kind)),
         redirect: 'error',
         ...(controller ? { signal: controller.signal } : {}),
       });
@@ -160,7 +183,7 @@ export class CloudEmbeddingClient {
         );
       }
       const json = await response.json();
-      const data = Array.isArray(json?.data) ? json.data : [];
+      const data = Array.isArray(json?.output?.embeddings) ? json.output.embeddings : [];
       if (data.length !== texts.length) {
         throw new CloudEmbeddingRequestError(
           `Cloud provider returned ${data.length} embeddings for ${texts.length} inputs.`,
@@ -170,13 +193,14 @@ export class CloudEmbeddingClient {
       const ordered: number[][] = new Array(texts.length);
       const seen = new Set<number>();
       for (const entry of data) {
-        const index = entry?.index;
+        const index = entry?.text_index;
         const embedding = entry?.embedding;
         if (!Number.isInteger(index) || index < 0 || index >= texts.length || seen.has(index)) {
-          throw new CloudEmbeddingRequestError('Cloud provider returned invalid embedding indexes.', 502);
+          throw new CloudEmbeddingRequestError('Cloud provider returned invalid embedding text indexes.', 502);
         }
         if (!Array.isArray(embedding) || embedding.length !== this.config.dimensions ||
-            embedding.some((value: unknown) => typeof value !== 'number' || !Number.isFinite(value))) {
+            embedding.some((value: unknown) => typeof value !== 'number' || !Number.isFinite(value)) ||
+            embedding.every((value: number) => value === 0)) {
           throw new CloudEmbeddingRequestError(
             `Cloud provider returned an invalid embedding; expected ${this.config.dimensions} finite values.`,
             502,
@@ -185,6 +209,15 @@ export class CloudEmbeddingClient {
         seen.add(index);
         ordered[index] = embedding;
       }
+      const totalTokens = json?.usage?.total_tokens;
+      this.onBatchSuccess?.({
+        requestId: typeof json?.request_id === 'string' ? json.request_id : undefined,
+        totalTokens: typeof totalTokens === 'number' && Number.isFinite(totalTokens)
+          ? totalTokens
+          : undefined,
+        inputCount: texts.length,
+        kind,
+      });
       return ordered;
     } catch (error) {
       if (controller && this.cancelledControllers.has(controller)) {
@@ -200,11 +233,15 @@ export class CloudEmbeddingClient {
     }
   }
 
-  private async requestBatchWithRetry(texts: string[], retries: number): Promise<number[][]> {
+  private async requestBatchWithRetry(
+    texts: string[],
+    kind: CloudEmbeddingKind,
+    retries: number,
+  ): Promise<number[][]> {
     let lastError: unknown;
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        return await this.requestBatch(texts);
+        return await this.requestBatch(texts, kind);
       } catch (error: any) {
         if (error instanceof CloudEmbeddingCancelledError) throw error;
         const status = error instanceof CloudEmbeddingRequestError ? error.status : undefined;
@@ -229,28 +266,38 @@ export class CloudEmbeddingClient {
     throw new CloudEmbeddingUnavailableError();
   }
 
-  async embed(texts: string[], retries = 3): Promise<number[][]> {
+  async embed(
+    texts: string[],
+    options: CloudEmbeddingRequestOptions = {},
+  ): Promise<number[][]> {
     if (texts.length === 0) return [];
     if (texts.some(text => typeof text !== 'string' || text.length === 0)) {
       throw new Error('Cloud embedding inputs must be non-empty strings.');
     }
+    const kind = options.kind || 'document';
+    const retries = options.retries ?? 3;
     const results: number[][] = [];
     for (let start = 0; start < texts.length; start += this.config.batchSize) {
       const batch = texts.slice(start, start + this.config.batchSize);
-      results.push(...await this.requestBatchWithRetry(batch, retries));
+      results.push(...await this.requestBatchWithRetry(batch, kind, retries));
     }
     return results;
   }
 
   async probe(): Promise<number> {
-    // The explicit Settings test validates both the configured batch size and
-    // vector dimensions using fixed text, never library or query content.
-    const probes = Array.from(
-      { length: this.config.batchSize },
-      (_, index) => `zotseek cloud connection probe ${index + 1}`,
+    // Test query and document role paths separately without sending user data.
+    const [documentEmbedding] = await this.embed(
+      ['zotseek cloud document role probe'],
+      { kind: 'document', retries: 0 },
     );
-    const [embedding] = await this.embed(probes, 0);
-    return embedding?.length || 0;
+    const [queryEmbedding] = await this.embed(
+      ['zotseek cloud query role probe'],
+      { kind: 'query', retries: 0 },
+    );
+    if (documentEmbedding?.length !== queryEmbedding?.length) {
+      throw new CloudEmbeddingRequestError('Cloud provider returned inconsistent role dimensions.', 502);
+    }
+    return documentEmbedding?.length || 0;
   }
 
   /** Abort in-flight HTTP calls. A later embed() call starts normally. */

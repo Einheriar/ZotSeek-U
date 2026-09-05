@@ -6,6 +6,7 @@ import {
   CloudEmbeddingRequestError,
   parseRetryAfter,
 } from '../src/core/cloud-embedding-client';
+import { dashScopeEmbeddingEndpoint } from '../src/core/dashscope-embedding-adapter';
 
 const config = {
   baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
@@ -13,6 +14,8 @@ const config = {
   dimensions: 3,
   apiKey: 'secret-key-not-for-logs',
   batchSize: 2,
+  queryRole: 'query',
+  documentRole: 'document',
 };
 
 function response(status: number, body: unknown, headers: Record<string, string> = {}) {
@@ -26,53 +29,131 @@ function response(status: number, body: unknown, headers: Record<string, string>
 }
 
 describe('cloud embedding client', () => {
+  test('derives the native embedding path without changing a workspace host', () => {
+    assert.equal(
+      dashScopeEmbeddingEndpoint(
+        'https://llm-example.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+      ),
+      'https://llm-example.cn-beijing.maas.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding',
+    );
+  });
+
   test('splits batches and restores provider response order', async () => {
     const requests: any[] = [];
     const client = new CloudEmbeddingClient(config, {
       abortController: null,
       fetch: async (url, init) => {
         requests.push({ url, init });
-        const input = JSON.parse(init.body).input as string[];
+        const input = JSON.parse(init.body).input.texts as string[];
         return response(200, {
-          data: input.map((_, index) => ({ index, embedding: [index + 1, 2, 3] })).reverse(),
+          output: {
+            embeddings: input.map((_, index) => ({
+              text_index: index,
+              embedding: [index + 1, 2, 3],
+            })).reverse(),
+          },
         });
       },
     });
-    const vectors = await client.embed(['a', 'b', 'c'], 0);
+    const vectors = await client.embed(['a', 'b', 'c'], { retries: 0 });
     assert.equal(requests.length, 2);
-    assert.equal(requests[0].url, `${config.baseUrl}/embeddings`);
-    assert.equal(JSON.parse(requests[0].init.body).dimensions, 3);
+    assert.equal(
+      requests[0].url,
+      'https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding',
+    );
+    assert.deepEqual(JSON.parse(requests[0].init.body).parameters, {
+      dimension: 3,
+      output_type: 'dense',
+      text_type: 'document',
+    });
     assert.deepEqual(vectors, [[1, 2, 3], [2, 2, 3], [1, 2, 3]]);
   });
 
-  test('connection probe validates the configured batch size', async () => {
-    let received: string[] = [];
+  test('connection probe validates query and document roles separately', async () => {
+    const received: Array<{ texts: string[]; role?: string }> = [];
     const client = new CloudEmbeddingClient(config, {
       fetch: async (_url, init) => {
-        received = JSON.parse(init.body).input;
+        const body = JSON.parse(init.body);
+        received.push({ texts: body.input.texts, role: body.parameters.text_type });
         return response(200, {
-          data: received.map((_, index) => ({ index, embedding: [1, 2, 3] })),
+          output: {
+            embeddings: body.input.texts.map((_: string, index: number) => ({
+              text_index: index,
+              embedding: [1, 2, 3],
+            })),
+          },
         });
       },
     });
     assert.equal(await client.probe(), 3);
-    assert.equal(received.length, config.batchSize);
-    assert.match(received[0], /fixed|probe/);
+    assert.deepEqual(received.map(item => item.role), ['document', 'query']);
+    assert.equal(received.every(item => item.texts.length === 1), true);
   });
 
   test('rejects duplicate indexes and wrong dimensions', async () => {
     const duplicate = new CloudEmbeddingClient(config, {
-      fetch: async () => response(200, { data: [
-        { index: 0, embedding: [1, 2, 3] },
-        { index: 0, embedding: [1, 2, 3] },
-      ] }),
+      fetch: async () => response(200, { output: { embeddings: [
+        { text_index: 0, embedding: [1, 2, 3] },
+        { text_index: 0, embedding: [1, 2, 3] },
+      ] } }),
     });
-    await assert.rejects(() => duplicate.embed(['a', 'b'], 0), /invalid embedding indexes/);
+    await assert.rejects(
+      () => duplicate.embed(['a', 'b'], { retries: 0 }),
+      /invalid embedding text indexes/,
+    );
 
     const wrongDimensions = new CloudEmbeddingClient(config, {
-      fetch: async () => response(200, { data: [{ index: 0, embedding: [1, 2] }] }),
+      fetch: async () => response(200, {
+        output: { embeddings: [{ text_index: 0, embedding: [1, 2] }] },
+      }),
     });
-    await assert.rejects(() => wrongDimensions.embed(['a'], 0), /expected 3 finite values/);
+    await assert.rejects(
+      () => wrongDimensions.embed(['a'], { retries: 0 }),
+      /expected 3 finite values/,
+    );
+
+    const allZero = new CloudEmbeddingClient(config, {
+      fetch: async () => response(200, {
+        output: { embeddings: [{ text_index: 0, embedding: [0, 0, 0] }] },
+      }),
+    });
+    await assert.rejects(() => allZero.embed(['a'], { retries: 0 }), /invalid embedding/);
+  });
+
+  test('omits text_type for an explicitly blank role and never adds instruct', async () => {
+    let body: any;
+    const client = new CloudEmbeddingClient({ ...config, queryRole: '' }, {
+      fetch: async (_url, init) => {
+        body = JSON.parse(init.body);
+        return response(200, {
+          output: { embeddings: [{ text_index: 0, embedding: [1, 2, 3] }] },
+        });
+      },
+    });
+    await client.embed(['raw query'], { kind: 'query', retries: 0 });
+    assert.equal(body.input.texts[0], 'raw query');
+    assert.equal('text_type' in body.parameters, false);
+    assert.equal('instruct' in body.parameters, false);
+    assert.equal(body.parameters.output_type, 'dense');
+  });
+
+  test('reports native request id and billed token usage per successful batch', async () => {
+    const receipts: any[] = [];
+    const client = new CloudEmbeddingClient(config, {
+      onBatchSuccess: receipt => receipts.push(receipt),
+      fetch: async () => response(200, {
+        output: { embeddings: [{ text_index: 0, embedding: [1, 2, 3] }] },
+        request_id: 'request-123',
+        usage: { total_tokens: 17 },
+      }),
+    });
+    await client.embed(['a'], { kind: 'query', retries: 0 });
+    assert.deepEqual(receipts, [{
+      requestId: 'request-123',
+      totalTokens: 17,
+      inputCount: 1,
+      kind: 'query',
+    }]);
   });
 
   test('retries 429 using Retry-After without exposing the provider message', async () => {
@@ -87,10 +168,12 @@ describe('cloud embedding client', () => {
             'Retry-After': '2',
           });
         }
-        return response(200, { data: [{ index: 0, embedding: [1, 2, 3] }] });
+        return response(200, {
+          output: { embeddings: [{ text_index: 0, embedding: [1, 2, 3] }] },
+        });
       },
     });
-    assert.deepEqual(await client.embed(['a'], 1), [[1, 2, 3]]);
+    assert.deepEqual(await client.embed(['a'], { retries: 1 }), [[1, 2, 3]]);
     assert.deepEqual(delays, [2000]);
   });
 
@@ -137,7 +220,7 @@ describe('cloud embedding client', () => {
         return await new Promise((_resolve, reject) => init.signal.setReject(reject));
       },
     });
-    const pending = client.embed(['a'], 3);
+    const pending = client.embed(['a'], { retries: 3 });
     client.cancelPending();
     await assert.rejects(pending, CloudEmbeddingCancelledError);
     assert.equal(attempts, 1);

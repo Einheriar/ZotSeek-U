@@ -6,20 +6,30 @@ declare const Zotero: any;
 
 export const CLOUD_PROVIDER_ID = 'alibaba-bailian';
 export const CLOUD_PROVIDER_LABEL = 'Alibaba Cloud Model Studio (Bailian)';
+// The Cloud Base URL is also shared by the literature-brief client, which uses
+// Bailian's OpenAI-compatible chat endpoint. The embedding adapter derives the
+// provider-native /api/v1 URL without changing this persisted value.
 export const CLOUD_DEFAULT_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
 export const CLOUD_MODEL_NAME = 'qwen3.7-text-embedding';
 export const CLOUD_MODEL_DIMENSIONS = 1024;
 export const CLOUD_MODEL_ID =
   `cloud:${CLOUD_PROVIDER_ID}:${CLOUD_MODEL_NAME}:${CLOUD_MODEL_DIMENSIONS}`;
-export const CLOUD_BATCH_SIZE = 20;
+export const CLOUD_BATCH_SIZE = 10;
 export const CLOUD_MAX_INPUT_TOKENS = 128000;
 export const CLOUD_RECOMMENDED_CHUNK_CAP = 3000;
+export const CLOUD_DEFAULT_QUERY_ROLE = 'query';
+export const CLOUD_DEFAULT_DOCUMENT_ROLE = 'document';
+export const CLOUD_OUTPUT_TYPE = 'dense' as const;
+export const CLOUD_API_ADAPTER_VERSION = 'dashscope-native-text-type-v1';
+export const CLOUD_CONNECTION_CONTRACT_VERSION = 2;
 export const CLOUD_CONSENT_VERSION = 1;
 
 export const CLOUD_PROVIDER_OPTIONS = Object.freeze([{
   id: CLOUD_PROVIDER_ID,
   label: CLOUD_PROVIDER_LABEL,
   defaultBaseUrl: CLOUD_DEFAULT_BASE_URL,
+  defaultQueryRole: CLOUD_DEFAULT_QUERY_ROLE,
+  defaultDocumentRole: CLOUD_DEFAULT_DOCUMENT_ROLE,
 }]);
 
 const PROVIDER_PREF = 'zotseek.cloud.provider';
@@ -27,10 +37,11 @@ const BASE_URL_PREF = 'zotseek.cloud.baseUrl';
 const MODEL_NAME_PREF = 'zotseek.cloud.modelName';
 const DIMENSIONS_PREF = 'zotseek.cloud.dimensions';
 const MAX_INPUT_TOKENS_PREF = 'zotseek.cloud.maxInputTokens';
-const QUERY_PREFIX_PREF = 'zotseek.cloud.queryPrefix';
-const DOC_PREFIX_PREF = 'zotseek.cloud.docPrefix';
+const QUERY_ROLE_PREF = 'zotseek.cloud.queryRole';
+const DOCUMENT_ROLE_PREF = 'zotseek.cloud.documentRole';
 const BATCH_SIZE_PREF = 'zotseek.cloud.batchSize';
 const VERIFIED_PREF = 'zotseek.cloud.connectionVerified';
+const VERIFIED_CONTRACT_PREF = 'zotseek.cloud.connectionVerifiedContract';
 const AUTO_INDEX_PREF = 'zotseek.cloud.autoIndex';
 const CONSENT_VERSION_PREF = 'zotseek.cloud.consentVersion';
 
@@ -58,7 +69,7 @@ function isAllowedBailianHost(hostname: string): boolean {
     || host.endsWith('.maas.aliyuncs.com');
 }
 
-/** Validate and normalize a Bailian OpenAI-compatible base URL. */
+/** Validate and normalize the shared Bailian OpenAI-compatible Base URL. */
 export function assertCloudBaseUrl(value: string): URL {
   let url: URL;
   try {
@@ -95,8 +106,8 @@ export interface CloudModelSettings {
   dimensions: number;
   maxInputTokens: number;
   recommendedChunkTokens: number;
-  queryPrefix: string;
-  docPrefix: string;
+  queryRole: string;
+  documentRole: string;
   batchSize: number;
 }
 
@@ -106,9 +117,20 @@ export interface CloudModelSettingsInput {
   modelName: string;
   dimensions: number;
   maxInputTokens: number;
-  queryPrefix: string;
-  docPrefix: string;
+  queryRole: string;
+  documentRole: string;
   batchSize: number;
+}
+
+function normalizeApiRole(value: unknown, label: string): string {
+  if (typeof value !== 'string') {
+    throw new CloudConfigRejectedError(`${label} must be a string.`);
+  }
+  const role = value.trim();
+  if (role.length > 128 || /[\u0000-\u001f\u007f]/.test(role)) {
+    throw new CloudConfigRejectedError(`${label} contains unsupported characters or is too long.`);
+  }
+  return role;
 }
 
 function readPref(key: string): unknown {
@@ -156,8 +178,8 @@ export function getCloudModelSettings(): CloudModelSettings {
     dimensions: storedPositiveInteger(DIMENSIONS_PREF, CLOUD_MODEL_DIMENSIONS),
     maxInputTokens,
     recommendedChunkTokens: calculateCloudRecommendedChunkTokens(maxInputTokens),
-    queryPrefix: storedString(QUERY_PREFIX_PREF, '', false),
-    docPrefix: storedString(DOC_PREFIX_PREF, '', false),
+    queryRole: storedString(QUERY_ROLE_PREF, CLOUD_DEFAULT_QUERY_ROLE, false).trim(),
+    documentRole: storedString(DOCUMENT_ROLE_PREF, CLOUD_DEFAULT_DOCUMENT_ROLE, false).trim(),
     batchSize: storedPositiveInteger(BATCH_SIZE_PREF, CLOUD_BATCH_SIZE),
   };
 }
@@ -182,8 +204,8 @@ export function validateCloudModelSettings(input: CloudModelSettingsInput): Clou
     dimensions: input.dimensions,
     maxInputTokens: input.maxInputTokens,
     recommendedChunkTokens: calculateCloudRecommendedChunkTokens(input.maxInputTokens),
-    queryPrefix: input.queryPrefix,
-    docPrefix: input.docPrefix,
+    queryRole: normalizeApiRole(input.queryRole, 'Query API role'),
+    documentRole: normalizeApiRole(input.documentRole, 'Document API role'),
     batchSize: input.batchSize,
   };
 }
@@ -196,11 +218,12 @@ export function setCloudModelSettings(input: CloudModelSettingsInput): CloudMode
   Zotero.Prefs.set(MODEL_NAME_PREF, settings.modelName, true);
   Zotero.Prefs.set(DIMENSIONS_PREF, settings.dimensions, true);
   Zotero.Prefs.set(MAX_INPUT_TOKENS_PREF, settings.maxInputTokens, true);
-  Zotero.Prefs.set(QUERY_PREFIX_PREF, settings.queryPrefix, true);
-  Zotero.Prefs.set(DOC_PREFIX_PREF, settings.docPrefix, true);
+  Zotero.Prefs.set(QUERY_ROLE_PREF, settings.queryRole, true);
+  Zotero.Prefs.set(DOCUMENT_ROLE_PREF, settings.documentRole, true);
   Zotero.Prefs.set(BATCH_SIZE_PREF, settings.batchSize, true);
   if (JSON.stringify(previous) !== JSON.stringify(settings)) {
     Zotero.Prefs.set(VERIFIED_PREF, false, true);
+    Zotero.Prefs.set(VERIFIED_CONTRACT_PREF, 0, true);
     if (previous.provider !== settings.provider || previous.baseUrl !== settings.baseUrl) {
       Zotero.Prefs.set(BRIEF_CONNECTION_VERIFIED_PREF, false, true);
     }
@@ -214,11 +237,19 @@ export function setCloudBaseUrl(value: string): string {
 }
 
 export function isCloudConnectionVerified(): boolean {
-  try { return Zotero.Prefs.get(VERIFIED_PREF, true) === true; } catch { return false; }
+  try {
+    return Zotero.Prefs.get(VERIFIED_PREF, true) === true
+      && Zotero.Prefs.get(VERIFIED_CONTRACT_PREF, true) === CLOUD_CONNECTION_CONTRACT_VERSION;
+  } catch { return false; }
 }
 
 export function setCloudConnectionVerified(verified: boolean): void {
   Zotero.Prefs.set(VERIFIED_PREF, verified === true, true);
+  Zotero.Prefs.set(
+    VERIFIED_CONTRACT_PREF,
+    verified ? CLOUD_CONNECTION_CONTRACT_VERSION : 0,
+    true,
+  );
 }
 
 export function isCloudAutoIndexAllowed(): boolean {

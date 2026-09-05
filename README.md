@@ -61,6 +61,12 @@ Open **Zotero Settings → ZotSeek → Models** and choose an Embedding option:
 
 ![Choose an Embedding model](docs/images/readme-model-picker.png)
 
+#### Benchmark reference for model selection
+
+The chart below is a performance reference for choosing an Embedding model. It was measured on an **AMD Ryzen 7 4800H (R7 4800H)** with 16 logical threads, using CPU/WASM Q8 inference and the same 10 English PDFs (83 pages, 494,816 extracted characters). It compares indexing time and process Working Set; actual results vary with hardware, library size, PDF length, and background load. Retrieval quality was not measured in this benchmark.
+
+![Embedding model benchmark](docs/images/model-benchmark-patchwork_en.png)
+
 Most users can use the bundled model directly. After choosing another model, build an index for that model. Embeddings from different models are stored separately and are never compared with each other.
 
 #### Optional: Cloud Embedding

@@ -48,6 +48,8 @@ import {
   openModelDownloadChoicePrompt,
 } from './model-download-prompt';
 import {
+  CLOUD_DEFAULT_DOCUMENT_ROLE,
+  CLOUD_DEFAULT_QUERY_ROLE,
   CLOUD_PROVIDER_OPTIONS,
   getCloudModelSettings,
   hasCurrentCloudConsent,
@@ -91,8 +93,8 @@ async function renderCloudSettings(doc: any): Promise<void> {
   const baseUrl = doc.getElementById('zotseek-cloud-base-url') as HTMLInputElement | null;
   const maxInputTokens = doc.getElementById('zotseek-cloud-max-input-tokens') as HTMLInputElement | null;
   const recommended = doc.getElementById('zotseek-cloud-recommended-chunk-tokens') as HTMLInputElement | null;
-  const queryPrefix = doc.getElementById('zotseek-cloud-query-prefix') as HTMLInputElement | null;
-  const docPrefix = doc.getElementById('zotseek-cloud-doc-prefix') as HTMLInputElement | null;
+  const queryRole = doc.getElementById('zotseek-cloud-query-role') as HTMLInputElement | null;
+  const documentRole = doc.getElementById('zotseek-cloud-document-role') as HTMLInputElement | null;
   const batchSize = doc.getElementById('zotseek-cloud-batch-size') as HTMLInputElement | null;
   const autoIndex = doc.getElementById('zotseek-cloud-auto-index') as any;
   const preview = doc.getElementById('zotseek-cloud-key-preview');
@@ -112,8 +114,8 @@ async function renderCloudSettings(doc: any): Promise<void> {
   if (baseUrl) baseUrl.value = settings.baseUrl;
   if (maxInputTokens) maxInputTokens.value = String(settings.maxInputTokens);
   if (recommended) recommended.value = String(settings.recommendedChunkTokens);
-  if (queryPrefix) queryPrefix.value = settings.queryPrefix;
-  if (docPrefix) docPrefix.value = settings.docPrefix;
+  if (queryRole) queryRole.value = settings.queryRole;
+  if (documentRole) documentRole.value = settings.documentRole;
   if (batchSize) batchSize.value = String(settings.batchSize);
   if (autoIndex) autoIndex.checked = isCloudAutoIndexAllowed();
   if (preview) {
@@ -142,11 +144,11 @@ function saveCloudSettingsFromUI(doc: any): ReturnType<typeof getCloudModelSetti
   const model = doc.getElementById('zotseek-cloud-model') as HTMLInputElement | null;
   const dimensions = doc.getElementById('zotseek-cloud-dimensions') as HTMLInputElement | null;
   const maxInputTokens = doc.getElementById('zotseek-cloud-max-input-tokens') as HTMLInputElement | null;
-  const queryPrefix = doc.getElementById('zotseek-cloud-query-prefix') as HTMLInputElement | null;
-  const docPrefix = doc.getElementById('zotseek-cloud-doc-prefix') as HTMLInputElement | null;
+  const queryRole = doc.getElementById('zotseek-cloud-query-role') as HTMLInputElement | null;
+  const documentRole = doc.getElementById('zotseek-cloud-document-role') as HTMLInputElement | null;
   const batchSize = doc.getElementById('zotseek-cloud-batch-size') as HTMLInputElement | null;
   if (!provider || !baseUrl || !model || !dimensions || !maxInputTokens ||
-      !queryPrefix || !docPrefix || !batchSize) return null;
+      !queryRole || !documentRole || !batchSize) return null;
   try {
     const settings = setCloudModelSettings({
       provider: provider.value,
@@ -154,14 +156,16 @@ function saveCloudSettingsFromUI(doc: any): ReturnType<typeof getCloudModelSetti
       modelName: model.value,
       dimensions: Number(dimensions.value),
       maxInputTokens: Number(maxInputTokens.value),
-      queryPrefix: queryPrefix.value,
-      docPrefix: docPrefix.value,
+      queryRole: queryRole.value,
+      documentRole: documentRole.value,
       batchSize: Number(batchSize.value),
     });
     baseUrl.value = settings.baseUrl;
     model.value = settings.modelName;
     dimensions.value = String(settings.dimensions);
     maxInputTokens.value = String(settings.maxInputTokens);
+    queryRole.value = settings.queryRole;
+    documentRole.value = settings.documentRole;
     batchSize.value = String(settings.batchSize);
     const recommended = doc.getElementById('zotseek-cloud-recommended-chunk-tokens') as HTMLInputElement | null;
     if (recommended) recommended.value = String(settings.recommendedChunkTokens);
@@ -210,6 +214,8 @@ async function testCloudConnection(doc: any): Promise<boolean> {
       dimensions: settings.dimensions,
       apiKey,
       batchSize: settings.batchSize,
+      queryRole: settings.queryRole,
+      documentRole: settings.documentRole,
     });
     await client.probe();
     setCloudConnectionVerified(true);
@@ -916,6 +922,13 @@ class PreferencesManager {
 
     const saveChangedCloudSettings = async (): Promise<void> => {
       if (!saveCloudSettingsFromUI(doc)) return;
+      // Reflect verification invalidation before asynchronous model/UI refreshes.
+      setCloudStatus(
+        doc,
+        isCloudConnectionVerified()
+          ? getString('pref-cloudConnectionVerified')
+          : getString('pref-cloudConnectionNotVerified'),
+      );
       if (getActiveModelSelectionId() === CLOUD_SLOT_SELECTION_ID) {
         embeddingPipeline.reset();
       }
@@ -929,7 +942,22 @@ class PreferencesManager {
     cloudProvider?.addEventListener('change', async () => {
       const option = CLOUD_PROVIDER_OPTIONS.find(item => item.id === cloudProvider.value);
       const baseUrl = doc.getElementById('zotseek-cloud-base-url') as HTMLInputElement | null;
-      if (option && baseUrl) baseUrl.value = option.defaultBaseUrl;
+      const queryRole = doc.getElementById('zotseek-cloud-query-role') as HTMLInputElement | null;
+      const documentRole = doc.getElementById('zotseek-cloud-document-role') as HTMLInputElement | null;
+      if (option) {
+        if (baseUrl) baseUrl.value = option.defaultBaseUrl;
+        if (queryRole) queryRole.value = option.defaultQueryRole;
+        if (documentRole) documentRole.value = option.defaultDocumentRole;
+      }
+      await saveChangedCloudSettings();
+    });
+
+    const resetCloudApiRoles = doc.getElementById('zotseek-cloud-reset-api-roles');
+    resetCloudApiRoles?.addEventListener('command', async () => {
+      const queryRole = doc.getElementById('zotseek-cloud-query-role') as HTMLInputElement | null;
+      const documentRole = doc.getElementById('zotseek-cloud-document-role') as HTMLInputElement | null;
+      if (queryRole) queryRole.value = CLOUD_DEFAULT_QUERY_ROLE;
+      if (documentRole) documentRole.value = CLOUD_DEFAULT_DOCUMENT_ROLE;
       await saveChangedCloudSettings();
     });
 
@@ -938,8 +966,8 @@ class PreferencesManager {
       'zotseek-cloud-model',
       'zotseek-cloud-dimensions',
       'zotseek-cloud-max-input-tokens',
-      'zotseek-cloud-query-prefix',
-      'zotseek-cloud-doc-prefix',
+      'zotseek-cloud-query-role',
+      'zotseek-cloud-document-role',
       'zotseek-cloud-batch-size',
     ]) {
       doc.getElementById(id)?.addEventListener('change', async () => {

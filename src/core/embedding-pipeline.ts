@@ -300,8 +300,15 @@ export class EmbeddingPipeline {
 
   /** Create the Cloud client without a paid probe; Settings owns explicit connection testing. */
   private async initCloudClient(): Promise<void> {
-    const { baseUrl, cloudModelName, cloudBatchSize } = this.model;
-    if (!baseUrl || !cloudModelName || !cloudBatchSize) {
+    const {
+      baseUrl,
+      cloudModelName,
+      cloudBatchSize,
+      cloudQueryRole,
+      cloudDocumentRole,
+    } = this.model;
+    if (!baseUrl || !cloudModelName || !cloudBatchSize ||
+        cloudQueryRole === undefined || cloudDocumentRole === undefined) {
       throw new Error(`Cloud model '${this.model.id}' is missing its provider configuration.`);
     }
     if (!hasCurrentCloudConsent()) {
@@ -320,6 +327,8 @@ export class EmbeddingPipeline {
       dimensions: this.model.dimensions,
       apiKey,
       batchSize: cloudBatchSize,
+      queryRole: cloudQueryRole,
+      documentRole: cloudDocumentRole,
     });
   }
 
@@ -432,12 +441,11 @@ export class EmbeddingPipeline {
     if (this.model.runtime === 'cloud') {
       if (!this.cloudClient) await this.init();
       const start = Date.now();
-      const prepared = prepareWorkerInput(text, kind, {
-        queryPrefix: this.model.queryPrefix,
-        docPrefix: this.model.docPrefix,
-      });
       const retries = kind === 'query' ? 1 : 3;
-      const [embedding] = await this.cloudClient!.embed([prepared], retries);
+      const [embedding] = await this.cloudClient!.embed([text], {
+        kind: kind === 'query' ? 'query' : 'document',
+        retries,
+      });
       return { embedding, modelId: this.model.id, processingTimeMs: Date.now() - start };
     }
     for (let attempt = 0; ; attempt++) {
@@ -542,19 +550,19 @@ export class EmbeddingPipeline {
 
   /**
    * Batched document embedding for Local Server and Cloud HTTP runtimes.
-   * Prefixes are applied here; callers pass raw chunk text.
+   * Local Server applies its declared text prefix; Cloud sends raw text with an API role.
    */
   async embedDocuments(texts: string[]): Promise<number[][]> {
     if (!this.ready) await this.init();
-    const prepared = texts.map(text => prepareWorkerInput(text, 'doc', {
-      queryPrefix: this.model.queryPrefix,
-      docPrefix: this.model.docPrefix,
-    }));
     if (this.model.runtime === 'server' && this.serverClient) {
+      const prepared = texts.map(text => prepareWorkerInput(text, 'doc', {
+        queryPrefix: this.model.queryPrefix,
+        docPrefix: this.model.docPrefix,
+      }));
       return this.serverClient.embed(prepared);
     }
     if (this.model.runtime === 'cloud' && this.cloudClient) {
-      return this.cloudClient.embed(prepared);
+      return this.cloudClient.embed(texts, { kind: 'document' });
     }
     throw new Error('embedDocuments is only available with an HTTP-backed model');
   }

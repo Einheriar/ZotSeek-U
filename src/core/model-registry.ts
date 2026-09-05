@@ -1,4 +1,5 @@
 import {
+  CLOUD_API_ADAPTER_VERSION,
   cloudModelId,
   getCloudModelSettings,
 } from './cloud-model-config';
@@ -37,6 +38,9 @@ export interface ModelConfig {
   cloudProvider?: string;
   cloudModelName?: string;
   cloudBatchSize?: number;
+  cloudQueryRole?: string;
+  cloudDocumentRole?: string;
+  cloudApiAdapterVersion?: string;
 }
 
 const COMMON_FILES = [
@@ -367,8 +371,9 @@ export function getCloudModels(): ModelConfig[] {
     dimensions: settings.dimensions,
     pooling: 'mean',
     normalize: true,
-    queryPrefix: settings.queryPrefix,
-    docPrefix: settings.docPrefix,
+    // Cloud task roles are provider API parameters, never textual prefixes.
+    queryPrefix: '',
+    docPrefix: '',
     hfPath: '',
     onnxFile: '',
     files: [],
@@ -379,6 +384,9 @@ export function getCloudModels(): ModelConfig[] {
     cloudProvider: settings.provider,
     cloudModelName: settings.modelName,
     cloudBatchSize: settings.batchSize,
+    cloudQueryRole: settings.queryRole,
+    cloudDocumentRole: settings.documentRole,
+    cloudApiAdapterVersion: CLOUD_API_ADAPTER_VERSION,
     serverMaxInputTokens: settings.maxInputTokens,
     serverRecommendedChunkTokens: settings.recommendedChunkTokens,
   }];
