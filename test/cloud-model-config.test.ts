@@ -11,7 +11,7 @@ import {
   customEmbeddingEndpoint,
   CLOUD_DEFAULT_BASE_URL,
   BAILIAN_REGION_INTL_BASE_URL,
-  CLOUD_BATCH_SIZE,
+  BAILIAN_BATCH_SIZE,
   CLOUD_DEFAULT_DOCUMENT_ROLE,
   CLOUD_DEFAULT_QUERY_ROLE,
   CLOUD_MAX_INPUT_TOKENS,
@@ -29,7 +29,9 @@ import {
   recordCurrentCloudConsent,
   setCloudAutoIndexAllowed,
   setCloudConnectionVerified,
+  setCloudProvider,
   setCloudModelSettings,
+  resetCloudModelSettings,
 } from '../src/core/cloud-model-config';
 
 describe('cloud model configuration', () => {
@@ -71,11 +73,11 @@ describe('cloud model configuration', () => {
     assert.equal(settings.configured, true);
     assert.equal(settings.baseUrl, CLOUD_DEFAULT_BASE_URL);
     assert.equal(settings.maxInputTokens, CLOUD_MAX_INPUT_TOKENS);
-    assert.equal(settings.batchSize, CLOUD_BATCH_SIZE);
+    assert.equal(settings.batchSize, BAILIAN_BATCH_SIZE);
     assert.equal(settings.queryRole, CLOUD_DEFAULT_QUERY_ROLE);
     assert.equal(settings.documentRole, CLOUD_DEFAULT_DOCUMENT_ROLE);
     assert.equal(settings.recommendedChunkTokens, 4000);
-    assert.equal(CLOUD_BATCH_SIZE, 10);
+    assert.equal(BAILIAN_BATCH_SIZE, 20);
     assert.equal(CLOUD_MODEL_ID, 'cloud:alibaba-bailian:qwen3.7-text-embedding:1024');
     assert.equal(cloudModelId(settings), CLOUD_MODEL_ID);
   });
@@ -100,7 +102,7 @@ describe('cloud model configuration', () => {
     settings = getCloudModelSettings();
     assert.equal(settings.configured, true);
     assert.equal(settings.recommendedChunkTokens, 1740);
-    assert.equal(settings.adapterVersion, 'gemini-embedcontent-v1');
+    assert.equal(settings.adapterVersion, 'gemini-embedcontent-v2');
     assert.equal(settings.documentRole, 'RETRIEVAL_DOCUMENT');
     assert.equal(cloudModelId(settings), 'cloud:google-gemini-api:gemini-embedding-001:768');
   });
@@ -230,6 +232,102 @@ describe('cloud model configuration', () => {
     assert.deepEqual(getCloudModelSettings(), settings);
   });
 
+  test('selects an unconfigured Custom provider without inventing a model limit', () => {
+    const settings = setCloudProvider('custom-openai-compatible');
+    assert.equal(settings.provider, 'custom-openai-compatible');
+    assert.equal(settings.configured, false);
+    // Positive placeholders keep the runtime model contract type-safe. The
+    // UI must render these fields blank while configured is false.
+    assert.equal(settings.maxInputTokens, 1);
+    assert.equal(settings.recommendedChunkTokens, 1);
+    assert.equal(settings.dimensions, 1);
+    assert.equal(settings.batchSize, 1);
+    assert.equal(settings.customBaseUrl, '');
+    assert.equal(settings.modelName, '');
+  });
+
+  test('atomically selects the default built-in model without clearing target verification', () => {
+    setCloudConnectionVerified(true, 'openai');
+    const settings = setCloudProvider('openai');
+    assert.equal(settings.configured, true);
+    assert.equal(settings.modelName, 'text-embedding-3-small');
+    assert.equal(settings.dimensions, 1536);
+    assert.equal(isCloudConnectionVerified('openai'), true);
+  });
+
+  test('does not expose legacy Custom placeholder values while fields are empty', () => {
+    installZoteroStub({
+      'zotseek.cloud.provider': 'custom-openai-compatible',
+      'zotseek.cloud.custom.maxInputTokens': 8192,
+      'zotseek.cloud.custom.batchSize': 10,
+    });
+    const settings = getCloudModelSettings();
+    assert.equal(settings.configured, false);
+    assert.equal(settings.maxInputTokens, 1);
+    assert.equal(settings.recommendedChunkTokens, 1);
+    assert.equal(settings.batchSize, 1);
+  });
+
+  test('resets the active built-in profile or clears Custom without touching provider selection', () => {
+    setCloudModelSettings({
+      provider: 'alibaba-bailian',
+      bailianRegion: 'intl',
+      modelName: 'qwen3.7-text-embedding',
+      dimensions: 1024,
+      maxInputTokens: 2048,
+      queryRole: 'custom-query',
+      documentRole: 'custom-document',
+      batchSize: 3,
+    });
+    let settings = resetCloudModelSettings();
+    assert.equal(settings.provider, 'alibaba-bailian');
+    assert.equal(settings.modelName, 'qwen3.7-text-embedding');
+    assert.equal(settings.bailianRegion, 'intl');
+    assert.equal(settings.maxInputTokens, CLOUD_MAX_INPUT_TOKENS);
+    assert.equal(settings.batchSize, BAILIAN_BATCH_SIZE);
+    assert.equal(settings.queryRole, CLOUD_DEFAULT_QUERY_ROLE);
+    assert.equal(settings.documentRole, CLOUD_DEFAULT_DOCUMENT_ROLE);
+
+    setCloudProvider('custom-openai-compatible');
+    setCloudModelSettings({
+      provider: 'custom-openai-compatible',
+      baseUrl: 'https://api.example.com/v1',
+      modelName: 'model',
+      dimensions: 1024,
+      maxInputTokens: 8192,
+      batchSize: 20,
+    });
+    settings = resetCloudModelSettings();
+    assert.equal(settings.provider, 'custom-openai-compatible');
+    assert.equal(settings.configured, false);
+    assert.equal(settings.customBaseUrl, '');
+    assert.equal(settings.modelName, '');
+    assert.equal(settings.dimensions, 1);
+    assert.equal(settings.maxInputTokens, 1);
+    assert.equal(settings.recommendedChunkTokens, 1);
+    assert.equal(settings.batchSize, 1);
+  });
+
+  test('resetting a fixed provider does not overwrite Bailian overrides', () => {
+    setCloudModelSettings({
+      provider: 'alibaba-bailian',
+      bailianRegion: 'cn',
+      modelName: 'qwen3.7-text-embedding',
+      dimensions: 1024,
+      maxInputTokens: 4096,
+      queryRole: '',
+      documentRole: '',
+      batchSize: 4,
+    });
+    setCloudProvider('openai');
+    resetCloudModelSettings();
+    const settings = setCloudProvider('alibaba-bailian');
+    assert.equal(settings.maxInputTokens, 4096);
+    assert.equal(settings.queryRole, '');
+    assert.equal(settings.documentRole, '');
+    assert.equal(settings.batchSize, 4);
+  });
+
   test('rejects incomplete or unsafe custom fields', () => {
     const base = {
       provider: 'custom-openai-compatible' as const,
@@ -349,6 +447,41 @@ describe('cloud model configuration', () => {
       () => setCloudModelSettings({ ...base, bailianRegion: 'us' as any }),
       /"cn" or "intl"/,
     );
+  });
+
+  test('recovers the legacy Gemini tuple without reusing it as Bailian overrides', () => {
+    const stub: ZoteroStub = (globalThis as any).Zotero;
+    stub.prefs.set('zotseek.cloud.maxInputTokens', 2048);
+    stub.prefs.set('zotseek.cloud.queryRole', 'RETRIEVAL_QUERY');
+    stub.prefs.set('zotseek.cloud.documentRole', 'RETRIEVAL_DOCUMENT');
+    stub.prefs.set('zotseek.cloud.batchSize', 10);
+    const settings = getCloudModelSettings();
+    assert.equal(settings.maxInputTokens, 128000);
+    assert.equal(settings.recommendedChunkTokens, 4000);
+    assert.equal(settings.queryRole, 'query');
+    assert.equal(settings.documentRole, 'document');
+    assert.equal(settings.batchSize, 20);
+    setCloudProvider('google-gemini-api');
+    resetCloudModelSettings();
+    assert.deepEqual(setCloudProvider('alibaba-bailian'), settings);
+  });
+
+  test('preserves legacy custom values and isolates subsequent Bailian edits', () => {
+    const stub: ZoteroStub = (globalThis as any).Zotero;
+    stub.prefs.set('zotseek.cloud.maxInputTokens', 4096);
+    stub.prefs.set('zotseek.cloud.queryRole', '');
+    stub.prefs.set('zotseek.cloud.documentRole', 'custom_document');
+    stub.prefs.set('zotseek.cloud.batchSize', 5);
+    const settings = getCloudModelSettings();
+    assert.equal(settings.maxInputTokens, 4096);
+    assert.equal(settings.queryRole, '');
+    assert.equal(settings.documentRole, 'custom_document');
+    assert.equal(settings.batchSize, 5);
+    setCloudModelSettings({ ...settings, provider: 'alibaba-bailian' });
+    stub.prefs.set('zotseek.cloud.queryRole', 'RETRIEVAL_QUERY');
+    setCloudProvider('google-gemini-api');
+    resetCloudModelSettings();
+    assert.deepEqual(setCloudProvider('alibaba-bailian'), settings);
   });
 
   test('blank API roles are persisted as an explicit request to omit the parameter', () => {

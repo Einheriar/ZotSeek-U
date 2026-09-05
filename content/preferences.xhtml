@@ -289,8 +289,6 @@
         <html:input id="zotseek-cloud-base-url" type="url" style="width:100%;box-sizing:border-box;"/>
         <html:span data-l10n-id="zotseek-pref-cloudModel">Model</html:span>
         <html:input id="zotseek-cloud-model" type="text" style="width:100%;box-sizing:border-box;"/>
-        <html:span data-l10n-id="zotseek-pref-cloudDimensions">Dimensions</html:span>
-        <html:input id="zotseek-cloud-dimensions" type="number" min="1" step="1" style="width:100%;box-sizing:border-box;"/>
         <html:span></html:span>
         <html:p data-l10n-id="zotseek-pref-cloudCustomWarning"
                 style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 0;">
@@ -314,12 +312,12 @@
         </html:div>
         <html:div style="display:grid;grid-template-columns:180px minmax(0,1fr);gap:7px 10px;align-items:start;min-width:0;">
           <html:span data-l10n-id="zotseek-pref-cloudRecommendedChunkTokens" style="padding-top:5px;">Recommended Chunk Tokens</html:span>
-          <html:div style="min-width:0;">
-            <html:input id="zotseek-cloud-recommended-chunk-tokens" type="number" readonly="readonly" style="width:100%;box-sizing:border-box;min-width:0;"/>
-            <html:p data-l10n-id="zotseek-pref-cloudRecommendedChunkDesc"
-                    style="color: var(--zotseek-text-secondary); font-size:11px; margin:4px 0 0 0;">
-              Auto-calculated at 85% of the model input limit, up to 4000 Tokens.
-            </html:p>
+          <html:input id="zotseek-cloud-recommended-chunk-tokens" type="number" readonly="readonly" style="width:100%;box-sizing:border-box;min-width:0;"/>
+        </html:div>
+        <html:div id="zotseek-cloud-dims-editable-row" style="display:none;">
+          <html:div style="display:grid;grid-template-columns:150px minmax(0,1fr);gap:7px 10px;align-items:start;min-width:0;">
+            <html:span data-l10n-id="zotseek-pref-cloudDimensions" style="padding-top:5px;">Dimensions</html:span>
+            <html:input id="zotseek-cloud-dimensions" type="number" min="1" step="1" style="width:100%;box-sizing:border-box;min-width:0;"/>
           </html:div>
         </html:div>
         <html:div id="zotseek-cloud-dims-readonly-row" style="display:contents;">
@@ -329,28 +327,28 @@
           </html:div>
         </html:div>
         <html:div style="display:grid;grid-template-columns:150px minmax(0,1fr);gap:7px 10px;align-items:start;min-width:0;">
-          <html:span data-l10n-id="zotseek-pref-cloudQueryApiRole" style="padding-top:5px;">Query API Role</html:span>
-          <html:input id="zotseek-cloud-query-role" type="text" style="width:100%;box-sizing:border-box;min-width:0;"/>
-        </html:div>
-        <html:div style="display:grid;grid-template-columns:180px minmax(0,1fr);gap:7px 10px;align-items:start;min-width:0;">
-          <html:span data-l10n-id="zotseek-pref-cloudDocumentApiRole" style="padding-top:5px;">Document API Role</html:span>
-          <html:input id="zotseek-cloud-document-role" type="text" style="width:100%;box-sizing:border-box;min-width:0;"/>
-        </html:div>
-        <html:div style="display:grid;grid-template-columns:150px minmax(0,1fr);gap:7px 10px;align-items:start;min-width:0;">
           <html:span data-l10n-id="zotseek-pref-cloudBatchSize" style="padding-top:5px;">Maximum inputs per batch</html:span>
           <html:input id="zotseek-cloud-batch-size" type="number" min="1" max="256" step="1" style="width:100%;box-sizing:border-box;min-width:0;"/>
         </html:div>
-        <html:div style="display:flex;align-items:start;min-width:0;">
-          <button id="zotseek-cloud-reset-api-roles"
-                  data-l10n-id="zotseek-pref-cloudResetApiRoles"
-                  label="Restore Bailian role defaults"/>
+        <html:div style="display:grid;grid-template-columns:150px minmax(0,1fr);gap:7px 10px;align-items:start;min-width:0;">
+          <html:span data-l10n-id="zotseek-pref-cloudQueryParameter" style="padding-top:5px;">Advanced query parameter (optional)</html:span>
+          <html:input id="zotseek-cloud-query-role" type="text" style="width:100%;box-sizing:border-box;min-width:0;"/>
+        </html:div>
+        <html:div style="display:grid;grid-template-columns:180px minmax(0,1fr);gap:7px 10px;align-items:start;min-width:0;">
+          <html:span data-l10n-id="zotseek-pref-cloudIndexParameter" style="padding-top:5px;">Advanced indexing parameter (optional)</html:span>
+          <html:input id="zotseek-cloud-document-role" type="text" style="width:100%;box-sizing:border-box;min-width:0;"/>
+        </html:div>
+        <html:div style="display:flex;align-items:center;min-width:0;grid-column:1 / -1;">
+          <button id="zotseek-cloud-test" data-l10n-id="zotseek-pref-cloudTest" label="Test connection"/>
+          <html:span id="zotseek-cloud-status" style="font-size:11px;margin-left:8px;"></html:span>
         </html:div>
       </html:div>
     </html:details>
 
     <hbox align="center" style="margin-top:8px;">
-      <button id="zotseek-cloud-test" data-l10n-id="zotseek-pref-cloudTest" label="Test connection"/>
-      <html:span id="zotseek-cloud-status" style="font-size:11px;margin-left:8px;"></html:span>
+      <button id="zotseek-cloud-reset-settings"
+              data-l10n-id="zotseek-pref-cloudResetSettings"
+              label="Restore default settings"/>
     </hbox>
     <checkbox id="zotseek-cloud-auto-index"
               data-l10n-id="zotseek-pref-cloudAutoIndex"

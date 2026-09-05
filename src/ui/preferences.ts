@@ -48,21 +48,21 @@ import {
   openModelDownloadChoicePrompt,
 } from './model-download-prompt';
 import {
-  CLOUD_DEFAULT_DOCUMENT_ROLE,
-  CLOUD_DEFAULT_QUERY_ROLE,
   CLOUD_PROVIDER_OPTIONS,
+  calculateCloudRecommendedChunkTokens,
   getCloudModelSettings,
   getCloudProviderLabel,
   getProviderCatalogEntries,
   getProviderDefaultCatalogEntry,
-  getStoredCustomProviderSettings,
   hasCurrentCloudConsent,
   isCloudAutoIndexAllowed,
   isCloudConnectionVerified,
   recordCurrentCloudConsent,
+  resetCloudModelSettings,
   setCloudAutoIndexAllowed,
   setCloudConnectionVerified,
   setCloudModelSettings,
+  setCloudProvider,
   type BailianRegion,
   type CloudModelSettings,
   type CloudProviderId,
@@ -77,6 +77,9 @@ declare const Zotero: any;
 
 /** Re-entrancy guard: prevents two rapid model-change events from racing. */
 let modelSwitchInProgress = false;
+
+/** Prevent a slower credential read from repainting a newer provider selection. */
+let cloudSettingsRenderGeneration = 0;
 
 /**
  * Returns true when the preferences document is still alive and usable.
@@ -108,6 +111,7 @@ function applyCloudUiMode(doc: any, provider: CloudProviderId): void {
   setDisplay('zotseek-cloud-region-row', isBailian);
   setDisplay('zotseek-cloud-builtin-model-row', !isCustom);
   setDisplay('zotseek-cloud-custom-rows', isCustom);
+  setDisplay('zotseek-cloud-dims-editable-row', isCustom);
   setDisplay('zotseek-cloud-dims-readonly-row', !isCustom);
   const enable = (id: string, enabled: boolean) => {
     const element = doc.getElementById(id) as HTMLInputElement | null;
@@ -117,8 +121,6 @@ function applyCloudUiMode(doc: any, provider: CloudProviderId): void {
   enable('zotseek-cloud-query-role', isBailian);
   enable('zotseek-cloud-document-role', isBailian);
   enable('zotseek-cloud-batch-size', isBailian || isCustom);
-  const resetRoles = doc.getElementById('zotseek-cloud-reset-api-roles');
-  if (resetRoles) resetRoles.style.display = isBailian ? '' : 'none';
 }
 
 function populateBailianRegionOptions(doc: any): void {
@@ -164,12 +166,15 @@ function populateCustomProviderInputs(doc: any, settings: CloudModelSettings): v
   const batchSize = doc.getElementById('zotseek-cloud-batch-size') as HTMLInputElement | null;
   if (baseUrl) baseUrl.value = settings.customBaseUrl;
   if (model) model.value = settings.modelName;
-  if (dimensions) dimensions.value = String(settings.dimensions > 0 ? settings.dimensions : '');
-  if (maxInputTokens) maxInputTokens.value = String(settings.maxInputTokens);
+  if (dimensions) dimensions.value = settings.configured ? String(settings.dimensions) : '';
+  if (maxInputTokens) {
+    maxInputTokens.value = settings.configured ? String(settings.maxInputTokens) : '';
+  }
   if (batchSize) batchSize.value = String(settings.batchSize);
 }
 
 async function renderCloudSettings(doc: any): Promise<void> {
+  const renderGeneration = ++cloudSettingsRenderGeneration;
   const settings = getCloudModelSettings();
   const provider = doc.getElementById('zotseek-cloud-provider') as HTMLSelectElement | null;
   if (provider) {
@@ -195,13 +200,25 @@ async function renderCloudSettings(doc: any): Promise<void> {
   const model = doc.getElementById('zotseek-cloud-model') as HTMLInputElement | null;
   if (model) model.value = settings.modelName;
   const dimensions = doc.getElementById('zotseek-cloud-dimensions') as HTMLInputElement | null;
-  if (dimensions) dimensions.value = String(settings.dimensions);
+  if (dimensions) {
+    dimensions.value = settings.provider === 'custom-openai-compatible' && !settings.configured
+      ? ''
+      : String(settings.dimensions);
+  }
   const dimensionsReadonly = doc.getElementById('zotseek-cloud-dimensions-readonly') as HTMLInputElement | null;
   if (dimensionsReadonly) dimensionsReadonly.value = String(settings.dimensions);
   const maxInputTokens = doc.getElementById('zotseek-cloud-max-input-tokens') as HTMLInputElement | null;
-  if (maxInputTokens) maxInputTokens.value = String(settings.maxInputTokens);
+  if (maxInputTokens) {
+    maxInputTokens.value = settings.provider === 'custom-openai-compatible' && !settings.configured
+      ? ''
+      : String(settings.maxInputTokens);
+  }
   const recommended = doc.getElementById('zotseek-cloud-recommended-chunk-tokens') as HTMLInputElement | null;
-  if (recommended) recommended.value = String(settings.recommendedChunkTokens);
+  if (recommended) {
+    recommended.value = settings.provider === 'custom-openai-compatible' && !settings.configured
+      ? ''
+      : String(settings.recommendedChunkTokens);
+  }
   const queryRole = doc.getElementById('zotseek-cloud-query-role') as HTMLInputElement | null;
   if (queryRole) queryRole.value = settings.queryRole;
   const documentRole = doc.getElementById('zotseek-cloud-document-role') as HTMLInputElement | null;
@@ -214,20 +231,23 @@ async function renderCloudSettings(doc: any): Promise<void> {
   if (preview) {
     try {
       const apiKey = await cloudCredentialStore.get(settings.provider);
+      if (renderGeneration !== cloudSettingsRenderGeneration) return;
       preview.textContent = apiKey
         ? maskCloudApiKey(apiKey)
         : getString('pref-cloudApiKeyMissing');
     } catch (error: any) {
+      if (renderGeneration !== cloudSettingsRenderGeneration) return;
       preview.textContent = getString('pref-cloudSecureStorageError', {
         error: error?.message || error,
       });
     }
   }
+  if (renderGeneration !== cloudSettingsRenderGeneration) return;
   setCloudStatus(
     doc,
     !settings.configured
       ? getString('pref-cloudUnconfigured')
-      : isCloudConnectionVerified()
+      : isCloudConnectionVerified(settings.provider)
         ? getString('pref-cloudConnectionVerified')
         : getString('pref-cloudConnectionNotVerified'),
   );
@@ -237,6 +257,9 @@ function saveCloudSettingsFromUI(doc: any): ReturnType<typeof getCloudModelSetti
   const providerSelect = doc.getElementById('zotseek-cloud-provider') as HTMLSelectElement | null;
   if (!providerSelect) return null;
   const provider = providerSelect.value as CloudProviderId;
+  // A field blur can arrive while the provider select already has its new
+  // value but before the change handler has rendered that provider's profile.
+  if (provider !== getCloudModelSettings().provider) return null;
   const maxInputTokens = doc.getElementById('zotseek-cloud-max-input-tokens') as HTMLInputElement | null;
   const queryRole = doc.getElementById('zotseek-cloud-query-role') as HTMLInputElement | null;
   const documentRole = doc.getElementById('zotseek-cloud-document-role') as HTMLInputElement | null;
@@ -1045,15 +1068,7 @@ class PreferencesManager {
       );
     });
 
-    const saveChangedCloudSettings = async (): Promise<void> => {
-      if (!saveCloudSettingsFromUI(doc)) return;
-      // Reflect verification invalidation before asynchronous model/UI refreshes.
-      setCloudStatus(
-        doc,
-        isCloudConnectionVerified()
-          ? getString('pref-cloudConnectionVerified')
-          : getString('pref-cloudConnectionNotVerified'),
-      );
+    const refreshCloudDependents = async (): Promise<void> => {
       if (getActiveModelSelectionId() === CLOUD_SLOT_SELECTION_ID) {
         embeddingPipeline.reset();
       }
@@ -1061,6 +1076,19 @@ class PreferencesManager {
       await populateModelMenu(doc);
       refreshModelInputPolicy(doc);
       await renderCoverage(doc);
+    };
+
+    const saveChangedCloudSettings = async (): Promise<void> => {
+      const settings = saveCloudSettingsFromUI(doc);
+      if (!settings) return;
+      // Reflect verification invalidation before asynchronous model/UI refreshes.
+      setCloudStatus(
+        doc,
+        isCloudConnectionVerified(settings.provider)
+          ? getString('pref-cloudConnectionVerified')
+          : getString('pref-cloudConnectionNotVerified'),
+      );
+      await refreshCloudDependents();
     };
 
     const cloudProvider = doc.getElementById('zotseek-cloud-provider') as HTMLSelectElement | null;
@@ -1084,25 +1112,39 @@ class PreferencesManager {
           return;
         }
       }
-      applyCloudUiMode(doc, newProvider);
-      if (newProvider !== 'custom-openai-compatible') {
-        populateCloudModelSelect(
-          doc,
-          newProvider,
-          getProviderDefaultCatalogEntry(newProvider)?.modelName || '',
-        );
-      } else {
-        populateCustomProviderInputs(doc, getStoredCustomProviderSettings());
-      }
-      await saveChangedCloudSettings();
+      const preview = doc.getElementById('zotseek-cloud-key-preview');
+      if (preview) preview.textContent = '';
+      setCloudProvider(newProvider);
+      await renderCloudSettings(doc);
+      await refreshCloudDependents();
     });
 
-    const resetCloudApiRoles = doc.getElementById('zotseek-cloud-reset-api-roles');
-    resetCloudApiRoles?.addEventListener('command', async () => {
-      const queryRole = doc.getElementById('zotseek-cloud-query-role') as HTMLInputElement | null;
-      const documentRole = doc.getElementById('zotseek-cloud-document-role') as HTMLInputElement | null;
-      if (queryRole) queryRole.value = CLOUD_DEFAULT_QUERY_ROLE;
-      if (documentRole) documentRole.value = CLOUD_DEFAULT_DOCUMENT_ROLE;
+    const resetCloudSettings = doc.getElementById('zotseek-cloud-reset-settings');
+    resetCloudSettings?.addEventListener('command', async () => {
+      resetCloudModelSettings();
+      await renderCloudSettings(doc);
+      await refreshCloudDependents();
+    });
+
+    const cloudMaxInputTokens = doc.getElementById(
+      'zotseek-cloud-max-input-tokens',
+    ) as HTMLInputElement | null;
+    cloudMaxInputTokens?.addEventListener('input', () => {
+      const recommended = doc.getElementById(
+        'zotseek-cloud-recommended-chunk-tokens',
+      ) as HTMLInputElement | null;
+      if (recommended) recommended.value = '';
+    });
+    cloudMaxInputTokens?.addEventListener('change', async () => {
+      const recommended = doc.getElementById(
+        'zotseek-cloud-recommended-chunk-tokens',
+      ) as HTMLInputElement | null;
+      const maximum = Number(cloudMaxInputTokens.value);
+      if (recommended) {
+        recommended.value = Number.isSafeInteger(maximum) && maximum > 0
+          ? String(calculateCloudRecommendedChunkTokens(maximum))
+          : '';
+      }
       await saveChangedCloudSettings();
     });
 
@@ -1112,7 +1154,6 @@ class PreferencesManager {
       'zotseek-cloud-base-url',
       'zotseek-cloud-model',
       'zotseek-cloud-dimensions',
-      'zotseek-cloud-max-input-tokens',
       'zotseek-cloud-query-role',
       'zotseek-cloud-document-role',
       'zotseek-cloud-batch-size',

@@ -39,7 +39,10 @@ export const CLOUD_MODEL_NAME = 'qwen3.7-text-embedding';
 export const CLOUD_MODEL_DIMENSIONS = 1024;
 export const CLOUD_MODEL_ID =
   `cloud:${CLOUD_PROVIDER_ID}:${CLOUD_MODEL_NAME}:${CLOUD_MODEL_DIMENSIONS}`;
+/** Default batch size for providers without a more specific catalog value. */
 export const CLOUD_BATCH_SIZE = 10;
+/** Bailian's qwen3.7-text-embedding endpoint accepts up to 20 inputs per call. */
+export const BAILIAN_BATCH_SIZE = 20;
 export const CLOUD_MAX_INPUT_TOKENS = 128000;
 export const CLOUD_RECOMMENDED_CHUNK_CAP = 4000;
 export const CLOUD_CHUNK_PROFILE: ModelChunkProfile = Object.freeze({
@@ -137,7 +140,7 @@ export const CLOUD_MODEL_CATALOG: readonly CloudModelCatalogEntry[] = Object.fre
     maxInputTokens: CLOUD_MAX_INPUT_TOKENS,
     queryRole: CLOUD_DEFAULT_QUERY_ROLE,
     documentRole: CLOUD_DEFAULT_DOCUMENT_ROLE,
-    batchSize: CLOUD_BATCH_SIZE,
+    batchSize: BAILIAN_BATCH_SIZE,
     chunkProfile: CLOUD_CHUNK_PROFILE,
     adapterVersion: CLOUD_API_ADAPTER_VERSION,
     outputContract: CLOUD_OUTPUT_TYPE,
@@ -178,14 +181,16 @@ export const CLOUD_MODEL_CATALOG: readonly CloudModelCatalogEntry[] = Object.fre
     documentRole: 'RETRIEVAL_DOCUMENT',
     batchSize: CLOUD_BATCH_SIZE,
     chunkProfile: GEMINI_CHUNK_PROFILE,
-    adapterVersion: 'gemini-embedcontent-v1',
+    adapterVersion: 'gemini-embedcontent-v2',
     outputContract: 'none',
     roleContract: 'taskType',
   },
 ]);
 
 export const CUSTOM_OPENAI_COMPATIBLE_ADAPTER_VERSION = 'openai-compatible-v1';
-export const CUSTOM_OPENAI_COMPATIBLE_DEFAULT_MAX_INPUT_TOKENS = 8192;
+/** Runtime-safe placeholder only; Custom has no input limit until the user supplies one. */
+const CUSTOM_OPENAI_COMPATIBLE_UNCONFIGURED_MAX_INPUT_TOKENS = 1;
+export const CUSTOM_OPENAI_COMPATIBLE_DEFAULT_BATCH_SIZE = 1;
 
 export function getProviderCatalogEntries(provider: CloudProviderId): CloudModelCatalogEntry[] {
   return CLOUD_MODEL_CATALOG.filter(entry => entry.provider === provider);
@@ -413,6 +418,53 @@ export function getCloudProvider(): CloudProviderId {
   return isCloudProviderId(value) ? value : CLOUD_PROVIDER_ID;
 }
 
+function bailianOverridePref(legacyKey: string): string {
+  return providerStatePref(legacyKey, 'alibaba-bailian');
+}
+
+function readBailianOverride(legacyKey: string): unknown {
+  const scoped = readPref(bailianOverridePref(legacyKey));
+  if (scoped !== undefined && scoped !== null) return scoped;
+  // Older UI saves could copy the entire Gemini profile into shared prefs.
+  // Ignore only that exact legacy tuple; preserve genuine user overrides,
+  // including empty role values. New writes always have provider provenance.
+  const gemini = getProviderDefaultCatalogEntry('google-gemini-api')!;
+  const contaminated = readPref(MAX_INPUT_TOKENS_PREF) === gemini.maxInputTokens
+    && readPref(QUERY_ROLE_PREF) === gemini.queryRole
+    && readPref(DOCUMENT_ROLE_PREF) === gemini.documentRole
+    && readPref(BATCH_SIZE_PREF) === gemini.batchSize;
+  return contaminated ? undefined : readPref(legacyKey);
+}
+
+/**
+ * Select a provider without requiring its model fields to be complete.
+ * Provider credentials are stored by the credential store and are deliberately
+ * not touched here; switching to an unconfigured Custom provider is therefore
+ * a safe UI operation rather than a failed model submission.
+ */
+export function setCloudProvider(provider: CloudProviderId): CloudModelSettings {
+  if (!isCloudProviderId(provider)) {
+    throw new CloudConfigRejectedError(`Unknown Cloud provider: ${String(provider)}.`);
+  }
+  const previous = getCloudModelSettings();
+  Zotero.Prefs.set(PROVIDER_PREF, provider, true);
+  if (provider !== 'custom-openai-compatible') {
+    const entry = getProviderDefaultCatalogEntry(provider);
+    if (entry) {
+      // Model identity is shared by the legacy preference schema, so update
+      // it atomically with provider selection. Bailian's editable overrides
+      // remain in provider-scoped prefs; OpenAI/Gemini resolve their complete
+      // fixed profiles directly from the catalog.
+      Zotero.Prefs.set(MODEL_NAME_PREF, entry.modelName, true);
+      Zotero.Prefs.set(DIMENSIONS_PREF, entry.dimensions, true);
+    }
+  }
+  if ((previous.provider === 'alibaba-bailian') !== (provider === 'alibaba-bailian')) {
+    Zotero.Prefs.set(BRIEF_CONNECTION_VERIFIED_PREF, false, true);
+  }
+  return getCloudModelSettings();
+}
+
 /**
  * Bailian region selection. Falls back to a read-only migration from the
  * legacy `zotseek.cloud.baseUrl` pref: only an exact international endpoint
@@ -437,7 +489,15 @@ function bailianSettingsFromCatalog(
 ): CloudModelSettings {
   const resolved = entry || getProviderDefaultCatalogEntry('alibaba-bailian')!;
   const region = getBailianRegion();
-  const maxInputTokens = storedPositiveInteger(MAX_INPUT_TOKENS_PREF, resolved.maxInputTokens);
+  const positiveOverride = (key: string, fallback: number): number => {
+    const value = Number(readBailianOverride(key));
+    return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+  };
+  const roleOverride = (key: string, fallback: string): string => {
+    const value = readBailianOverride(key);
+    return typeof value === 'string' ? value.trim() : fallback;
+  };
+  const maxInputTokens = positiveOverride(MAX_INPUT_TOKENS_PREF, resolved.maxInputTokens);
   return {
     provider: 'alibaba-bailian',
     configured: !!entry,
@@ -447,9 +507,9 @@ function bailianSettingsFromCatalog(
     dimensions: storedDimensions,
     maxInputTokens,
     recommendedChunkTokens: calculateRecommendedChunkTokens(resolved.chunkProfile, maxInputTokens),
-    queryRole: storedString(QUERY_ROLE_PREF, resolved.queryRole, false).trim(),
-    documentRole: storedString(DOCUMENT_ROLE_PREF, resolved.documentRole, false).trim(),
-    batchSize: storedPositiveInteger(BATCH_SIZE_PREF, resolved.batchSize),
+    queryRole: roleOverride(QUERY_ROLE_PREF, resolved.queryRole),
+    documentRole: roleOverride(DOCUMENT_ROLE_PREF, resolved.documentRole),
+    batchSize: positiveOverride(BATCH_SIZE_PREF, resolved.batchSize),
     roleContract: resolved.roleContract,
     adapterVersion: resolved.adapterVersion,
     outputContract: resolved.outputContract,
@@ -496,13 +556,23 @@ function resolveCustomSettings(): CloudModelSettings {
   const customBaseUrl = storedString(CUSTOM_BASE_URL_PREF, '');
   const modelName = storedString(CUSTOM_MODEL_NAME_PREF, '');
   const dimensions = storedPositiveInteger(CUSTOM_DIMENSIONS_PREF, 0);
-  const maxInputTokens = storedPositiveInteger(
-    CUSTOM_MAX_INPUT_TOKENS_PREF,
-    CUSTOM_OPENAI_COMPATIBLE_DEFAULT_MAX_INPUT_TOKENS,
-  );
   let urlValid = false;
   try { assertCustomProviderBaseUrl(customBaseUrl); urlValid = true; } catch { /* unconfigured */ }
-  const configured = urlValid && !!modelName && dimensions > 0;
+  const hasModelContract = urlValid && !!modelName && dimensions > 0;
+  // Ignore legacy placeholder values while the Custom model fields are empty;
+  // otherwise an old 8192 default would leak back into the blank UI state.
+  const maxInputTokens = hasModelContract
+    ? storedPositiveInteger(
+        CUSTOM_MAX_INPUT_TOKENS_PREF,
+        CUSTOM_OPENAI_COMPATIBLE_UNCONFIGURED_MAX_INPUT_TOKENS,
+      )
+    : CUSTOM_OPENAI_COMPATIBLE_UNCONFIGURED_MAX_INPUT_TOKENS;
+  const batchSize = hasModelContract
+    ? storedPositiveInteger(CUSTOM_BATCH_SIZE_PREF, CUSTOM_OPENAI_COMPATIBLE_DEFAULT_BATCH_SIZE)
+    : CUSTOM_OPENAI_COMPATIBLE_DEFAULT_BATCH_SIZE;
+  const configured = hasModelContract
+    && Number.isSafeInteger(Number(readPref(CUSTOM_MAX_INPUT_TOKENS_PREF)))
+    && Number(readPref(CUSTOM_MAX_INPUT_TOKENS_PREF)) > 0;
   return {
     provider: 'custom-openai-compatible',
     configured,
@@ -514,7 +584,10 @@ function resolveCustomSettings(): CloudModelSettings {
     recommendedChunkTokens: calculateRecommendedChunkTokens(CLOUD_CHUNK_PROFILE, maxInputTokens),
     queryRole: '',
     documentRole: '',
-    batchSize: storedPositiveInteger(CUSTOM_BATCH_SIZE_PREF, CLOUD_BATCH_SIZE),
+    // Unknown gateways have no trustworthy batch profile. One is the safe
+    // initial value; the UI should render it as editable rather than as a
+    // provider fact when the Custom profile is incomplete.
+    batchSize,
     roleContract: 'none',
     adapterVersion: CUSTOM_OPENAI_COMPATIBLE_ADAPTER_VERSION,
     outputContract: 'none',
@@ -705,10 +778,10 @@ export function setCloudModelSettings(input: CloudModelSettingsInput): CloudMode
     Zotero.Prefs.set(BAILIAN_REGION_PREF, settings.bailianRegion, true);
     Zotero.Prefs.set(MODEL_NAME_PREF, settings.modelName, true);
     Zotero.Prefs.set(DIMENSIONS_PREF, settings.dimensions, true);
-    Zotero.Prefs.set(MAX_INPUT_TOKENS_PREF, settings.maxInputTokens, true);
-    Zotero.Prefs.set(QUERY_ROLE_PREF, settings.queryRole, true);
-    Zotero.Prefs.set(DOCUMENT_ROLE_PREF, settings.documentRole, true);
-    Zotero.Prefs.set(BATCH_SIZE_PREF, settings.batchSize, true);
+    Zotero.Prefs.set(bailianOverridePref(MAX_INPUT_TOKENS_PREF), settings.maxInputTokens, true);
+    Zotero.Prefs.set(bailianOverridePref(QUERY_ROLE_PREF), settings.queryRole, true);
+    Zotero.Prefs.set(bailianOverridePref(DOCUMENT_ROLE_PREF), settings.documentRole, true);
+    Zotero.Prefs.set(bailianOverridePref(BATCH_SIZE_PREF), settings.batchSize, true);
   } else if (settings.provider === 'openai' || settings.provider === 'google-gemini-api') {
     Zotero.Prefs.set(MODEL_NAME_PREF, settings.modelName, true);
     Zotero.Prefs.set(DIMENSIONS_PREF, settings.dimensions, true);
@@ -732,6 +805,51 @@ export function setCloudModelSettings(input: CloudModelSettingsInput): CloudMode
       && previous.bailianRegion !== settings.bailianRegion);
   if (briefAffected) {
     Zotero.Prefs.set(BRIEF_CONNECTION_VERIFIED_PREF, false, true);
+  }
+  return settings;
+}
+
+/**
+ * Restore the current provider/model's catalog profile without changing the
+ * provider, selected model, Bailian region, or credentials.
+ *
+ * Custom has no catalog profile: reset means an empty user contract and the
+ * safe one-item batch. The resolver keeps positive runtime placeholders for
+ * the model registry, while `configured === false` tells the UI to render the
+ * model fields as blank until the user fills them.
+ */
+export function resetCloudModelSettings(): CloudModelSettings {
+  const previous = getCloudModelSettings();
+  if (previous.provider === 'custom-openai-compatible') {
+    Zotero.Prefs.set(CUSTOM_BASE_URL_PREF, '', true);
+    Zotero.Prefs.set(CUSTOM_MODEL_NAME_PREF, '', true);
+    Zotero.Prefs.set(CUSTOM_DIMENSIONS_PREF, 0, true);
+    Zotero.Prefs.set(CUSTOM_MAX_INPUT_TOKENS_PREF, 0, true);
+    Zotero.Prefs.set(CUSTOM_BATCH_SIZE_PREF, CUSTOM_OPENAI_COMPATIBLE_DEFAULT_BATCH_SIZE, true);
+  } else if (previous.provider === 'alibaba-bailian') {
+    const entry = findCloudCatalogEntry(
+      previous.provider,
+      previous.modelName,
+      previous.dimensions,
+    );
+    if (entry) {
+      // Only Bailian stores editable overrides in these provider-scoped prefs.
+      // Fixed OpenAI/Gemini profiles already resolve directly from the
+      // catalog and must not overwrite Bailian's saved overrides.
+      Zotero.Prefs.set(bailianOverridePref(MAX_INPUT_TOKENS_PREF), entry.maxInputTokens, true);
+      Zotero.Prefs.set(bailianOverridePref(QUERY_ROLE_PREF), entry.queryRole, true);
+      Zotero.Prefs.set(bailianOverridePref(DOCUMENT_ROLE_PREF), entry.documentRole, true);
+      Zotero.Prefs.set(bailianOverridePref(BATCH_SIZE_PREF), entry.batchSize, true);
+    }
+  }
+
+  const settings = getCloudModelSettings();
+  if (settings.provider === 'custom-openai-compatible') {
+    // An empty Custom contract can never remain connection-verified, even if
+    // it was already empty when reset was pressed.
+    setCloudConnectionVerified(false, settings.provider);
+  } else if (cloudSettingsChangeKey(previous) !== cloudSettingsChangeKey(settings)) {
+    setCloudConnectionVerified(false, settings.provider);
   }
   return settings;
 }

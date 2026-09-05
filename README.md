@@ -77,7 +77,7 @@ Set the API key, test the connection, and then select the Cloud model. The API k
 
 ![Cloud Embedding settings](docs/images/readme-cloud-settings.png)
 
-The advanced fields describe the model context, dimensions, prefixes, and batch size. Keep the preset values unless you understand the actual API contract of the cloud model.
+The advanced fields describe the model context, dimensions, optional query/index parameters, and batch size. Built-in models use their catalog profiles; Custom endpoints require the user to provide the unknown model limits explicitly.
 
 ![Advanced Cloud Embedding settings](docs/images/readme-cloud-advanced-settings.png)
 

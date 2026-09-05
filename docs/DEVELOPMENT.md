@@ -604,10 +604,16 @@ input), OpenAI `text-embedding-3-small`/`text-embedding-3-large` (1536d/3072d,
 `gemini-embedding-001` (768d, 2048-token input, recommendation 1740) — and a
 stored value that does not match the catalog marks the slot unconfigured
 instead of silently substituting another model. Bailian keeps its editable
-`query`/`document` roles, maximum input tokens and batch size (advanced
-section, with a restore-defaults action); OpenAI and Gemini show those
-parameters read-only. Recommended chunk tokens are derived from each model's
-chunk profile and cannot be edited independently.
+provider-specific query/index parameters, maximum input tokens and batch size
+(advanced section, with a restore-defaults action); OpenAI and Gemini show
+those parameters read-only. Custom starts without invented model facts and
+requires the user to supply its model contract. Recommended chunk tokens are
+derived from each model's chunk profile and cannot be edited independently.
+
+Bailian override writes use `zotseek.cloud.{maxInputTokens,queryRole,documentRole,batchSize}.alibaba-bailian`.
+Legacy unscoped values remain readable, except the exact Gemini profile tuple
+left by the old cross-provider UI save bug, which falls back to Bailian defaults.
+Explicit blank parameters and other legacy custom values are preserved.
 
 Built-in request URLs are fixed. Bailian selects one of two official regional
 endpoints via the machine-valued `zotseek.cloud.bailianRegion` pref (`cn` or
@@ -625,13 +631,16 @@ is sent in `parameters`, while an empty value omits it. The OpenAI adapter
 (and the Custom provider) sends query and document text identically with no
 roles and no prefixes. The Gemini adapter uses `batchEmbedContents` with
 `x-goog-api-key` and places `taskType` (`RETRIEVAL_QUERY`/`RETRIEVAL_DOCUMENT`)
-and `outputDimensionality` inside `embedContentConfig`, whose top-level
-request fields are deprecated. Cloud text is never modified with an E5-style
+and `outputDimensionality` directly on each `requests[]` entry, matching the
+Google JS SDK wire format. A 2026-09-05 real probe returned 3072 dimensions
+with nested `embedContentConfig`, versus the requested 768 with direct fields.
+The adapter contract is `gemini-embedcontent-v2`. Cloud text is never modified with an E5-style
 prefix. Changing a provider's model, dimensions or roles clears that
 provider's connection verification; the document role, per-provider adapter
 version and output contract are also part of the index policy fingerprint.
-The shared transport (`cloud-embedding-client.ts`) owns batching (10 per
-batch), timeouts, cancellation, bounded 429/5xx retries and vector validation;
+The shared transport (`cloud-embedding-client.ts`) owns profile-driven batching
+(20 for Bailian, 10 for OpenAI/Gemini, and a conservative initial 1 for Custom),
+timeouts, cancellation, bounded 429/5xx retries and vector validation;
 provider differences live in `dashscope-embedding-adapter.ts`,
 `openai-embedding-adapter.ts` and `gemini-embedding-adapter.ts`, selected by
 the factory in `cloud-embedding-adapter.ts`.

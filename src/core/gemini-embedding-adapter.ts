@@ -2,9 +2,10 @@
  * Google Gemini API embeddings adapter (gemini-embedding-001).
  *
  * Uses the synchronous batchEmbedContents endpoint, which is the Gemini
- * equivalent of the OpenAI input array. Per the current API reference, the
- * top-level `taskType`/`title`/`outputDimensionality` request fields are
- * deprecated: all configuration must go through `embedContentConfig`.
+ * equivalent of the OpenAI input array. Keep taskType/outputDimensionality
+ * directly on each request, matching Google's JS SDK wire conversion.
+ * A real gemini-embedding-001 probe ignored nested embedContentConfig and
+ * returned 3072 dimensions despite requesting 768 (2026-09-05).
  */
 
 import {
@@ -42,10 +43,8 @@ export function buildGeminiEmbeddingBody(
     requests: texts.map(text => ({
       model: `models/${config.modelName}`,
       content: { parts: [{ text }] },
-      embedContentConfig: {
-        taskType,
-        outputDimensionality: config.outputDimensionality,
-      },
+      taskType,
+      outputDimensionality: config.outputDimensionality,
     })),
   };
 }

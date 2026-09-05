@@ -31,23 +31,22 @@ describe('gemini embedding adapter', () => {
   test('maps query and document kinds to their retrieval task types', () => {
     const query = buildGeminiEmbeddingBody(baseConfig, ['q'], 'query');
     const document = buildGeminiEmbeddingBody(baseConfig, ['d'], 'document');
-    assert.equal((query as any).requests[0].embedContentConfig.taskType, 'RETRIEVAL_QUERY');
-    assert.equal((document as any).requests[0].embedContentConfig.taskType, 'RETRIEVAL_DOCUMENT');
+    assert.equal((query as any).requests[0].taskType, 'RETRIEVAL_QUERY');
+    assert.equal((document as any).requests[0].taskType, 'RETRIEVAL_DOCUMENT');
   });
 
-  test('places taskType and outputDimensionality inside embedContentConfig only', () => {
-    const body: any = buildGeminiEmbeddingBody(baseConfig, ['a'], 'document');
+  test('uses the SDK batch wire format on every request to avoid ignored dimensions', () => {
+    const body: any = buildGeminiEmbeddingBody(baseConfig, ['a', 'b'], 'document');
     const request = body.requests[0];
     assert.equal(request.model, 'models/gemini-embedding-001');
     assert.deepEqual(request.content, { parts: [{ text: 'a' }] });
-    assert.deepEqual(request.embedContentConfig, {
-      taskType: 'RETRIEVAL_DOCUMENT',
-      outputDimensionality: 768,
-    });
-    // The top-level taskType/outputDimensionality fields are deprecated.
+    for (const item of body.requests) {
+      assert.equal(item.taskType, 'RETRIEVAL_DOCUMENT');
+      assert.equal(item.outputDimensionality, 768);
+      assert.equal('embedContentConfig' in item, false);
+      assert.equal('title' in item, false);
+    }
     assert.equal('taskType' in body, false);
-    assert.equal('outputDimensionality' in request, false);
-    assert.equal('title' in request.embedContentConfig, false);
   });
 
   test('returns embeddings in input order and parses usageMetadata', () => {
