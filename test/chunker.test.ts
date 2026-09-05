@@ -103,10 +103,9 @@ describe('chunkDocument, abstract mode', () => {
     assert.equal(chunks[0].text, 'A Title\n\nToo short.');
   });
 
-  test('truncates a very long title instead of emitting it whole', () => {
+  test('preserves the complete title in Metadata Summary', () => {
     const chunks = chunkDocument('T'.repeat(500), null, null, 'abstract');
-    assert.ok(chunks[0].text.length < 500, 'long title is cut down');
-    assert.match(chunks[0].text, /\.\.\.$/, 'and marked as truncated');
+    assert.equal(chunks.map(chunk => chunk.text).join(''), 'T'.repeat(500));
   });
 });
 
@@ -263,8 +262,8 @@ describe('preference reading', () => {
 });
 
 describe('persisted chunk strategy state', () => {
-  test('uses strategy 9 for the shared Metadata Summary contract', () => {
-    assert.equal(CHUNK_STRATEGY_VERSION, 9);
+  test('uses strategy 10 for faithful text and bounded final inputs', () => {
+    assert.equal(CHUNK_STRATEGY_VERSION, 10);
   });
 
   test('initializes an empty partition even when it has no marker', () => {
@@ -392,6 +391,131 @@ describe('Full-mode source allocation', () => {
       'summary-2',
     ]);
     assert.equal(result.wasTruncated, true);
+  });
+});
+
+describe('faithful production chunk boundaries (Plan 55)', () => {
+  const count = (text: string) => Array.from(text).length + 8;
+  const options = { maxTokens: 70, maxChunks: 200, maxChars: 8000, tokenCounter: count };
+
+  test('preserves sentence spacing and initial punctuation in both Note paths', () => {
+    const body = '.NET is useful.  Beta\tis here! Gamma stays. '.repeat(8) + 'Unfinished tail';
+    for (const structured of [false, true]) {
+      const note = structured
+        ? noteHTMLToStructuredText(`<h2>Topic</h2><p>${body}</p>`)
+        : body;
+      // HTML normalization precedes chunking; audit spans of that actual input.
+      const source = typeof note === 'string' ? note : note.sections[0].paragraphs.join('\n\n');
+      const result = chunkNoteTexts('', [note], options);
+      assert.equal(result.wasTruncated, false);
+      const bodies = result.chunks.map(chunk => structured
+        ? chunk.text.replace(/^Topic\n\n/, '') : chunk.text);
+      assert.ok(bodies.every(text => source.includes(text)), 'each body is an unchanged source span');
+      assert.equal(bodies.join(' ').replace(/\s+/g, ' ').trim(), source.replace(/\s+/g, ' ').trim());
+      assert.ok(result.chunks.every(chunk => count(chunk.embedText ?? chunk.text) <= options.maxTokens));
+    }
+  });
+
+  test('retains an unfinished oversized PDF tail in estimated and measured paths', () => {
+    const first = 'This sentence discusses ordinary semantic retrieval evidence. '.repeat(300)
+      + 'UNPUNCTUATED_TAIL evidence about final measurements';
+    const second = 'Another ordinary paragraph preserves surrounding context for reliable extraction. '.repeat(3);
+    for (const tokenCounter of [undefined, estimateCloudTokens, count]) {
+      const result = chunkDocumentWithPagesEx('T', null, [{ pageNumber: 7, text: `${first}\n\n${second}` }], 'full', {
+        maxTokens: 2000, maxChunks: 100, maxChars: 8000, tokenCounter, pdfReferenceFiltering: 'off',
+      });
+      const bodies = result.chunks.filter(chunk => chunk.type !== 'summary');
+      assert.ok(bodies.some(chunk => chunk.text.includes('UNPUNCTUATED_TAIL')));
+      assert.ok(bodies.every(chunk => chunk.pageNumber === 7));
+      assert.equal(result.wasTruncated, false);
+    }
+  });
+
+  test('preserves full oversized titles consistently across all Summary entry points', () => {
+    const title = '异常🧠标题'.repeat(100);
+    const body = '必须保留的摘要正文'.repeat(25);
+    const abstract = chunkDocumentEx(title, body, null, 'abstract', options);
+    const notes = chunkDocumentEx(title, body, null, 'notes', options);
+    const full = chunkDocumentWithPagesEx(title, body, null, 'full', options);
+    assert.deepEqual(abstract.chunks, notes.chunks);
+    assert.deepEqual(abstract.chunks, full.chunks);
+    assert.equal(abstract.wasTruncated, false);
+    assert.equal(abstract.chunks.map(chunk => chunk.text).join('').replace(/\s/g, ''), title + body);
+    assert.ok(abstract.chunks.every(chunk => count(chunk.text) <= options.maxTokens));
+  });
+
+  test('keeps PDF body when its repeated title exceeds the input budget', () => {
+    const title = '超长标题'.repeat(80);
+    const body = '正文🧠证据应完整进入模型'.repeat(25);
+    const result = chunkDocumentWithPagesEx(title, null, [{ pageNumber: 3, text: body }], 'full', {
+      ...options, pdfReferenceFiltering: 'off',
+    });
+    const bodies = result.chunks.filter(chunk => chunk.type !== 'summary');
+    assert.ok(bodies.length > 0);
+    assert.ok(result.chunks.every(chunk => count(chunk.text) <= options.maxTokens));
+    assert.ok(bodies.every(chunk => chunk.pageNumber === 3));
+    const recovered = bodies.map(chunk => chunk.text.slice(chunk.text.indexOf('\n\n') + 2))
+      .join('').replace(/\s/g, '');
+    assert.equal(recovered, body);
+    assert.equal(result.wasTruncated, false);
+  });
+
+  test('never slices UTF-16 surrogate pairs at the character ceiling', () => {
+    const body = '🧠𠮷'.repeat(2500);
+    for (const tokenCounter of [undefined, count]) {
+      const result = chunkDocumentEx('T', body, null, 'abstract', {
+        maxTokens: 20000, maxChars: 8000, maxChunks: 100, tokenCounter,
+      });
+      const pieces = result.chunks.map(chunk => chunk.text.replace(/^T\n\n/, ''));
+      assert.equal(pieces.join(''), body);
+      for (const chunk of result.chunks) {
+        assert.ok(chunk.text.length <= 8000);
+        for (const character of chunk.text) {
+          assert.ok(!/^[\uD800-\uDFFF]$/.test(character), 'no isolated surrogate');
+        }
+      }
+    }
+  });
+
+  test('fails clearly when even one complete code point cannot fit', () => {
+    assert.throws(() => chunkDocumentEx('', '中', null, 'abstract', {
+      ...options, maxTokens: 8,
+    }), /budget|limit/i);
+    assert.throws(() => chunkDocumentEx('', '🧠', null, 'abstract', {
+      ...options, maxChars: 1,
+    }), /budget|limit/i);
+    assert.throws(() => chunkNoteTexts('', ['中'], { ...options, maxTokens: 8 }), /budget|limit/i);
+    assert.throws(() => chunkNoteTexts('', ['🧠'], { ...options, maxChars: 1 }), /budget|limit/i);
+  });
+
+  test('protects surrogate pairs in PDF recovery windows with title context disabled', () => {
+    const body = 'A' + '🧠'.repeat(800);
+    const result = chunkDocumentWithPagesEx('T', null, [{ pageNumber: 5, text: body }], 'full', {
+      ...options, maxTokens: 1000, pdfTitlePrefix: 'off', pdfReferenceFiltering: 'off',
+    });
+    const chunks = result.chunks.filter(chunk => chunk.type !== 'summary');
+    assert.equal(chunks.map(chunk => chunk.text).join('').replace(/\s/g, ''), body);
+    assert.ok(chunks.every(chunk => chunk.pageNumber === 5));
+    for (const chunk of chunks) {
+      for (const character of chunk.text) assert.ok(!/^[\uD800-\uDFFF]$/.test(character));
+    }
+  });
+
+  test('keeps normal Summary output and Chinese sentence spacing unchanged', () => {
+    const summary = chunkDocumentEx('普通标题', '短摘要与标签', null, 'notes', options);
+    assert.equal(summary.chunks.length, 1);
+    assert.equal(summary.chunks[0].text, '普通标题\n\n短摘要与标签');
+    const note = '中文第一句。第二句！第三句？'.repeat(30);
+    const result = chunkNoteTexts('', [note], options);
+    assert.equal(result.chunks.map(chunk => chunk.text).join(''), note);
+    assert.ok(result.chunks.every(chunk => count(chunk.embedText ?? chunk.text) <= options.maxTokens));
+  });
+
+  test('reports the shared cap when it cuts off a split oversized Summary', () => {
+    const result = chunkDocumentEx('中文'.repeat(200), 'TAIL', null, 'notes', { ...options, maxChunks: 2 });
+    assert.equal(result.chunks.length, 2);
+    assert.equal(result.wasTruncated, true);
+    assert.ok(result.chunks.every(chunk => count(chunk.text) <= options.maxTokens));
   });
 });
 

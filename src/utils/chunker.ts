@@ -83,7 +83,7 @@ export interface ChunkResult {
 export type IndexingMode = 'abstract' | 'notes' | 'full';
 
 /** Bump whenever persisted chunk text, boundaries, or structure semantics change. */
-export const CHUNK_STRATEGY_VERSION = 9;
+export const CHUNK_STRATEGY_VERSION = 10;
 
 /** Full-mode source provenance contract; scoped through freshness fingerprints. */
 export const PDF_SOURCE_IDENTITY_VERSION = 1;
@@ -113,6 +113,30 @@ const DEFAULT_OPTIONS: Required<Pick<ChunkOptions, 'maxTokens' | 'maxChunks' | '
   maxChunks: 100,
   maxChars: 8000,
 };
+
+/** Retain every source span, including leading punctuation and unfinished tails. */
+function sentenceSpans(text: string): string[] {
+  const spans: string[] = [];
+  // Latin punctuation inside .NET, decimal numbers or URLs is not a boundary.
+  const ends = /[。！？]+|[.!?]+(?=\s|$)/gu;
+  let start = 0;
+  let match: RegExpExecArray | null;
+  while ((match = ends.exec(text)) !== null) {
+    const end = match.index + match[0].length;
+    spans.push(text.slice(start, end));
+    start = end;
+  }
+  if (start < text.length) spans.push(text.slice(start));
+  return spans;
+}
+
+/** Only repeated context is shortened; Summary retains the complete title. */
+function boundedTitle(title: string, maxCharacters: number): string {
+  const characters = Array.from(title);
+  return characters.length > maxCharacters
+    ? `${characters.slice(0, maxCharacters).join('')}...`
+    : title;
+}
 
 // Patterns to identify section boundaries
 const SECTION_PATTERNS = {
@@ -157,119 +181,6 @@ export function estimateCloudTokens(text: string): number {
 
   const nonCjkWords = nonCjkText.split(/\s+/).filter(word => word.length > 0).length;
   return Math.ceil(cjkCharacters * 2 + nonCjkWords * 1.3);
-}
-
-/**
- * Split a single oversized chunk into multiple chunks at sentence boundaries,
- * respecting a hard character limit. Preserves metadata (page, paragraph, type).
- */
-function splitChunkByCharLimit(chunk: Chunk, maxChars: number): Chunk[] {
-  if (chunk.text.length <= maxChars) return [chunk];
-
-  // Extract title prefix (everything before first \n\n) to prepend to each sub-chunk
-  const separatorIdx = chunk.text.indexOf('\n\n');
-  const titlePrefix = separatorIdx >= 0 ? chunk.text.substring(0, separatorIdx) : '';
-  const body = separatorIdx >= 0 ? chunk.text.substring(separatorIdx + 2) : chunk.text;
-  const prefixLen = titlePrefix.length + 2; // +2 for \n\n
-  const availableChars = maxChars - prefixLen;
-
-  if (availableChars <= 0) {
-    // A pathological title can consume the whole budget. Preserve the full
-    // input as consecutive pieces instead of silently dropping its tail.
-    const pieces: Chunk[] = [];
-    for (let offset = 0; offset < chunk.text.length; offset += maxChars) {
-      const text = chunk.text.substring(offset, offset + maxChars);
-      pieces.push({ ...chunk, index: 0, text, tokenCount: estimateTokens(text) });
-    }
-    return pieces;
-  }
-
-  const sentences = body.match(/[^.!?。！？]+[.!?。！？]+|[^.!?。！？]+$/g) || [body];
-  const result: Chunk[] = [];
-  let currentText = '';
-
-  for (const sentence of sentences) {
-    // Preserve an oversized sentence by slicing it into multiple pieces rather
-    // than truncating its tail. This matters for long CJK note paragraphs.
-    const pieces: string[] = [];
-    for (let offset = 0; offset < sentence.length; offset += availableChars) {
-      pieces.push(sentence.substring(offset, offset + availableChars));
-    }
-
-    for (const piece of pieces) {
-      if (currentText.length + piece.length > availableChars && currentText.trim()) {
-        result.push({
-          ...chunk,
-          index: 0, // Re-indexed by caller
-          text: titlePrefix ? `${titlePrefix}\n\n${currentText.trim()}` : currentText.trim(),
-          tokenCount: estimateTokens(currentText),
-        });
-        currentText = piece;
-      } else {
-        currentText += piece;
-      }
-    }
-  }
-
-  // Flush remaining
-  if (currentText.trim()) {
-    result.push({
-      ...chunk,
-      index: 0,
-      text: titlePrefix ? `${titlePrefix}\n\n${currentText.trim()}` : currentText.trim(),
-      tokenCount: estimateTokens(currentText),
-    });
-  }
-
-  return result;
-}
-
-/**
- * Post-process chunks to enforce a hard character limit.
- * Splits any chunk exceeding maxChars at sentence boundaries.
- * This catches chunks that slip through the token-based limits due to
- * the variable token-to-character ratio in academic text.
- */
-/**
- * Post-process chunks to enforce a hard character limit and report whether
- * the maxChunks ceiling was hit while there was still content to add.
- */
-function enforceCharLimitEx(
-  chunks: Chunk[],
-  maxChars: number,
-  maxChunks: number,
-): { chunks: Chunk[]; truncatedByCharLimit: boolean } {
-  const result: Chunk[] = [];
-  let truncatedByCharLimit = false;
-
-  for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i];
-    if (result.length >= maxChunks) {
-      truncatedByCharLimit = true;
-      break;
-    }
-
-    if (chunk.text.length <= maxChars) {
-      result.push(chunk);
-    } else {
-      const subChunks = splitChunkByCharLimit(chunk, maxChars);
-      for (let j = 0; j < subChunks.length; j++) {
-        if (result.length >= maxChunks) {
-          // We dropped at least one sub-chunk of this oversized chunk
-          truncatedByCharLimit = true;
-          break;
-        }
-        result.push(subChunks[j]);
-      }
-    }
-  }
-
-  // Re-index
-  for (let i = 0; i < result.length; i++) {
-    result[i].index = i;
-  }
-
-  return { chunks: result, truncatedByCharLimit };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -489,7 +400,7 @@ function splitTextIntoChunks(
       chunkParagraphIdx = runningParagraphIdx;
 
       // Split paragraph by sentences
-      const sentences = para.text.match(/[^.!?。！？]+[.!?。！？]+|[^.!?。！？]+$/g) || [para.text];
+      const sentences = sentenceSpans(para.text);
       for (const sentence of sentences) {
         const sentTokens = estimateTokens(sentence);
         if (currentTokens + sentTokens > availableTokens && currentChunk.trim()) {
@@ -605,10 +516,8 @@ export function chunkDocumentEx(
   const chunks: Chunk[] = [];
   let wasTruncated = false;
   
-  // Prepare title prefix (truncate if extremely long)
-  const titlePrefix = title.length > 300 
-    ? title.substring(0, 300) + '...' 
-    : title;
+  const titlePrefix = boundedTitle(title, 300);
+  const inputPrefixes = { summary: title, body: titlePrefix };
   
   // ═══════════════════════════════════════════════════════════════════════
   // CHUNK 1: Summary (always included in both modes)
@@ -620,8 +529,8 @@ export function chunkDocumentEx(
   // a short but useful tag is not discarded in Abstract mode.
   const summaryBodyIsUseful = !!abstract && abstract.trim().length > 0;
   const summaryText = summaryBodyIsUseful
-    ? `${titlePrefix}\n\n${abstract}`
-    : titlePrefix;
+    ? `${title}\n\n${abstract}`
+    : title;
 
   chunks.push({
     index: 0,
@@ -638,7 +547,7 @@ export function chunkDocumentEx(
   // Abstract and Notes modes do not process PDF full text. Notes are appended
   // by TextExtractor so note source boundaries remain explicit.
   if (mode !== 'full') {
-    const enforced = enforceInputLimitsEx(chunks, opts);
+    const enforced = enforceInputLimitsEx(chunks, opts, inputPrefixes);
     return {
       chunks: enforced.chunks,
       wasTruncated: wasTruncated || enforced.truncatedByCharLimit,
@@ -652,7 +561,7 @@ export function chunkDocumentEx(
   // ═══════════════════════════════════════════════════════════════════════
   if (!fulltext || fulltext.length < 500) {
     // No meaningful fulltext available
-    const enforced = enforceInputLimitsEx(chunks, opts);
+    const enforced = enforceInputLimitsEx(chunks, opts, inputPrefixes);
     return {
       chunks: enforced.chunks,
       wasTruncated: wasTruncated || enforced.truncatedByCharLimit,
@@ -754,7 +663,7 @@ export function chunkDocumentEx(
   }
 
   // Enforce character limit as safety net (token estimates can undercount for dense text)
-  const enforced = enforceInputLimitsEx(chunks, opts);
+  const enforced = enforceInputLimitsEx(chunks, opts, inputPrefixes);
 
   // pagesIndexed: count distinct pages reflected in surviving chunks
   const distinctPages = new Set<number>();
@@ -792,7 +701,7 @@ function splitMeasuredUnitByCharacters(
   while (offset < characters.length) {
     let low = 1;
     let high = characters.length - offset;
-    let best = 0;
+    let best = countBody(characters[offset]) <= maxTokens ? 1 : 0;
 
     while (low <= high) {
       const middle = Math.floor((low + high) / 2);
@@ -805,10 +714,9 @@ function splitMeasuredUnitByCharacters(
       }
     }
 
-    // A 200-character title should always leave room for at least one body
-    // character. Keep forward progress if a malformed tokenizer says it does
-    // not; the embedding worker's own limit remains the final safety net.
-    if (best === 0) best = 1;
+    if (best === 0) {
+      throw new Error('Chunk input budget cannot fit a complete Unicode character');
+    }
 
     // Prefer a nearby natural boundary without reconstructing text through
     // tokenizer.decode(), which can alter Chinese spacing and punctuation.
@@ -822,9 +730,11 @@ function splitMeasuredUnitByCharacters(
       raw.lastIndexOf(';'),
       raw.lastIndexOf('、')
     );
-    const cut = boundary >= Math.floor(raw.length * 0.75)
+    let cut = boundary >= Math.floor(raw.length * 0.75)
       ? Array.from(raw.slice(0, boundary + 1)).length
       : best;
+    // Token counts need not be monotonic at a newly introduced word boundary.
+    if (countBody(characters.slice(offset, offset + cut).join('')) > maxTokens) cut = best;
     const text = characters.slice(offset, offset + Math.max(1, cut)).join('');
     parts.push({ text, tokenCount: countBody(text) });
     offset += Math.max(1, cut);
@@ -839,7 +749,7 @@ function splitMeasuredBodyBySentences(
   countBody: (body: string) => number,
   maxTokens: number
 ): MeasuredTextPart[] {
-  const sentences = body.match(/[^.!?。！？]+[.!?。！？]+|[^.!?。！？]+$/gu) || [body];
+  const sentences = sentenceSpans(body);
   const parts: MeasuredTextPart[] = [];
   let current = '';
 
@@ -868,44 +778,85 @@ function splitMeasuredBodyBySentences(
   return parts;
 }
 
-function splitChunkByTokenLimit(
+function splitChunkByInputLimits(
   chunk: Chunk,
   maxTokens: number,
   measureTokens: TokenCounter,
+  maxChars: number,
+  sourceTitle: string,
 ): Chunk[] {
   const measuredCount = measureTokens(chunk.text);
-  if (measuredCount <= maxTokens) return [{ ...chunk, tokenCount: measuredCount }];
+  if (measuredCount <= maxTokens && chunk.text.length <= maxChars) {
+    return [{ ...chunk, tokenCount: measuredCount }];
+  }
 
-  const separatorIndex = chunk.text.indexOf('\n\n');
-  const titlePrefix = separatorIndex >= 0 ? chunk.text.substring(0, separatorIndex) : '';
-  const body = separatorIndex >= 0 ? chunk.text.substring(separatorIndex + 2) : chunk.text;
+  // The caller knows which text is artificial context. Never infer a title
+  // from a double newline in a body-only or previously split input.
+  const prefix = sourceTitle ? `${sourceTitle}\n\n` : '';
+  let titlePrefix = prefix && chunk.text.startsWith(prefix) ? sourceTitle : '';
+  let body = titlePrefix ? chunk.text.slice(prefix.length) : chunk.text;
+  const fitsContext = (value: string) =>
+    value.length <= Math.floor(maxChars / 2) && measureTokens(value) <= Math.floor(maxTokens / 2);
+
+  if (titlePrefix && !fitsContext(`${titlePrefix}\n\n`)) {
+    if (chunk.type === 'summary') {
+      // A title is source evidence in Summary: split it together with the
+      // Metadata body rather than discarding or repeating an oversized title.
+      body = chunk.text;
+      titlePrefix = '';
+    } else {
+      // Repeated PDF context may use at most half the budget on this fallback.
+      const characters = Array.from(titlePrefix);
+      titlePrefix = '';
+      let low = 1;
+      let high = characters.length;
+      while (low <= high) {
+        const middle = Math.floor((low + high) / 2);
+        const candidate = `${characters.slice(0, middle).join('')}…`;
+        if (fitsContext(`${candidate}\n\n`)) {
+          titlePrefix = candidate;
+          low = middle + 1;
+        } else high = middle - 1;
+      }
+    }
+  }
+
   const buildText = (part: string) => titlePrefix ? `${titlePrefix}\n\n${part}` : part;
-  const countBody = (part: string) => measureTokens(buildText(part));
+  const countBody = (part: string) => {
+    const input = buildText(part.trim());
+    return input.length <= maxChars ? measureTokens(input) : Infinity;
+  };
   const parts = splitMeasuredBodyBySentences(body, countBody, maxTokens);
 
-  return parts.map((part, index) => ({
+  return parts.filter(part => part.text.trim()).map((part, index) => ({
     ...chunk,
     index,
-    text: buildText(part.text),
-    tokenCount: part.tokenCount,
+    text: buildText(part.text.trim()),
+    tokenCount: countBody(part.text),
   }));
 }
 
-/** Apply the selected token measurement first, then the lossless character split. */
+/** Enforce both ceilings on the same final input, then apply the shared quota. */
 function enforceInputLimitsEx(
   chunks: Chunk[],
   options: Required<Pick<ChunkOptions, 'maxTokens' | 'maxChunks' | 'maxChars'>> & Pick<ChunkOptions, 'tokenCounter'>,
-  maxChunks: number = options.maxChunks,
+  prefixes: { summary: string; body: string },
 ): { chunks: Chunk[]; truncatedByCharLimit: boolean } {
   const tokenLimited: Chunk[] = [];
   let truncated = false;
+  const measureTokens = options.tokenCounter ?? estimateTokens;
 
   for (const chunk of chunks) {
-    const parts = options.tokenCounter
-      ? splitChunkByTokenLimit(chunk, options.maxTokens, options.tokenCounter)
-      : [chunk];
+    if (tokenLimited.length >= options.maxChunks) {
+      truncated = true;
+      break;
+    }
+    const parts = splitChunkByInputLimits(
+      chunk, options.maxTokens, measureTokens, options.maxChars,
+      chunk.type === 'summary' ? prefixes.summary : prefixes.body,
+    );
     for (const part of parts) {
-      if (tokenLimited.length >= maxChunks) {
+      if (tokenLimited.length >= options.maxChunks) {
         truncated = true;
         break;
       }
@@ -914,32 +865,10 @@ function enforceInputLimitsEx(
     if (truncated) break;
   }
 
-  const charLimited = enforceCharLimitEx(tokenLimited, options.maxChars, maxChunks);
-  let finalChunks = charLimited.chunks;
-  if (options.tokenCounter) {
-    const verified: Chunk[] = [];
-    let verificationTruncated = false;
-    for (const chunk of charLimited.chunks) {
-      const parts = splitChunkByTokenLimit(chunk, options.maxTokens, options.tokenCounter);
-      for (const part of parts) {
-        if (verified.length >= maxChunks) {
-          verificationTruncated = true;
-          break;
-        }
-        verified.push(part);
-      }
-      if (verificationTruncated) break;
-    }
-    truncated = truncated || verificationTruncated;
-    finalChunks = verified;
-    finalChunks.forEach((chunk, index) => {
-      chunk.index = index;
-      chunk.tokenCount = options.tokenCounter!(chunk.text);
-    });
-  }
+  tokenLimited.forEach((chunk, index) => { chunk.index = index; });
   return {
-    chunks: finalChunks,
-    truncatedByCharLimit: truncated || charLimited.truncatedByCharLimit,
+    chunks: tokenLimited,
+    truncatedByCharLimit: truncated,
   };
 }
 
@@ -1077,10 +1006,10 @@ function splitOversizedNoteUnit(
   text: string,
   fits: (value: string) => boolean,
 ): string[] {
-  const sentences = text.match(/[^.!?。！？]+[.!?。！？]+|[^.!?。！？]+$/gu) || [text];
+  const sentences = sentenceSpans(text);
   const parts: string[] = [];
   let current = '';
-  for (const sentence of sentences.map(value => value.trim()).filter(Boolean)) {
+  for (const sentence of sentences) {
     const candidate = current ? `${current}${sentence}` : sentence;
     if (fits(candidate)) {
       current = candidate;
@@ -1357,6 +1286,12 @@ export function chunkNoteTexts(
   rawChunks.forEach((chunk, index) => {
     chunk.index = startIndex + index;
     const noteInput = chunk.embedText ?? chunk.text;
+    // The structured-heading fallback may temporarily exceed the budget.
+    // Only bounded final bodies may proceed to breadcrumbing and inference.
+    if (countTokens(noteInput) > opts.maxTokens ||
+        noteInput.length > opts.maxChars || chunk.text.length > opts.maxChars) {
+      throw new Error('Note input budget cannot fit a complete Unicode character and its context');
+    }
     chunk.embedText = prependNoteTitleBreadcrumb(
       title,
       noteInput,
@@ -1365,6 +1300,9 @@ export function chunkNoteTexts(
       opts.maxChars,
     );
     chunk.tokenCount = countTokens(chunk.embedText);
+    if (options.modelMaxInputTokens !== undefined && chunk.tokenCount > options.modelMaxInputTokens) {
+      throw new Error('Note input exceeds the model hard token limit');
+    }
     chunk.pageNumber = undefined;
     chunk.paragraphIndex = undefined;
     chunk.startChar = undefined;
@@ -1588,8 +1526,13 @@ function extractParagraphsFromPage(pageText: string): string[] {
         chunks.push(remaining.substring(0, spacePos).trim());
         remaining = remaining.substring(spacePos).trim();
       } else {
-        chunks.push(remaining.substring(0, CHUNK_TARGET).trim());
-        remaining = remaining.substring(CHUNK_TARGET).trim();
+        // The PDF recovery window must not introduce a broken surrogate pair
+        // before the final Unicode-aware input splitter gets to see the text.
+        let cut = CHUNK_TARGET;
+        if (/[\uD800-\uDBFF]/.test(remaining[cut - 1]) &&
+            /[\uDC00-\uDFFF]/.test(remaining[cut])) cut--;
+        chunks.push(remaining.substring(0, cut).trim());
+        remaining = remaining.substring(cut).trim();
       }
     }
   }
@@ -1637,14 +1580,10 @@ export function chunkDocumentWithPagesEx(
   const totalPagesAvailable = pages ? pages.length : 0;
 
   // Prepare the shorter title prefix used only by PDF body chunks.
-  const titlePrefix = title.length > 200
-    ? title.substring(0, 200) + '...'
-    : title;
-  const summaryTitlePrefix = title.length > 300
-    ? title.substring(0, 300) + '...'
-    : title;
+  const titlePrefix = boundedTitle(title, 200);
 
   const bodyTitlePrefix = pdfTitlePrefixEnabled ? titlePrefix : '';
+  const inputPrefixes = { summary: title, body: bodyTitlePrefix };
   const titleTokens = bodyTitlePrefix ? estimateTokens(bodyTitlePrefix) + 5 : 0;
   const withBodyTitlePrefix = (text: string): string => bodyTitlePrefix
     ? `${bodyTitlePrefix}\n\n${text}`
@@ -1654,8 +1593,8 @@ export function chunkDocumentWithPagesEx(
   // CHUNK 1: Summary (always included)
   // ═══════════════════════════════════════════════════════════════════════
   const summaryText = abstract && abstract.trim().length > 0
-    ? `${summaryTitlePrefix}\n\n${abstract}`
-    : summaryTitlePrefix;
+    ? `${title}\n\n${abstract}`
+    : title;
 
   chunks.push({
     index: 0,
@@ -1664,11 +1603,13 @@ export function chunkDocumentWithPagesEx(
     tokenCount: estimateTokens(summaryText),
     pageNumber: 1,  // Abstracts are typically on page 1
     paragraphIndex: 0,
+    startChar: undefined,
+    endChar: undefined,
   });
 
   // For abstract mode, we're done
   if (mode === 'abstract') {
-    const enforced = enforceInputLimitsEx(chunks, opts);
+    const enforced = enforceInputLimitsEx(chunks, opts, inputPrefixes);
     return {
       chunks: enforced.chunks,
       wasTruncated: wasTruncated || enforced.truncatedByCharLimit,
@@ -1683,7 +1624,7 @@ export function chunkDocumentWithPagesEx(
   // never cross a physical page boundary.
   // ═══════════════════════════════════════════════════════════════════════
   if (!pages || pages.length === 0) {
-    const enforced = enforceInputLimitsEx(chunks, opts);
+    const enforced = enforceInputLimitsEx(chunks, opts, inputPrefixes);
     return {
       chunks: enforced.chunks,
       wasTruncated: wasTruncated || enforced.truncatedByCharLimit,
@@ -1858,7 +1799,7 @@ export function chunkDocumentWithPagesEx(
       // Instead of truncating and losing content, we split at sentence boundaries
       if (!opts.tokenCounter && paraTokens > opts.maxTokens - titleTokens) {
         const availableTokens = opts.maxTokens - titleTokens;
-        const sentences = para.match(/[^.!?]+[.!?]+/g) || [para];
+        const sentences = sentenceSpans(para);
         let currentText = '';
         let currentTokens = 0;
 
@@ -1922,7 +1863,7 @@ export function chunkDocumentWithPagesEx(
   // Apply the shared document cap only after same-page packing and lossless
   // oversized-input splitting. Otherwise legacy one-paragraph candidates can
   // consume the quota before packing has a chance to reduce their count.
-  const enforced = enforceInputLimitsEx(chunks, opts);
+  const enforced = enforceInputLimitsEx(chunks, opts, inputPrefixes);
 
   // pagesIndexed: count distinct pages reflected in surviving chunks (excluding summary on p.1)
   const distinctPages = new Set<number>();

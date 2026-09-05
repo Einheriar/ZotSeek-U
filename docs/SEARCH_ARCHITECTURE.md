@@ -627,9 +627,37 @@ the recommended Note body budget or change boundaries. The model hard limit
 still governs the final inference input. The brief's filtered “基本信息” section
 is not restored. The selected strategy is versioned; strategy 8 introduces R1,
 while strategy 9 unifies the Metadata Summary across all indexing modes.
+Strategy 10 preserves sentence separators and unfinished tails, protects Unicode
+code points during hard splitting, and bounds oversized title context.
 If an existing model partition contains old chunks without the current strategy
 marker, ZotSeek keeps it searchable but pauses writes and background
 reconciliation until the user explicitly rebuilds the index.
+
+### Faithful Text and Input Limits (Strategy 10)
+
+Sentence spans retain original punctuation and internal whitespace, including
+leading `.NET` and unfinished PDF tails. Only outer chunk whitespace is trimmed;
+existing HTML/paragraph normalization still applies. Hard splits use Unicode
+code-point boundaries, including the PDF paragraph-recovery window. The 8000
+character ceiling remains measured in UTF-16 units; this does not promise that
+every multi-code-point emoji or combining sequence remains in one chunk.
+
+Metadata Summary retains the complete title in every indexing mode. Normal
+titles still repeat when a Summary needs splitting. If an oversized input's
+title context consumes more than half its token or character budget, Summary
+instead splits the complete title and Metadata body as consecutive source text.
+Repeated PDF context is shortened with an ellipsis (or omitted if necessary)
+under the same half-budget fallback, leaving room for the body. Note parent
+titles continue to use only the remaining hard-limit room after body splitting.
+
+Summary/PDF token and character ceilings are checked on the same final input,
+with explicit source-title information rather than guessing from a double
+newline. The selected counter includes local model-prefix overhead where
+supported; Nomic/Local Server keep the word estimator and Cloud keeps its
+multilingual estimator. Estimated limits do not guarantee real provider token
+counts. An impossible complete-character budget raises an error instead of
+silently emitting an oversized input. Shared source quotas still report
+intentional content omission with `wasTruncated`.
 
 ### PDF Main-Text Preprocessing
 
@@ -660,7 +688,7 @@ truncated even when no PDF is available to consume the unused total capacity.
 
 ### Incremental Indexing-Mode Transitions
 
-Every strategy-9 mode starts from the same Metadata Summary: the title, the
+Every current-strategy mode starts from the same Metadata Summary: the title, the
 abstract only when `trim().length >= 50`, and trimmed/sorted Zotero tags except
 those whose trimmed text starts with `#`. Authors, years, journals and DOI are
 not appended to this embedding input. Workflow tags remain available in Zotero,
@@ -682,7 +710,7 @@ truncation state and timestamps come from the new target extraction. Unmatched
 target chunks alone are sent to the embedding pipeline. If every target chunk
 matches, a shrinking transition does not load the model.
 
-Under strategy 9, every mode-only transition reuses the exact shared Summary.
+Within the same current strategy, every mode-only transition reuses the exact shared Summary.
 Abstract to Notes adds Notes; Abstract to Full adds up to 30 Note chunks and PDF;
 Notes to Abstract removes Notes; Full to Abstract removes Notes and PDF. Notes
 to Full reuses compatible Metadata and the first 30 target Notes while adding
@@ -692,11 +720,11 @@ the shared per-paper chunk cap and source priority still determine the final set
 The per-item replacement remains atomic, so a missing new embedding cannot
 destroy a complete old item index.
 
-Strategy 8 cannot be updated incrementally into strategy 9. Its old index stays
+Strategies 8 and 9 cannot be updated incrementally into strategy 10. The old index stays
 searchable until the user confirms a rebuild. Rebuild deletes only the active
 model's embeddings and fingerprints, initializes that empty partition as
-strategy 9, and leaves other model partitions intact. An interrupted rebuild
-contains only strategy-9 chunks and retains a pending scope for recovery. Cloud
+strategy 10, and leaves other model partitions intact. An interrupted rebuild
+contains only strategy-10 chunks and retains a pending scope for recovery. Cloud
 strategy migration additionally warns that old Cloud coverage is removed first
 and that re-embedding may incur provider charges.
 
