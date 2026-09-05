@@ -595,49 +595,70 @@ Template edits require a Zotero restart.
 
 Cloud is separate from Local Server. Its stable selection value is `cloud-slot`
 while the vector-space ID is derived from provider, model name and dimensions.
-The Alibaba Cloud Model Studio preset starts with `qwen3.7-text-embedding`,
-1024 dimensions, a 128000-token input limit and batches of 10, using direct
-provider-native DashScope text-embedding requests; no DashScope or OpenAI SDK
-is required. The persisted Base URL remains the provider's OpenAI-compatible
-URL because literature-brief generation shares it; the Bailian embedding
-adapter derives the same host's native `/api/v1` endpoint internally.
-Provider, Base URL, model name and dimensions are shown in the collapsed Cloud
-Settings section. Maximum input tokens, query/document API roles and batch size
-are in its nested advanced section, with an action to restore Bailian's default
-`query`/`document` roles. Recommended chunk tokens are derived as
-`min(4000, floor(maxInputTokens * 0.85))` and cannot be edited independently. Each
-registered embedding model carries a chunk profile with its default, recommendation
-calculation and soft-min ratio; Cloud's profile uses a 4000-token cap and a 25%
-soft minimum (1000 tokens at the default recommendation).
+Plan 56 turned the Cloud slot into a provider/model catalog with four approved
+providers: `alibaba-bailian`, `openai`, `google-gemini-api`, and the
+`custom-openai-compatible` escape hatch. Built-in model facts come from the
+registered catalog — Bailian `qwen3.7-text-embedding` (1024d, 128000-token
+input), OpenAI `text-embedding-3-small`/`text-embedding-3-large` (1536d/3072d,
+8192-token input, fixed 2000-token recommendation), and Google
+`gemini-embedding-001` (768d, 2048-token input, recommendation 1740) — and a
+stored value that does not match the catalog marks the slot unconfigured
+instead of silently substituting another model. Bailian keeps its editable
+`query`/`document` roles, maximum input tokens and batch size (advanced
+section, with a restore-defaults action); OpenAI and Gemini show those
+parameters read-only. Recommended chunk tokens are derived from each model's
+chunk profile and cannot be edited independently.
+
+Built-in request URLs are fixed. Bailian selects one of two official regional
+endpoints via the machine-valued `zotseek.cloud.bailianRegion` pref (`cn` or
+`intl`, default `cn`; a legacy `zotseek.cloud.baseUrl` pref migrates to the
+region selection). OpenAI and Gemini endpoints are hardcoded in their adapters.
+Only the Custom (OpenAI-compatible) provider accepts a user Base URL (HTTPS,
+no credentials/query/fragment, joined with `/embeddings`), a free model name,
+and dimensions. It reuses the OpenAI request format but never sends the
+`dimensions` parameter; the configured dimension only validates responses.
+The Custom provider stores its fields under `zotseek.cloud.custom.*`.
 
 Cloud API roles and manual text prefixes are separate contracts. The Bailian
 adapter fixes the parameter name as `text_type`; a non-empty configured value
-is sent in `parameters`, while an empty value omits it. Cloud text is never
-modified with an E5-style prefix. Requests explicitly set `output_type=dense`
-and leave `instruct` unset. Query and document inputs are sent in homogeneous
-batches. Changing either role clears Cloud connection verification; the
-document role and adapter version are also included in the index policy
-fingerprint.
+is sent in `parameters`, while an empty value omits it. The OpenAI adapter
+(and the Custom provider) sends query and document text identically with no
+roles and no prefixes. The Gemini adapter uses `batchEmbedContents` with
+`x-goog-api-key` and places `taskType` (`RETRIEVAL_QUERY`/`RETRIEVAL_DOCUMENT`)
+and `outputDimensionality` inside `embedContentConfig`, whose top-level
+request fields are deprecated. Cloud text is never modified with an E5-style
+prefix. Changing a provider's model, dimensions or roles clears that
+provider's connection verification; the document role, per-provider adapter
+version and output contract are also part of the index policy fingerprint.
+The shared transport (`cloud-embedding-client.ts`) owns batching (10 per
+batch), timeouts, cancellation, bounded 429/5xx retries and vector validation;
+provider differences live in `dashscope-embedding-adapter.ts`,
+`openai-embedding-adapter.ts` and `gemini-embedding-adapter.ts`, selected by
+the factory in `cloud-embedding-adapter.ts`.
 
-`cloud-model-config.ts` owns non-secret preferences and validates HTTPS Bailian
-endpoints. `cloud-credential-store.ts` uses Zotero Login Manager plus the public
-`Zotero.OSKeyStore` wrapper when available. Zotero 9.0 instead loads its bundled
-Mozilla `OSKeyStore.sys.mjs` and stores only version-tagged ciphertext; never add
-an API-key preference or plaintext fallback. `cloud-embedding-client.ts`
-enforces the configured batch size, native `text_index` response ordering, finite vectors of the
-configured dimensions, redirect rejection, timeout/cancellation and bounded
-429/5xx retries. The explicit connection probe sends one fixed document string
-and one fixed query string in separate calls, validating both role paths and dimensions.
-Do not log request bodies, query text, authorization headers, provider error
-messages or credentials.
+`cloud-model-config.ts` owns non-secret preferences, the provider/model
+catalog, and per-provider connection/consent state (legacy global prefs remain
+a read-only Bailian fallback). `cloud-credential-store.ts` uses Zotero Login
+Manager plus the public `Zotero.OSKeyStore` wrapper when available, one
+encrypted entry per provider (login username = provider id). Zotero 9.0
+instead loads its bundled Mozilla `OSKeyStore.sys.mjs` and stores only
+version-tagged ciphertext; never add an API-key preference or plaintext
+fallback. The explicit connection probe sends one fixed document string and
+one fixed query string in separate calls, validating both role paths and
+dimensions. Do not log request bodies, query text, authorization headers,
+provider error messages or credentials.
 
-Selection requires versioned privacy/BYOK/cost consent, a securely stored key
-and a successful fixed-text probe. Cloud startup maintenance additionally
-requires `zotseek.cloud.autoIndex`; it defaults to false even when global
-automatic maintenance is enabled. Full Cloud rebuilds use forced reconciliation
-instead of clearing the store. `replaceItemModelChunks()` publishes one paper
-atomically only after every chunk succeeds, preserving old complete coverage
-and every other model partition across failure or cancellation.
+Literature brief generation deliberately supports only Bailian: switching the
+embedding provider away from Bailian prompts for confirmation before saving
+and clears `zotseek.cloud.brief.connectionVerified`; the brief model settings
+are kept. Selection requires the current provider's versioned privacy/BYOK/cost
+consent, a securely stored key and a successful fixed-text probe. Cloud
+startup maintenance additionally requires `zotseek.cloud.autoIndex`; it
+defaults to false even when global automatic maintenance is enabled. Full
+Cloud rebuilds use forced reconciliation instead of clearing the store.
+`replaceItemModelChunks()` publishes one paper atomically only after every
+chunk succeeds, preserving old complete coverage and every other model
+partition across failure or cancellation.
 
 ### 4. Search Engine (`src/core/search-engine.ts`)
 

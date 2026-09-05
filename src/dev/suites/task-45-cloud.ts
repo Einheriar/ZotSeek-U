@@ -36,7 +36,7 @@ selfTest.register('task-45-cloud', async () => {
       assertTrue(!!Services?.logins, 'Login Manager is unavailable');
       assertTrue(!!resolveCloudOSKeyStore(Zotero, ChromeUtils), 'OSKeyStore is unavailable');
       // Read-only: never create, overwrite, delete, probe, or log a real key.
-      const key = await cloudCredentialStore.get();
+      const key = await cloudCredentialStore.get('alibaba-bailian');
       if (key) {
         const masked = maskCloudApiKey(key);
         assertTrue(masked.includes('*****'), 'stored key must have a safe display form');

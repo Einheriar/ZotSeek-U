@@ -52,6 +52,10 @@ import {
   CLOUD_DEFAULT_QUERY_ROLE,
   CLOUD_PROVIDER_OPTIONS,
   getCloudModelSettings,
+  getCloudProviderLabel,
+  getProviderCatalogEntries,
+  getProviderDefaultCatalogEntry,
+  getStoredCustomProviderSettings,
   hasCurrentCloudConsent,
   isCloudAutoIndexAllowed,
   isCloudConnectionVerified,
@@ -59,10 +63,13 @@ import {
   setCloudAutoIndexAllowed,
   setCloudConnectionVerified,
   setCloudModelSettings,
+  type BailianRegion,
+  type CloudModelSettings,
+  type CloudProviderId,
 } from '../core/cloud-model-config';
 import { CloudEmbeddingClient } from '../core/cloud-embedding-client';
+import { createCloudEmbeddingRequestAdapter } from '../core/cloud-embedding-adapter';
 import { cloudCredentialStore, maskCloudApiKey } from '../core/cloud-credential-store';
-import { setBriefConnectionVerified } from '../core/brief-generation-config';
 import { confirmCloudDisclosure, promptForCloudApiKey } from './cloud-model-prompt';
 
 declare const Services: any;
@@ -85,19 +92,86 @@ function setCloudStatus(doc: any, message: string): void {
   if (status) status.textContent = message;
 }
 
+/**
+ * Show/hide and enable/disable the cloud controls for the selected provider.
+ * Built-in providers expose catalog values read-only; Bailian keeps its
+ * editable advanced contract (Plan 45 behavior); only the Custom
+ * (OpenAI-compatible) provider accepts a Base URL, model name, and dimensions.
+ */
+function applyCloudUiMode(doc: any, provider: CloudProviderId): void {
+  const setDisplay = (id: string, visible: boolean) => {
+    const element = doc.getElementById(id);
+    if (element) element.style.display = visible ? 'contents' : 'none';
+  };
+  const isBailian = provider === 'alibaba-bailian';
+  const isCustom = provider === 'custom-openai-compatible';
+  setDisplay('zotseek-cloud-region-row', isBailian);
+  setDisplay('zotseek-cloud-builtin-model-row', !isCustom);
+  setDisplay('zotseek-cloud-custom-rows', isCustom);
+  setDisplay('zotseek-cloud-dims-readonly-row', !isCustom);
+  const enable = (id: string, enabled: boolean) => {
+    const element = doc.getElementById(id) as HTMLInputElement | null;
+    if (element) element.disabled = !enabled;
+  };
+  enable('zotseek-cloud-max-input-tokens', isBailian || isCustom);
+  enable('zotseek-cloud-query-role', isBailian);
+  enable('zotseek-cloud-document-role', isBailian);
+  enable('zotseek-cloud-batch-size', isBailian || isCustom);
+  const resetRoles = doc.getElementById('zotseek-cloud-reset-api-roles');
+  if (resetRoles) resetRoles.style.display = isBailian ? '' : 'none';
+}
+
+function populateBailianRegionOptions(doc: any): void {
+  const select = doc.getElementById('zotseek-cloud-bailian-region') as HTMLSelectElement | null;
+  if (!select || select.options.length > 0) return;
+  const regions: Array<[BailianRegion, string]> = [
+    ['cn', 'pref-cloudRegionCn'],
+    ['intl', 'pref-cloudRegionIntl'],
+  ];
+  for (const [value, key] of regions) {
+    const element = doc.createElementNS('http://www.w3.org/1999/xhtml', 'option');
+    element.value = value;
+    element.textContent = getString(key);
+    select.appendChild(element);
+  }
+}
+
+function populateCloudModelSelect(
+  doc: any,
+  provider: CloudProviderId,
+  selectedModelName: string,
+): void {
+  const select = doc.getElementById('zotseek-cloud-model-select') as HTMLSelectElement | null;
+  if (!select) return;
+  select.replaceChildren();
+  for (const entry of getProviderCatalogEntries(provider)) {
+    const element = doc.createElementNS('http://www.w3.org/1999/xhtml', 'option');
+    element.value = entry.modelName;
+    element.textContent = `${entry.modelName} · ${entry.dimensions}d`;
+    select.appendChild(element);
+  }
+  const entries = getProviderCatalogEntries(provider);
+  const selected = entries.find(entry => entry.modelName === selectedModelName)
+    || getProviderDefaultCatalogEntry(provider);
+  if (selected) select.value = selected.modelName;
+}
+
+function populateCustomProviderInputs(doc: any, settings: CloudModelSettings): void {
+  const baseUrl = doc.getElementById('zotseek-cloud-base-url') as HTMLInputElement | null;
+  const model = doc.getElementById('zotseek-cloud-model') as HTMLInputElement | null;
+  const dimensions = doc.getElementById('zotseek-cloud-dimensions') as HTMLInputElement | null;
+  const maxInputTokens = doc.getElementById('zotseek-cloud-max-input-tokens') as HTMLInputElement | null;
+  const batchSize = doc.getElementById('zotseek-cloud-batch-size') as HTMLInputElement | null;
+  if (baseUrl) baseUrl.value = settings.customBaseUrl;
+  if (model) model.value = settings.modelName;
+  if (dimensions) dimensions.value = String(settings.dimensions > 0 ? settings.dimensions : '');
+  if (maxInputTokens) maxInputTokens.value = String(settings.maxInputTokens);
+  if (batchSize) batchSize.value = String(settings.batchSize);
+}
+
 async function renderCloudSettings(doc: any): Promise<void> {
   const settings = getCloudModelSettings();
   const provider = doc.getElementById('zotseek-cloud-provider') as HTMLSelectElement | null;
-  const model = doc.getElementById('zotseek-cloud-model') as HTMLInputElement | null;
-  const dimensions = doc.getElementById('zotseek-cloud-dimensions') as HTMLInputElement | null;
-  const baseUrl = doc.getElementById('zotseek-cloud-base-url') as HTMLInputElement | null;
-  const maxInputTokens = doc.getElementById('zotseek-cloud-max-input-tokens') as HTMLInputElement | null;
-  const recommended = doc.getElementById('zotseek-cloud-recommended-chunk-tokens') as HTMLInputElement | null;
-  const queryRole = doc.getElementById('zotseek-cloud-query-role') as HTMLInputElement | null;
-  const documentRole = doc.getElementById('zotseek-cloud-document-role') as HTMLInputElement | null;
-  const batchSize = doc.getElementById('zotseek-cloud-batch-size') as HTMLInputElement | null;
-  const autoIndex = doc.getElementById('zotseek-cloud-auto-index') as any;
-  const preview = doc.getElementById('zotseek-cloud-key-preview');
   if (provider) {
     if (provider.options.length === 0) {
       for (const option of CLOUD_PROVIDER_OPTIONS) {
@@ -109,18 +183,37 @@ async function renderCloudSettings(doc: any): Promise<void> {
     }
     provider.value = settings.provider;
   }
+  populateBailianRegionOptions(doc);
+  applyCloudUiMode(doc, settings.provider);
+  const region = doc.getElementById('zotseek-cloud-bailian-region') as HTMLSelectElement | null;
+  if (region) region.value = settings.bailianRegion;
+  if (settings.provider !== 'custom-openai-compatible') {
+    populateCloudModelSelect(doc, settings.provider, settings.configured ? settings.modelName : '');
+  } else {
+    populateCustomProviderInputs(doc, settings);
+  }
+  const model = doc.getElementById('zotseek-cloud-model') as HTMLInputElement | null;
   if (model) model.value = settings.modelName;
+  const dimensions = doc.getElementById('zotseek-cloud-dimensions') as HTMLInputElement | null;
   if (dimensions) dimensions.value = String(settings.dimensions);
-  if (baseUrl) baseUrl.value = settings.baseUrl;
+  const dimensionsReadonly = doc.getElementById('zotseek-cloud-dimensions-readonly') as HTMLInputElement | null;
+  if (dimensionsReadonly) dimensionsReadonly.value = String(settings.dimensions);
+  const maxInputTokens = doc.getElementById('zotseek-cloud-max-input-tokens') as HTMLInputElement | null;
   if (maxInputTokens) maxInputTokens.value = String(settings.maxInputTokens);
+  const recommended = doc.getElementById('zotseek-cloud-recommended-chunk-tokens') as HTMLInputElement | null;
   if (recommended) recommended.value = String(settings.recommendedChunkTokens);
+  const queryRole = doc.getElementById('zotseek-cloud-query-role') as HTMLInputElement | null;
   if (queryRole) queryRole.value = settings.queryRole;
+  const documentRole = doc.getElementById('zotseek-cloud-document-role') as HTMLInputElement | null;
   if (documentRole) documentRole.value = settings.documentRole;
+  const batchSize = doc.getElementById('zotseek-cloud-batch-size') as HTMLInputElement | null;
   if (batchSize) batchSize.value = String(settings.batchSize);
+  const autoIndex = doc.getElementById('zotseek-cloud-auto-index') as any;
   if (autoIndex) autoIndex.checked = isCloudAutoIndexAllowed();
+  const preview = doc.getElementById('zotseek-cloud-key-preview');
   if (preview) {
     try {
-      const apiKey = await cloudCredentialStore.get();
+      const apiKey = await cloudCredentialStore.get(settings.provider);
       preview.textContent = apiKey
         ? maskCloudApiKey(apiKey)
         : getString('pref-cloudApiKeyMissing');
@@ -132,43 +225,68 @@ async function renderCloudSettings(doc: any): Promise<void> {
   }
   setCloudStatus(
     doc,
-    isCloudConnectionVerified()
-      ? getString('pref-cloudConnectionVerified')
-      : getString('pref-cloudConnectionNotVerified'),
+    !settings.configured
+      ? getString('pref-cloudUnconfigured')
+      : isCloudConnectionVerified()
+        ? getString('pref-cloudConnectionVerified')
+        : getString('pref-cloudConnectionNotVerified'),
   );
 }
 
 function saveCloudSettingsFromUI(doc: any): ReturnType<typeof getCloudModelSettings> | null {
-  const provider = doc.getElementById('zotseek-cloud-provider') as HTMLSelectElement | null;
-  const baseUrl = doc.getElementById('zotseek-cloud-base-url') as HTMLInputElement | null;
-  const model = doc.getElementById('zotseek-cloud-model') as HTMLInputElement | null;
-  const dimensions = doc.getElementById('zotseek-cloud-dimensions') as HTMLInputElement | null;
+  const providerSelect = doc.getElementById('zotseek-cloud-provider') as HTMLSelectElement | null;
+  if (!providerSelect) return null;
+  const provider = providerSelect.value as CloudProviderId;
   const maxInputTokens = doc.getElementById('zotseek-cloud-max-input-tokens') as HTMLInputElement | null;
   const queryRole = doc.getElementById('zotseek-cloud-query-role') as HTMLInputElement | null;
   const documentRole = doc.getElementById('zotseek-cloud-document-role') as HTMLInputElement | null;
   const batchSize = doc.getElementById('zotseek-cloud-batch-size') as HTMLInputElement | null;
-  if (!provider || !baseUrl || !model || !dimensions || !maxInputTokens ||
-      !queryRole || !documentRole || !batchSize) return null;
   try {
-    const settings = setCloudModelSettings({
-      provider: provider.value,
-      baseUrl: baseUrl.value,
-      modelName: model.value,
-      dimensions: Number(dimensions.value),
-      maxInputTokens: Number(maxInputTokens.value),
-      queryRole: queryRole.value,
-      documentRole: documentRole.value,
-      batchSize: Number(batchSize.value),
-    });
-    baseUrl.value = settings.baseUrl;
-    model.value = settings.modelName;
-    dimensions.value = String(settings.dimensions);
-    maxInputTokens.value = String(settings.maxInputTokens);
-    queryRole.value = settings.queryRole;
-    documentRole.value = settings.documentRole;
-    batchSize.value = String(settings.batchSize);
+    let settings: CloudModelSettings;
+    if (provider === 'alibaba-bailian') {
+      const region = doc.getElementById('zotseek-cloud-bailian-region') as HTMLSelectElement | null;
+      const modelSelect = doc.getElementById('zotseek-cloud-model-select') as HTMLSelectElement | null;
+      if (!region || !modelSelect || !maxInputTokens || !queryRole || !documentRole || !batchSize) return null;
+      const entry = getProviderCatalogEntries(provider).find(item => item.modelName === modelSelect.value)
+        || getProviderDefaultCatalogEntry(provider)!;
+      settings = setCloudModelSettings({
+        provider,
+        bailianRegion: region.value as BailianRegion,
+        modelName: entry.modelName,
+        dimensions: entry.dimensions,
+        maxInputTokens: Number(maxInputTokens.value),
+        queryRole: queryRole.value,
+        documentRole: documentRole.value,
+        batchSize: Number(batchSize.value),
+      });
+    } else if (provider === 'openai' || provider === 'google-gemini-api') {
+      const modelSelect = doc.getElementById('zotseek-cloud-model-select') as HTMLSelectElement | null;
+      if (!modelSelect) return null;
+      const entry = getProviderCatalogEntries(provider).find(item => item.modelName === modelSelect.value)
+        || getProviderDefaultCatalogEntry(provider)!;
+      settings = setCloudModelSettings({
+        provider,
+        modelName: entry.modelName,
+        dimensions: entry.dimensions,
+      });
+    } else {
+      const baseUrl = doc.getElementById('zotseek-cloud-base-url') as HTMLInputElement | null;
+      const model = doc.getElementById('zotseek-cloud-model') as HTMLInputElement | null;
+      const dimensions = doc.getElementById('zotseek-cloud-dimensions') as HTMLInputElement | null;
+      if (!baseUrl || !model || !dimensions || !maxInputTokens || !batchSize) return null;
+      settings = setCloudModelSettings({
+        provider,
+        baseUrl: baseUrl.value,
+        modelName: model.value,
+        dimensions: Number(dimensions.value),
+        maxInputTokens: Number(maxInputTokens.value),
+        batchSize: Number(batchSize.value),
+      });
+    }
     const recommended = doc.getElementById('zotseek-cloud-recommended-chunk-tokens') as HTMLInputElement | null;
     if (recommended) recommended.value = String(settings.recommendedChunkTokens);
+    const dimensionsReadonly = doc.getElementById('zotseek-cloud-dimensions-readonly') as HTMLInputElement | null;
+    if (dimensionsReadonly) dimensionsReadonly.value = String(settings.dimensions);
     return settings;
   } catch (error: any) {
     setCloudStatus(doc, getString('pref-cloudInvalidConfig', { error: error?.message || error }));
@@ -177,17 +295,17 @@ function saveCloudSettingsFromUI(doc: any): ReturnType<typeof getCloudModelSetti
 }
 
 async function promptAndSaveCloudApiKey(doc: any): Promise<boolean> {
+  const provider = getCloudModelSettings().provider;
   const apiKey = promptForCloudApiKey(
     Services.prompt,
     doc.defaultView || null,
     getString('pref-cloudApiKeyPromptTitle'),
-    getString('pref-cloudApiKeyPromptMessage'),
+    getString('pref-cloudApiKeyPromptMessage', { provider: getCloudProviderLabel(provider) }),
   );
   if (!apiKey) return false;
   try {
-    await cloudCredentialStore.set(apiKey);
-    setCloudConnectionVerified(false);
-    setBriefConnectionVerified(false);
+    await cloudCredentialStore.set(apiKey, provider);
+    setCloudConnectionVerified(false, provider);
     await renderCloudSettings(doc);
     return true;
   } catch (error: any) {
@@ -201,47 +319,53 @@ async function promptAndSaveCloudApiKey(doc: any): Promise<boolean> {
 async function testCloudConnection(doc: any): Promise<boolean> {
   const settings = saveCloudSettingsFromUI(doc);
   if (!settings) return false;
+  if (!settings.configured) {
+    setCloudStatus(doc, getString('pref-cloudUnconfigured'));
+    return false;
+  }
   setCloudStatus(doc, getString('pref-cloudTesting'));
   try {
-    const apiKey = await cloudCredentialStore.get();
+    const apiKey = await cloudCredentialStore.get(settings.provider);
     if (!apiKey) {
       setCloudStatus(doc, getString('pref-cloudApiKeyMissing'));
       return false;
     }
+    const adapter = createCloudEmbeddingRequestAdapter(settings, apiKey);
     const client = new CloudEmbeddingClient({
-      baseUrl: settings.baseUrl,
-      modelName: settings.modelName,
+      adapter,
       dimensions: settings.dimensions,
       apiKey,
       batchSize: settings.batchSize,
-      queryRole: settings.queryRole,
-      documentRole: settings.documentRole,
     });
     await client.probe();
-    setCloudConnectionVerified(true);
+    setCloudConnectionVerified(true, settings.provider);
     if (getActiveModelSelectionId() === CLOUD_SLOT_SELECTION_ID) embeddingPipeline.reset();
     setCloudStatus(doc, getString('pref-cloudConnectionVerified'));
     return true;
   } catch (error: any) {
-    setCloudConnectionVerified(false);
+    setCloudConnectionVerified(false, settings.provider);
     setCloudStatus(doc, getString('pref-cloudTestFailed', { error: error?.message || error }));
     return false;
   }
 }
 
 async function prepareCloudSelection(doc: any): Promise<boolean> {
-  if (!hasCurrentCloudConsent()) {
+  const provider = getCloudModelSettings().provider;
+  if (!hasCurrentCloudConsent(provider)) {
+    const messageKey = provider === 'custom-openai-compatible'
+      ? 'pref-cloudConsentCustomMessage'
+      : 'pref-cloudConsentMessage';
     const accepted = confirmCloudDisclosure(
       Services.prompt,
       doc.defaultView || null,
       getString('pref-cloudConsentTitle'),
-      getString('pref-cloudConsentMessage'),
+      getString(messageKey, { provider: getCloudProviderLabel(provider) }),
     );
     if (!accepted) return false;
-    recordCurrentCloudConsent();
+    recordCurrentCloudConsent(provider);
   }
   let hasKey = false;
-  try { hasKey = await cloudCredentialStore.has(); } catch (error: any) {
+  try { hasKey = await cloudCredentialStore.has(provider); } catch (error: any) {
     setCloudStatus(doc, getString('pref-cloudSecureStorageError', { error: error?.message || error }));
     return false;
   }
@@ -314,10 +438,11 @@ async function populateModelMenu(doc: any): Promise<void> {
 
   const cloudItem = doc.createXULElement('menuitem');
   cloudItem.setAttribute('value', CLOUD_SLOT_SELECTION_ID);
+  const cloudSettings = getCloudModelSettings();
   cloudItem.setAttribute(
     'label',
-    isCloudConnectionVerified()
-      ? getString('pref-cloudSlotReady', { model: getCloudModelSettings().modelName })
+    cloudSettings.configured && isCloudConnectionVerified()
+      ? getString('pref-cloudSlotReady', { model: cloudSettings.modelName })
       : getString('pref-cloudSlotSetup'),
   );
   popup.appendChild(cloudItem);
@@ -940,14 +1065,34 @@ class PreferencesManager {
 
     const cloudProvider = doc.getElementById('zotseek-cloud-provider') as HTMLSelectElement | null;
     cloudProvider?.addEventListener('change', async () => {
-      const option = CLOUD_PROVIDER_OPTIONS.find(item => item.id === cloudProvider.value);
-      const baseUrl = doc.getElementById('zotseek-cloud-base-url') as HTMLInputElement | null;
-      const queryRole = doc.getElementById('zotseek-cloud-query-role') as HTMLInputElement | null;
-      const documentRole = doc.getElementById('zotseek-cloud-document-role') as HTMLInputElement | null;
-      if (option) {
-        if (baseUrl) baseUrl.value = option.defaultBaseUrl;
-        if (queryRole) queryRole.value = option.defaultQueryRole;
-        if (documentRole) documentRole.value = option.defaultDocumentRole;
+      const newProvider = cloudProvider.value as CloudProviderId;
+      const previous = getCloudModelSettings();
+      if (!CLOUD_PROVIDER_OPTIONS.some(option => option.id === newProvider)) {
+        cloudProvider.value = previous.provider;
+        return;
+      }
+      // Literature briefs only work against Bailian: warn before the switch is
+      // persisted so an accidental change cannot silently disable the feature.
+      if (previous.provider === 'alibaba-bailian' && newProvider !== 'alibaba-bailian') {
+        const confirmed = Services.prompt.confirm(
+          doc.defaultView || null,
+          getString('pref-cloudBriefSwitchTitle'),
+          getString('pref-cloudBriefSwitchMessage'),
+        );
+        if (!confirmed) {
+          cloudProvider.value = previous.provider;
+          return;
+        }
+      }
+      applyCloudUiMode(doc, newProvider);
+      if (newProvider !== 'custom-openai-compatible') {
+        populateCloudModelSelect(
+          doc,
+          newProvider,
+          getProviderDefaultCatalogEntry(newProvider)?.modelName || '',
+        );
+      } else {
+        populateCustomProviderInputs(doc, getStoredCustomProviderSettings());
       }
       await saveChangedCloudSettings();
     });
@@ -962,6 +1107,8 @@ class PreferencesManager {
     });
 
     for (const id of [
+      'zotseek-cloud-bailian-region',
+      'zotseek-cloud-model-select',
       'zotseek-cloud-base-url',
       'zotseek-cloud-model',
       'zotseek-cloud-dimensions',
@@ -993,9 +1140,10 @@ class PreferencesManager {
       );
       if (!confirmed) return;
       try {
+        const provider = getCloudModelSettings().provider;
         const wasActive = getActiveModelSelectionId() === CLOUD_SLOT_SELECTION_ID;
-        await cloudCredentialStore.clear();
-        setCloudConnectionVerified(false);
+        await cloudCredentialStore.clear(provider);
+        setCloudConnectionVerified(false, provider);
         if (wasActive) await embeddingPipeline.setModel(DEFAULT_MODEL_ID);
         autoIndexManager.reload();
         await renderCloudSettings(doc);

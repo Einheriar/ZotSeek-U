@@ -1,4 +1,4 @@
-/** Secure storage for the Cloud BYOK credential. Never falls back to prefs or plaintext files. */
+/** Secure storage for Cloud BYOK credentials. Never falls back to prefs or plaintext files. */
 
 declare const Components: any;
 declare const ChromeUtils: any;
@@ -7,8 +7,17 @@ declare const Zotero: any;
 
 const LOGIN_ORIGIN = 'chrome://zotseek';
 const LOGIN_REALM = 'ZotSeek Cloud Embedding API Key (encrypted)';
-const LOGIN_USERNAME = 'alibaba-bailian';
 const COMPAT_CIPHERTEXT_PREFIX = 'zotseek-oskeystore-v1:';
+
+/**
+ * One encrypted login per provider. The login username is the stable provider
+ * id, so providers keep separate keys and switching providers never overwrites
+ * another provider's credential. The historical Bailian entry already used the
+ * provider id as its username, so existing keys need no migration.
+ */
+export function cloudCredentialUsername(provider: string): string {
+  return provider;
+}
 
 export interface CloudCredentialLogin {
   username: string;
@@ -21,7 +30,7 @@ export interface CloudCredentialEnvironment {
   add(login: CloudCredentialLogin): Promise<void>;
   modify(oldLogin: CloudCredentialLogin, newLogin: CloudCredentialLogin): Promise<void>;
   remove(login: CloudCredentialLogin): Promise<void>;
-  makeLogin(encryptedValue: string): CloudCredentialLogin;
+  makeLogin(username: string, encryptedValue: string): CloudCredentialLogin;
   encrypt(value: string): Promise<string>;
   decrypt(value: string): Promise<string>;
   isEncrypted(value: string): boolean;
@@ -53,7 +62,8 @@ export function resolveCloudOSKeyStore(
 ): CloudOSKeyStore {
   const exposed = zoteroRuntime?.OSKeyStore;
   if (exposed && typeof exposed.encrypt === 'function' &&
-      typeof exposed.decrypt === 'function' && typeof exposed.isEncrypted === 'function') {
+      typeof exposed.decrypt === 'function' &&
+      typeof exposed.isEncrypted === 'function') {
     return exposed;
   }
 
@@ -97,7 +107,7 @@ function runtimeEnvironment(): CloudCredentialEnvironment {
     add: login => logins.addLoginAsync(login),
     modify: (oldLogin, newLogin) => logins.modifyLoginAsync(oldLogin, newLogin),
     remove: login => logins.removeLoginAsync(login),
-    makeLogin: encryptedValue => {
+    makeLogin: (username, encryptedValue) => {
       const LoginInfo = new Components.Constructor(
         '@mozilla.org/login-manager/loginInfo;1',
         Components.interfaces.nsILoginInfo,
@@ -107,7 +117,7 @@ function runtimeEnvironment(): CloudCredentialEnvironment {
         LOGIN_ORIGIN,
         null,
         LOGIN_REALM,
-        LOGIN_USERNAME,
+        username,
         encryptedValue,
         '',
         '',
@@ -131,14 +141,14 @@ export class CloudCredentialStore {
     return this.environment || runtimeEnvironment();
   }
 
-  private async matchingLogins(): Promise<CloudCredentialLogin[]> {
+  private async matchingLogins(username: string): Promise<CloudCredentialLogin[]> {
     const found = await this.env().search();
-    return found.filter(login => login.username === LOGIN_USERNAME);
+    return found.filter(login => login.username === username);
   }
 
-  async get(): Promise<string | null> {
+  async get(provider: string): Promise<string | null> {
     try {
-      const login = (await this.matchingLogins())[0];
+      const login = (await this.matchingLogins(cloudCredentialUsername(provider)))[0];
       if (!login) return null;
       if (!this.env().isEncrypted(login.password)) {
         throw new CloudCredentialStorageError(
@@ -154,13 +164,14 @@ export class CloudCredentialStore {
     }
   }
 
-  async has(): Promise<boolean> {
-    return (await this.get()) !== null;
+  async has(provider: string): Promise<boolean> {
+    return (await this.get(provider)) !== null;
   }
 
-  async set(value: string): Promise<void> {
+  async set(value: string, provider: string): Promise<void> {
     const apiKey = value.trim();
     if (!apiKey) throw new CloudCredentialStorageError('Cloud API key must not be empty.');
+    const username = cloudCredentialUsername(provider);
     try {
       const env = this.env();
       const encrypted = await env.encrypt(apiKey);
@@ -169,8 +180,8 @@ export class CloudCredentialStore {
           'Zotero OSKeyStore did not return an encrypted credential.',
         );
       }
-      const current = await this.matchingLogins();
-      const replacement = env.makeLogin(encrypted);
+      const current = await this.matchingLogins(username);
+      const replacement = env.makeLogin(username, encrypted);
       if (current.length > 0) await env.modify(current[0], replacement);
       else await env.add(replacement);
       // Remove stale duplicates only after the new value has been stored.
@@ -181,10 +192,12 @@ export class CloudCredentialStore {
     }
   }
 
-  async clear(): Promise<void> {
+  async clear(provider: string): Promise<void> {
     try {
       const env = this.env();
-      for (const login of await this.matchingLogins()) await env.remove(login);
+      for (const login of await this.matchingLogins(cloudCredentialUsername(provider))) {
+        await env.remove(login);
+      }
     } catch {
       throw new CloudCredentialStorageError('Could not remove the Cloud API key from secure storage.');
     }

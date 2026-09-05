@@ -6,17 +6,29 @@ import {
   CloudEmbeddingRequestError,
   parseRetryAfter,
 } from '../src/core/cloud-embedding-client';
-import { dashScopeEmbeddingEndpoint } from '../src/core/dashscope-embedding-adapter';
+import { createDashScopeEmbeddingAdapter } from '../src/core/dashscope-embedding-adapter';
 
-const config = {
+const bailianBase = {
   baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
   modelName: 'qwen3.7-text-embedding',
   dimensions: 3,
-  apiKey: 'secret-key-not-for-logs',
-  batchSize: 2,
   queryRole: 'query',
   documentRole: 'document',
+  apiKey: 'secret-key-not-for-logs',
 };
+
+function makeAdapter(overrides: Partial<typeof bailianBase> = {}) {
+  return createDashScopeEmbeddingAdapter({ ...bailianBase, ...overrides });
+}
+
+function clientConfig(overrides: Partial<typeof bailianBase> = {}) {
+  return {
+    adapter: makeAdapter(overrides),
+    dimensions: 3,
+    apiKey: 'secret-key-not-for-logs',
+    batchSize: 2,
+  };
+}
 
 function response(status: number, body: unknown, headers: Record<string, string> = {}) {
   return {
@@ -30,17 +42,19 @@ function response(status: number, body: unknown, headers: Record<string, string>
 
 describe('cloud embedding client', () => {
   test('derives the native embedding path without changing a workspace host', () => {
+    const adapter = makeAdapter({
+      baseUrl: 'https://llm-example.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+    });
+    const request = adapter.buildRequest(['a'], 'document');
     assert.equal(
-      dashScopeEmbeddingEndpoint(
-        'https://llm-example.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
-      ),
+      request.endpoint,
       'https://llm-example.cn-beijing.maas.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding',
     );
   });
 
   test('splits batches and restores provider response order', async () => {
     const requests: any[] = [];
-    const client = new CloudEmbeddingClient(config, {
+    const client = new CloudEmbeddingClient(clientConfig(), {
       abortController: null,
       fetch: async (url, init) => {
         requests.push({ url, init });
@@ -71,7 +85,7 @@ describe('cloud embedding client', () => {
 
   test('connection probe validates query and document roles separately', async () => {
     const received: Array<{ texts: string[]; role?: string }> = [];
-    const client = new CloudEmbeddingClient(config, {
+    const client = new CloudEmbeddingClient(clientConfig(), {
       fetch: async (_url, init) => {
         const body = JSON.parse(init.body);
         received.push({ texts: body.input.texts, role: body.parameters.text_type });
@@ -91,7 +105,7 @@ describe('cloud embedding client', () => {
   });
 
   test('rejects duplicate indexes and wrong dimensions', async () => {
-    const duplicate = new CloudEmbeddingClient(config, {
+    const duplicate = new CloudEmbeddingClient(clientConfig(), {
       fetch: async () => response(200, { output: { embeddings: [
         { text_index: 0, embedding: [1, 2, 3] },
         { text_index: 0, embedding: [1, 2, 3] },
@@ -102,7 +116,7 @@ describe('cloud embedding client', () => {
       /invalid embedding text indexes/,
     );
 
-    const wrongDimensions = new CloudEmbeddingClient(config, {
+    const wrongDimensions = new CloudEmbeddingClient(clientConfig(), {
       fetch: async () => response(200, {
         output: { embeddings: [{ text_index: 0, embedding: [1, 2] }] },
       }),
@@ -112,7 +126,7 @@ describe('cloud embedding client', () => {
       /expected 3 finite values/,
     );
 
-    const allZero = new CloudEmbeddingClient(config, {
+    const allZero = new CloudEmbeddingClient(clientConfig(), {
       fetch: async () => response(200, {
         output: { embeddings: [{ text_index: 0, embedding: [0, 0, 0] }] },
       }),
@@ -122,7 +136,7 @@ describe('cloud embedding client', () => {
 
   test('omits text_type for an explicitly blank role and never adds instruct', async () => {
     let body: any;
-    const client = new CloudEmbeddingClient({ ...config, queryRole: '' }, {
+    const client = new CloudEmbeddingClient(clientConfig({ queryRole: '' }), {
       fetch: async (_url, init) => {
         body = JSON.parse(init.body);
         return response(200, {
@@ -139,7 +153,7 @@ describe('cloud embedding client', () => {
 
   test('reports native request id and billed token usage per successful batch', async () => {
     const receipts: any[] = [];
-    const client = new CloudEmbeddingClient(config, {
+    const client = new CloudEmbeddingClient(clientConfig(), {
       onBatchSuccess: receipt => receipts.push(receipt),
       fetch: async () => response(200, {
         output: { embeddings: [{ text_index: 0, embedding: [1, 2, 3] }] },
@@ -159,7 +173,7 @@ describe('cloud embedding client', () => {
   test('retries 429 using Retry-After without exposing the provider message', async () => {
     let attempts = 0;
     const delays: number[] = [];
-    const client = new CloudEmbeddingClient(config, {
+    const client = new CloudEmbeddingClient(clientConfig(), {
       sleep: async ms => { delays.push(ms); },
       fetch: async () => {
         attempts++;
@@ -179,7 +193,7 @@ describe('cloud embedding client', () => {
 
   test('does not retry deterministic 401 errors and sanitizes the body', async () => {
     let attempts = 0;
-    const client = new CloudEmbeddingClient(config, {
+    const client = new CloudEmbeddingClient(clientConfig(), {
       fetch: async () => {
         attempts++;
         return response(401, { error: { code: 'invalid_api_key', message: 'secret-key-not-for-logs' } });
@@ -213,7 +227,7 @@ describe('cloud embedding client', () => {
         this.reject?.(error);
       }
     }
-    const client = new CloudEmbeddingClient(config, {
+    const client = new CloudEmbeddingClient(clientConfig(), {
       abortController: FakeAbortController,
       fetch: async (_url, init) => {
         attempts++;

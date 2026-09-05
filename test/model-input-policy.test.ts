@@ -69,6 +69,7 @@ describe('model input policy resolution', () => {
       docPrefix: '',
       cloudDocumentRole: 'document',
       cloudApiAdapterVersion: 'dashscope-native-text-type-v1',
+      cloudOutputContract: 'dense',
     };
     const cloudFirst = modelInputPolicyFingerprint(resolveModelInputPolicy(cloud));
     const cloudChanged = modelInputPolicyFingerprint(resolveModelInputPolicy({
@@ -80,6 +81,14 @@ describe('model input policy resolution', () => {
       cloudFirst,
       /:105:estimated:estimate=cloud-multilingual-v1:adapter=dashscope-native-text-type-v1:role=document:output=dense:instruct=none$/,
     );
+    // A cloud model without a declared output contract fingerprints as "none"
+    // so a contract declaration change is always visible to reconciliation.
+    const undeclared = modelInputPolicyFingerprint(resolveModelInputPolicy({
+      ...cloud,
+      cloudOutputContract: undefined,
+    }));
+    assert.match(undeclared, /:output=none:/);
+    assert.notEqual(cloudFirst, undeclared);
     assert.doesNotMatch(cloudFirst, /:doc=/);
     assert.doesNotMatch(first, /cloud-multilingual/);
   });

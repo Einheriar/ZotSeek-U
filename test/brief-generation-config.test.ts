@@ -15,9 +15,10 @@ import {
   setBriefGenerationSettings,
 } from '../src/core/brief-generation-config';
 import {
+  BAILIAN_REGION_INTL_BASE_URL,
   CLOUD_DEFAULT_BASE_URL,
   getCloudModelSettings,
-  setCloudBaseUrl,
+  setCloudModelSettings,
 } from '../src/core/cloud-model-config';
 
 describe('brief generation configuration', () => {
@@ -73,10 +74,20 @@ describe('brief generation configuration', () => {
     assert.equal(hasCurrentBriefConsent(), true);
   });
 
-  test('changing the shared Base URL invalidates brief verification', () => {
+  test('changing the Bailian region invalidates brief verification', () => {
     assert.equal(getCloudModelSettings().baseUrl, CLOUD_DEFAULT_BASE_URL);
     setBriefConnectionVerified(true);
-    setCloudBaseUrl('https://dashscope-us.aliyuncs.com/compatible-mode/v1');
+    setCloudModelSettings({
+      provider: 'alibaba-bailian',
+      bailianRegion: 'intl',
+      modelName: 'qwen3.7-text-embedding',
+      dimensions: 1024,
+      maxInputTokens: 128000,
+      queryRole: 'query',
+      documentRole: 'document',
+      batchSize: 10,
+    });
     assert.equal(isBriefConnectionVerified(), false);
+    assert.equal(getCloudModelSettings().baseUrl, BAILIAN_REGION_INTL_BASE_URL);
   });
 });

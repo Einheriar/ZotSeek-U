@@ -276,13 +276,26 @@
     <html:div style="display:grid;grid-template-columns:120px minmax(260px,1fr);gap:7px 10px;align-items:center;">
       <html:span data-l10n-id="zotseek-pref-cloudProvider">Provider</html:span>
       <html:select id="zotseek-cloud-provider" style="width:100%;box-sizing:border-box;"></html:select>
-      <html:span data-l10n-id="zotseek-pref-cloudBaseUrl">Base URL</html:span>
-      <html:input id="zotseek-cloud-base-url" type="url" style="width:100%;box-sizing:border-box;"/>
-      <html:div style="grid-column:1 / -1;display:grid;grid-template-columns:120px minmax(180px,1fr) 72px 120px;gap:7px 10px;align-items:center;">
+      <html:div id="zotseek-cloud-region-row" style="display:contents;">
+        <html:span data-l10n-id="zotseek-pref-cloudRegion">Bailian Region</html:span>
+        <html:select id="zotseek-cloud-bailian-region" style="width:100%;box-sizing:border-box;"></html:select>
+      </html:div>
+      <html:div id="zotseek-cloud-builtin-model-row" style="display:contents;">
+        <html:span data-l10n-id="zotseek-pref-cloudModel">Model</html:span>
+        <html:select id="zotseek-cloud-model-select" style="width:100%;box-sizing:border-box;"></html:select>
+      </html:div>
+      <html:div id="zotseek-cloud-custom-rows" style="display:none;">
+        <html:span data-l10n-id="zotseek-pref-cloudBaseUrl">Base URL</html:span>
+        <html:input id="zotseek-cloud-base-url" type="url" style="width:100%;box-sizing:border-box;"/>
         <html:span data-l10n-id="zotseek-pref-cloudModel">Model</html:span>
         <html:input id="zotseek-cloud-model" type="text" style="width:100%;box-sizing:border-box;"/>
         <html:span data-l10n-id="zotseek-pref-cloudDimensions">Dimensions</html:span>
         <html:input id="zotseek-cloud-dimensions" type="number" min="1" step="1" style="width:100%;box-sizing:border-box;"/>
+        <html:span></html:span>
+        <html:p data-l10n-id="zotseek-pref-cloudCustomWarning"
+                style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 0;">
+          You are responsible for the endpoint, model, and dimensions you configure here. ZotSeek sends your API Key and indexed content to this address.
+        </html:p>
       </html:div>
       <html:span data-l10n-id="zotseek-pref-cloudApiKey">API Key</html:span>
       <hbox align="center" style="gap:6px;">
@@ -305,8 +318,14 @@
             <html:input id="zotseek-cloud-recommended-chunk-tokens" type="number" readonly="readonly" style="width:100%;box-sizing:border-box;min-width:0;"/>
             <html:p data-l10n-id="zotseek-pref-cloudRecommendedChunkDesc"
                     style="color: var(--zotseek-text-secondary); font-size:11px; margin:4px 0 0 0;">
-              Auto-calculated at 85% of the model input limit, up to 3000 Tokens.
+              Auto-calculated at 85% of the model input limit, up to 4000 Tokens.
             </html:p>
+          </html:div>
+        </html:div>
+        <html:div id="zotseek-cloud-dims-readonly-row" style="display:contents;">
+          <html:div style="display:grid;grid-template-columns:150px minmax(0,1fr);gap:7px 10px;align-items:start;min-width:0;">
+            <html:span data-l10n-id="zotseek-pref-cloudDimensions" style="padding-top:5px;">Dimensions</html:span>
+            <html:input id="zotseek-cloud-dimensions-readonly" type="number" readonly="readonly" style="width:100%;box-sizing:border-box;min-width:0;"/>
           </html:div>
         </html:div>
         <html:div style="display:grid;grid-template-columns:150px minmax(0,1fr);gap:7px 10px;align-items:start;min-width:0;">

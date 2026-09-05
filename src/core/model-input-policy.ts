@@ -1,6 +1,5 @@
 /** Pure model-aware chunk policy resolution. */
 
-import { CLOUD_OUTPUT_TYPE } from './cloud-model-config';
 import { requiresInstructionPrefix, type ModelConfig } from './model-registry';
 import { getModelInputConfig } from './model-input-config';
 
@@ -23,6 +22,8 @@ export interface ResolvedModelInputPolicy {
   docPrefix: string;
   cloudDocumentRole?: string;
   cloudApiAdapterVersion?: string;
+  /** Provider-specific output contract persisted into the Cloud fingerprint. */
+  cloudOutputContract?: string;
 }
 
 export function normalizeRequestedChunkTokens(value: unknown): number | undefined {
@@ -57,6 +58,7 @@ export function resolveModelInputPolicy(
     docPrefix: model.docPrefix,
     cloudDocumentRole: model.cloudDocumentRole,
     cloudApiAdapterVersion: model.cloudApiAdapterVersion,
+    cloudOutputContract: model.cloudOutputContract,
   };
 }
 
@@ -89,13 +91,14 @@ export function modelInputPolicyFingerprint(policy: ResolvedModelInputPolicy): s
     parts.push(`doc=${encodeURIComponent(policy.docPrefix)}`);
   }
   // Cloud task roles are provider API parameters, not text prefixes. Persist
-  // the complete document-side contract so adapter/role changes cannot mix
-  // incompatible vectors in one model partition.
+  // the complete document-side contract so adapter/role/output changes cannot
+  // mix incompatible vectors in one model partition. Each provider declares
+  // its own output contract (Bailian "dense", others "none").
   if (policy.runtime === 'cloud') {
     parts.push(
       `adapter=${encodeURIComponent(policy.cloudApiAdapterVersion || 'unknown')}`,
       `role=${encodeURIComponent(policy.cloudDocumentRole || '')}`,
-      `output=${CLOUD_OUTPUT_TYPE}`,
+      `output=${policy.cloudOutputContract || 'none'}`,
       'instruct=none',
     );
   }

@@ -335,10 +335,16 @@ class ZotSeekPlugin {
       'zotseek.modelInputPolicyMigrationV1': false,
       'zotseek.indexScope': 'user', // 'user' (My Library) or 'all' (all libraries)
       'zotseek.serverModels': '[]', // Validated one-entry runtime cache for the fixed Server slot
-      'zotseek.cloud.baseUrl': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-      'zotseek.cloud.connectionVerified': false,
+      'zotseek.cloud.provider': 'alibaba-bailian',
+      'zotseek.cloud.bailianRegion': 'cn',
+      'zotseek.cloud.custom.baseUrl': '',
+      'zotseek.cloud.custom.modelName': '',
+      'zotseek.cloud.custom.dimensions': 0,
+      'zotseek.cloud.custom.maxInputTokens': 8192,
+      'zotseek.cloud.custom.batchSize': 10,
+      'zotseek.cloud.connectionVerified': false, // legacy global state, read as the Bailian fallback
       'zotseek.cloud.autoIndex': false,
-      'zotseek.cloud.consentVersion': 0,
+      'zotseek.cloud.consentVersion': 0, // legacy global consent, read as the Bailian fallback
       'zotseek.cloud.brief.modelName': 'deepseek-v4-flash-0731',
       'zotseek.cloud.brief.maxInputTokens': 1000000,
       'zotseek.cloud.brief.maxOutputTokens': 16384,

@@ -1,8 +1,7 @@
 import {
-  CLOUD_API_ADAPTER_VERSION,
-  CLOUD_CHUNK_PROFILE,
   cloudModelId,
   getCloudModelSettings,
+  type CloudProviderId,
 } from './cloud-model-config';
 import { fixedChunkProfile, type ModelChunkProfile } from './model-chunk-profile';
 
@@ -39,12 +38,20 @@ export interface ModelConfig {
   serverRecommendedChunkTokens?: number;
 
   // cloud-runtime only
-  cloudProvider?: string;
+  cloudProvider?: CloudProviderId;
   cloudModelName?: string;
   cloudBatchSize?: number;
   cloudQueryRole?: string;
   cloudDocumentRole?: string;
   cloudApiAdapterVersion?: string;
+  /** How the provider distinguishes query/document: text_type | none | taskType. */
+  cloudRoleContract?: string;
+  /** Provider-specific output contract persisted into the input-policy fingerprint. */
+  cloudOutputContract?: string;
+  /** Bailian official region endpoint selection (machine value cn | intl). */
+  cloudBailianRegion?: 'cn' | 'intl';
+  /** Custom (OpenAI-compatible) provider base URL, normalized. */
+  cloudCustomBaseUrl?: string;
 }
 
 const COMMON_FILES = [
@@ -388,14 +395,20 @@ export function getCloudModels(): ModelConfig[] {
     bundled: false,
     approxSizeMB: 0,
     multilingual: true,
-    chunkProfile: CLOUD_CHUNK_PROFILE,
-    baseUrl: settings.baseUrl,
+    chunkProfile: settings.chunkProfile,
+    baseUrl: '',
     cloudProvider: settings.provider,
     cloudModelName: settings.modelName,
     cloudBatchSize: settings.batchSize,
     cloudQueryRole: settings.queryRole,
     cloudDocumentRole: settings.documentRole,
-    cloudApiAdapterVersion: CLOUD_API_ADAPTER_VERSION,
+    cloudApiAdapterVersion: settings.adapterVersion,
+    cloudRoleContract: settings.roleContract,
+    cloudOutputContract: settings.outputContract,
+    cloudBailianRegion: settings.provider === 'alibaba-bailian' ? settings.bailianRegion : undefined,
+    cloudCustomBaseUrl: settings.provider === 'custom-openai-compatible'
+      ? settings.customBaseUrl
+      : undefined,
     serverMaxInputTokens: settings.maxInputTokens,
     serverRecommendedChunkTokens: settings.recommendedChunkTokens,
   }];

@@ -12,7 +12,15 @@ import { findModelLocation, ensureModelsResourceSubstitution } from './model-dow
 import { ServerEmbeddingClient } from './server-embedding-client';
 import { CloudEmbeddingClient } from './cloud-embedding-client';
 import { cloudCredentialStore } from './cloud-credential-store';
-import { hasCurrentCloudConsent, isCloudConnectionVerified } from './cloud-model-config';
+import {
+  createCloudEmbeddingRequestAdapter,
+} from './cloud-embedding-adapter';
+import {
+  getCloudModelSettings,
+  hasCurrentCloudConsent,
+  isCloudConnectionVerified,
+  isCloudModelConfigured,
+} from './cloud-model-config';
 import { getModelInputConfig, type ModelInputConfig } from './model-input-config';
 import {
   resolveModelInputPolicy,
@@ -300,35 +308,32 @@ export class EmbeddingPipeline {
 
   /** Create the Cloud client without a paid probe; Settings owns explicit connection testing. */
   private async initCloudClient(): Promise<void> {
-    const {
-      baseUrl,
-      cloudModelName,
-      cloudBatchSize,
-      cloudQueryRole,
-      cloudDocumentRole,
-    } = this.model;
-    if (!baseUrl || !cloudModelName || !cloudBatchSize ||
+    const { cloudProvider, cloudModelName, cloudBatchSize, cloudQueryRole, cloudDocumentRole } = this.model;
+    if (!cloudProvider || !cloudModelName || !cloudBatchSize ||
         cloudQueryRole === undefined || cloudDocumentRole === undefined) {
       throw new Error(`Cloud model '${this.model.id}' is missing its provider configuration.`);
     }
-    if (!hasCurrentCloudConsent()) {
+    if (!isCloudModelConfigured()) {
+      throw new Error(
+        'Cloud model configuration is incomplete. Open ZotSeek Settings and select a Cloud model.',
+      );
+    }
+    if (!hasCurrentCloudConsent(cloudProvider)) {
       throw new Error('Cloud disclosure has not been accepted. Open ZotSeek Settings and select Cloud again.');
     }
-    if (!isCloudConnectionVerified()) {
+    if (!isCloudConnectionVerified(cloudProvider)) {
       throw new Error('Cloud connection is not verified. Test it in ZotSeek Settings before use.');
     }
-    const apiKey = await cloudCredentialStore.get();
+    const apiKey = await cloudCredentialStore.get(cloudProvider);
     if (!apiKey) {
       throw new Error('Cloud API key is missing. Open ZotSeek Settings and configure Cloud Model.');
     }
+    const adapter = createCloudEmbeddingRequestAdapter(getCloudModelSettings(), apiKey);
     this.cloudClient = new CloudEmbeddingClient({
-      baseUrl,
-      modelName: cloudModelName,
+      adapter,
       dimensions: this.model.dimensions,
       apiKey,
       batchSize: cloudBatchSize,
-      queryRole: cloudQueryRole,
-      documentRole: cloudDocumentRole,
     });
   }
 

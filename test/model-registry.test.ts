@@ -164,12 +164,12 @@ describe('the active model pref', () => {
     assert.equal(getActiveModelSelectionId(), CLOUD_SLOT_SELECTION_ID);
   });
 
-  test('resolves editable Cloud settings behind the stable Cloud slot', () => {
+  test('resolves catalog Cloud settings behind the stable Cloud slot', () => {
     setCloudModelSettings({
       provider: 'alibaba-bailian',
-      baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-      modelName: 'another-model',
-      dimensions: 768,
+      bailianRegion: 'cn',
+      modelName: 'qwen3.7-text-embedding',
+      dimensions: 1024,
       maxInputTokens: 1000,
       queryRole: 'search_query',
       documentRole: 'search_document',
@@ -178,7 +178,7 @@ describe('the active model pref', () => {
     setActiveModelId(CLOUD_SLOT_SELECTION_ID);
     const model = getActiveModel();
     assert.equal(getActiveModelSelectionId(), CLOUD_SLOT_SELECTION_ID);
-    assert.equal(model.id, 'cloud:alibaba-bailian:another-model:768');
+    assert.equal(model.id, 'cloud:alibaba-bailian:qwen3.7-text-embedding:1024');
     assert.equal(model.queryPrefix, '');
     assert.equal(model.docPrefix, '');
     assert.equal(model.cloudQueryRole, 'search_query');
@@ -186,6 +186,27 @@ describe('the active model pref', () => {
     assert.equal(model.cloudApiAdapterVersion, 'dashscope-native-text-type-v1');
     assert.equal(model.cloudBatchSize, 8);
     assert.equal(model.serverRecommendedChunkTokens, 850);
+  });
+
+  test('resolves a Custom (OpenAI-compatible) provider behind the Cloud slot', () => {
+    setCloudModelSettings({
+      provider: 'custom-openai-compatible',
+      baseUrl: 'https://api.example.com/v1',
+      modelName: 'bge-m3',
+      dimensions: 1024,
+      maxInputTokens: 8192,
+      batchSize: 8,
+    });
+    setActiveModelId(CLOUD_SLOT_SELECTION_ID);
+    const model = getActiveModel();
+    assert.equal(model.id, 'cloud:custom-openai-compatible:bge-m3:1024');
+    assert.equal(model.cloudProvider, 'custom-openai-compatible');
+    assert.equal(model.cloudCustomBaseUrl, 'https://api.example.com/v1');
+    assert.equal(model.cloudQueryRole, '');
+    assert.equal(model.cloudDocumentRole, '');
+    assert.equal(model.cloudApiAdapterVersion, 'openai-compatible-v1');
+    assert.equal(model.cloudBatchSize, 8);
+    assert.equal(model.serverRecommendedChunkTokens, 4000);
   });
 });
 
