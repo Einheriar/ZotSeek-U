@@ -8,6 +8,7 @@ import {
   resolveModelInputPolicy,
   shouldClearLegacyDefaultChunkPreference,
 } from '../src/core/model-input-policy';
+import { fixedChunkProfile } from '../src/core/model-chunk-profile';
 
 describe('model input policy resolution', () => {
   test('uses per-model recommendations when no user override exists', () => {
@@ -39,7 +40,7 @@ describe('model input policy resolution', () => {
     const e5 = resolveModelInputPolicy(getModel('multilingual-e5-base')!);
     const bge = resolveModelInputPolicy(getModel('bge-m3')!);
     assert.notEqual(modelInputPolicyFingerprint(e5), modelInputPolicyFingerprint(bge));
-    assert.match(modelInputPolicyFingerprint(e5), /^v1:multilingual-e5-base:420:512:8000:exact$/);
+    assert.match(modelInputPolicyFingerprint(e5), /^v2:multilingual-e5-base:420:512:8000:105:exact$/);
   });
 
   test('remote document input contracts are part of the index policy fingerprint', () => {
@@ -51,6 +52,7 @@ describe('model input policy resolution', () => {
       docPrefix: 'passage: ',
       serverMaxInputTokens: 512,
       serverRecommendedChunkTokens: 420,
+      chunkProfile: fixedChunkProfile(420),
     };
     const first = modelInputPolicyFingerprint(resolveModelInputPolicy(server));
     const changed = modelInputPolicyFingerprint(resolveModelInputPolicy({
@@ -76,7 +78,7 @@ describe('model input policy resolution', () => {
     assert.notEqual(cloudFirst, cloudChanged);
     assert.match(
       cloudFirst,
-      /:estimated:estimate=cloud-multilingual-v1:adapter=dashscope-native-text-type-v1:role=document:output=dense:instruct=none$/,
+      /:105:estimated:estimate=cloud-multilingual-v1:adapter=dashscope-native-text-type-v1:role=document:output=dense:instruct=none$/,
     );
     assert.doesNotMatch(cloudFirst, /:doc=/);
     assert.doesNotMatch(first, /cloud-multilingual/);
@@ -86,6 +88,6 @@ describe('model input policy resolution', () => {
     const nomic = modelInputPolicyFingerprint(
       resolveModelInputPolicy(getModel('nomic-embed-text-v1.5')!),
     );
-    assert.equal(nomic, 'v1:nomic-embed-text-v1.5:2000:8192:8000:estimated');
+    assert.equal(nomic, 'v2:nomic-embed-text-v1.5:2000:8192:8000:500:estimated');
   });
 });

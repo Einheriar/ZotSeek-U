@@ -35,15 +35,15 @@ describe('cloud model configuration', () => {
     assert.equal(CLOUD_BATCH_SIZE, 10);
     assert.equal(settings.queryRole, CLOUD_DEFAULT_QUERY_ROLE);
     assert.equal(settings.documentRole, CLOUD_DEFAULT_DOCUMENT_ROLE);
-    assert.equal(settings.recommendedChunkTokens, 3000);
+    assert.equal(settings.recommendedChunkTokens, 4000);
     assert.equal(CLOUD_MODEL_ID, 'cloud:alibaba-bailian:qwen3.7-text-embedding:1024');
     assert.equal(cloudModelId(settings), CLOUD_MODEL_ID);
   });
 
-  test('calculates 85 percent recommended chunks with a 3000-token cap', () => {
+  test('calculates 85 percent recommended chunks with a 4000-token cap', () => {
     assert.equal(calculateCloudRecommendedChunkTokens(512), 435);
-    assert.equal(calculateCloudRecommendedChunkTokens(8192), 3000);
-    assert.equal(calculateCloudRecommendedChunkTokens(128000), 3000);
+    assert.equal(calculateCloudRecommendedChunkTokens(8192), 4000);
+    assert.equal(calculateCloudRecommendedChunkTokens(128000), 4000);
     assert.throws(() => calculateCloudRecommendedChunkTokens(0), /positive integer/);
   });
 

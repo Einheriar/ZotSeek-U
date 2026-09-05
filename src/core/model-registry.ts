@@ -1,8 +1,10 @@
 import {
   CLOUD_API_ADAPTER_VERSION,
+  CLOUD_CHUNK_PROFILE,
   cloudModelId,
   getCloudModelSettings,
 } from './cloud-model-config';
+import { fixedChunkProfile, type ModelChunkProfile } from './model-chunk-profile';
 
 /**
  * Model registry: single source of truth for selectable embedding models.
@@ -26,6 +28,8 @@ export interface ModelConfig {
   bundled: boolean;        // true only for the model shipped inside the XPI
   approxSizeMB: number;
   multilingual: boolean;
+  /** Model-specific default/recommendation/soft-min policy for chunking. */
+  chunkProfile: ModelChunkProfile;
 
   // server-runtime only
   baseUrl?: string;          // e.g. 'http://127.0.0.1:1234' (loopback enforced at request time)
@@ -62,6 +66,7 @@ export const MODELS: ModelConfig[] = [
     onnxFile: 'onnx/model_quantized.onnx',
     files: [...COMMON_FILES, 'onnx/model_quantized.onnx'],
     bundled: false, approxSizeMB: 130, multilingual: false,
+    chunkProfile: fixedChunkProfile(2000),
   },
   {
     id: 'multilingual-e5-base',
@@ -73,6 +78,7 @@ export const MODELS: ModelConfig[] = [
     onnxFile: 'onnx/model_quantized.onnx',
     files: [...COMMON_FILES, 'onnx/model_quantized.onnx'],
     bundled: true, approxSizeMB: 282, multilingual: true,
+    chunkProfile: fixedChunkProfile(420),
   },
   {
     id: 'bge-m3',
@@ -84,6 +90,7 @@ export const MODELS: ModelConfig[] = [
     onnxFile: 'onnx/model_quantized.onnx',
     files: [...COMMON_FILES, 'onnx/model_quantized.onnx'],
     bundled: false, approxSizeMB: 570, multilingual: true,
+    chunkProfile: fixedChunkProfile(2000),
   },
 ];
 
@@ -336,6 +343,7 @@ function serverEntryToModelConfig(e: ServerModelEntry): ModelConfig {
     queryPrefix: e.queryPrefix, docPrefix: e.docPrefix,
     hfPath: '', onnxFile: '', files: [], bundled: false, approxSizeMB: 0, // onnx-only fields, unused
     multilingual: false,
+    chunkProfile: fixedChunkProfile(e.recommendedChunkTokens),
     baseUrl: e.baseUrl, serverModelName: e.serverModelName, apiKey: e.apiKey,
     serverMaxInputTokens: e.maxInputTokens,
     serverRecommendedChunkTokens: e.recommendedChunkTokens,
@@ -380,6 +388,7 @@ export function getCloudModels(): ModelConfig[] {
     bundled: false,
     approxSizeMB: 0,
     multilingual: true,
+    chunkProfile: CLOUD_CHUNK_PROFILE,
     baseUrl: settings.baseUrl,
     cloudProvider: settings.provider,
     cloudModelName: settings.modelName,

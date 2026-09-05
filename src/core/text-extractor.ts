@@ -103,7 +103,7 @@ export class TextExtractor {
       modelMaxInputTokens: policy.maxInputTokens ?? undefined,
       maxChars: policy.maxChunkChars,
       tokenCounter,
-      noteSoftMinTokens: Math.floor(policy.recommendedChunkTokens / 4),
+      noteSoftMinTokens: policy.softMinTokens,
       modelIdSnapshot: model.id,
     };
   }

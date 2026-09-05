@@ -4,7 +4,7 @@ import { CLOUD_OUTPUT_TYPE } from './cloud-model-config';
 import { requiresInstructionPrefix, type ModelConfig } from './model-registry';
 import { getModelInputConfig } from './model-input-config';
 
-export const MODEL_INPUT_POLICY_VERSION = 1;
+export const MODEL_INPUT_POLICY_VERSION = 2;
 export const CLOUD_TOKEN_ESTIMATOR_VERSION = 1;
 
 export interface ResolvedModelInputPolicy {
@@ -13,6 +13,7 @@ export interface ResolvedModelInputPolicy {
   effectiveChunkTokens: number;
   maxInputTokens: number | null;
   recommendedChunkTokens: number;
+  softMinTokens: number;
   maxChunkChars: number;
   requiresInstructionPrefix: boolean;
   supportsExactTokenCount: boolean;
@@ -46,6 +47,7 @@ export function resolveModelInputPolicy(
     effectiveChunkTokens,
     maxInputTokens: config.maxInputTokens,
     recommendedChunkTokens: config.recommendedChunkTokens,
+    softMinTokens: config.softMinTokens,
     maxChunkChars: config.maxChunkChars,
     requiresInstructionPrefix: requiresInstructionPrefix(model),
     supportsExactTokenCount: config.supportsExactTokenCount,
@@ -73,6 +75,7 @@ export function modelInputPolicyFingerprint(policy: ResolvedModelInputPolicy): s
     policy.effectiveChunkTokens,
     policy.maxInputTokens ?? 'unknown',
     policy.maxChunkChars,
+    policy.softMinTokens,
     policy.supportsExactTokenCount ? 'exact' : 'estimated',
   ];
   // Only Cloud changes chunk boundaries under Plan 47. Keep every other

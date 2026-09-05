@@ -618,7 +618,7 @@ The production strategy is:
 
 1. Remove conservative “基本信息” and reference-list subtrees before fingerprinting, quota allocation and chunking. A citation/title preamble between a generic brief `h1` and the first meaningful heading is removed for the same reason. A skipped subtree ends at the next heading of the same or a higher level.
 2. Split oversized sections at paragraph, sentence and Unicode-character boundaries under the model's hard input ceiling.
-3. Greedily combine adjacent small sections using `recommendedChunkTokens / 4` as a soft minimum, but never merge across an `h2` boundary or across different Zotero Child Notes.
+3. Greedily combine adjacent small sections using the active model profile's derived `softMinTokens` as a soft minimum, but never merge across an `h2` boundary or across different Zotero Child Notes.
 4. Store faithful evidence in `chunk_text`. After the Note body has completed its existing split, R1 adds `文献：<父文献标题>` and, when available, `章节：...` only to `embedText`; these artificial prefixes are not shown as quoted evidence and do not enter BM25.
 5. Persist all represented paths as `sectionPaths: string[][]`, because one compact chunk may contain several adjacent subsections.
 
@@ -1115,11 +1115,13 @@ Each `ModelConfig` specifies:
 - `bundled` — `true` only for the default model shipped inside the XPI (`chrome://zotseek/content/models/`). Non-bundled installed models are read from `zotseek-models/` inside the Zotero **profile** directory and served from `resource://zotseek-models/`. The Settings model picker always lists the three curated local models. Missing entries offer an allowlisted automatic download or a manual guide; neither changes the active model before installation succeeds.
 
 `ModelInputConfig` additionally records `maxInputTokens`,
-`recommendedChunkTokens`, `maxChunkChars`, tokenizer type, exact-count support
-and the actual local quantization. `maxChunkChars` is a lossless upstream split
-threshold, not an inference truncation limit. Current values are E5 512/420,
-Nomic 8192/2000 and BGE-M3 8192/2000 (hard limit/recommendation); all local
-artifacts use Q8.
+`recommendedChunkTokens`, the model's `chunkProfile`, its derived soft minimum,
+`maxChunkChars`, tokenizer type, exact-count support and the actual local
+quantization. The registry profile is the runtime source of truth for the
+recommended size and soft minimum; local input facts are validated against it.
+`maxChunkChars` is a lossless upstream split threshold, not an inference
+truncation limit. Current local values are E5 512/420, Nomic 8192/2000 and
+BGE-M3 8192/2000 (hard limit/recommendation); all local artifacts use Q8.
 
   Downloads used to go to the Zotero **data** directory, and models still there are read from `resource://zotseek-models-legacy/` so they keep working. The data directory is the one users relocate to a NAS, an external drive or a synced folder, and reading hundreds of MB of ONNX weights over a network share stalls the load outright, so weights (which are re-downloadable and are not user data) no longer follow the library.
 
@@ -1220,7 +1222,7 @@ Issue #42 adds a second `runtime` to `ModelConfig` alongside the in-process Chro
 
 ### Cloud Embeddings
 
-Cloud is a third, independent `ModelConfig.runtime`. The first provider is Alibaba Cloud Model Studio (Bailian). Its embedding adapter sends the native DashScope text-embedding request to `/api/v1/services/embeddings/text-embedding/text-embedding`, while the persisted user-facing Base URL stays on `/compatible-mode/v1` because the literature-brief client shares it for chat completion. The preset starts with `qwen3.7-text-embedding`, 1024 dimensions, a 128000-token input limit and batches of 10, while model name, dimensions and model-input parameters remain user-configurable. Recommended chunk tokens are derived as `min(3000, floor(maxInputTokens * 0.85))`. In the absence of a local provider tokenizer, Cloud uses the conservative multilingual estimate described above to apply that recommendation; the estimator version is part of the Cloud-only index policy fingerprint so old and new chunk boundaries cannot silently mix. ZotSeek sends HTTP directly and does not depend on a provider SDK. The menu persists `cloud-slot`; provider, model name and dimensions derive the current vector-space identity, preserving `cloud:alibaba-bailian:qwen3.7-text-embedding:1024` for the default preset.
+Cloud is a third, independent `ModelConfig.runtime`. The first provider is Alibaba Cloud Model Studio (Bailian). Its embedding adapter sends the native DashScope text-embedding request to `/api/v1/services/embeddings/text-embedding/text-embedding`, while the persisted user-facing Base URL stays on `/compatible-mode/v1` because the literature-brief client shares it for chat completion. The preset starts with `qwen3.7-text-embedding`, 1024 dimensions, a 128000-token input limit and batches of 10, while model name, dimensions and model-input parameters remain user-configurable. Its registered chunk profile derives recommended chunk tokens as `min(4000, floor(maxInputTokens * 0.85))`, with a 25% soft minimum. Each registered embedding model carries its own default chunk value, recommendation calculation and soft-min ratio; these are resolved into the shared model input policy. In the absence of a local provider tokenizer, Cloud uses the conservative multilingual estimate described above to apply that recommendation; the estimator version is part of the Cloud-only index policy fingerprint so old and new chunk boundaries cannot silently mix. ZotSeek sends HTTP directly and does not depend on a provider SDK. The menu persists `cloud-slot`; provider, model name and dimensions derive the current vector-space identity, preserving `cloud:alibaba-bailian:qwen3.7-text-embedding:1024` for the default preset.
 
 Local Server and Cloud configuration are separate collapsed Settings sections; Cloud has a second collapsed advanced-parameter section. Selecting the Bailian provider supplies its default Base URL and `query`/`document` API roles, which remain editable; a button restores the role defaults. The URL remains editable for an allowlisted workspace endpoint, must use HTTPS, may not contain credentials, query parameters or fragments, and is invalidated for use until a direct embedding probe succeeds. Redirects are rejected.
 

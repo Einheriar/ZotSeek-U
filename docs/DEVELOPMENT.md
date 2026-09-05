@@ -605,7 +605,10 @@ Provider, Base URL, model name and dimensions are shown in the collapsed Cloud
 Settings section. Maximum input tokens, query/document API roles and batch size
 are in its nested advanced section, with an action to restore Bailian's default
 `query`/`document` roles. Recommended chunk tokens are derived as
-`min(3000, floor(maxInputTokens * 0.85))` and cannot be edited independently.
+`min(4000, floor(maxInputTokens * 0.85))` and cannot be edited independently. Each
+registered embedding model carries a chunk profile with its default, recommendation
+calculation and soft-min ratio; Cloud's profile uses a 4000-token cap and a 25%
+soft minimum (1000 tokens at the default recommendation).
 
 Cloud API roles and manual text prefixes are separate contracts. The Bailian
 adapter fixes the parameter name as `text_type`; a non-empty configured value

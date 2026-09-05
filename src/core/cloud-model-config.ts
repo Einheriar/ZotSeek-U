@@ -1,6 +1,7 @@
 /** Stable, non-secret configuration for the fixed Cloud embedding slot. */
 
 import { BRIEF_CONNECTION_VERIFIED_PREF } from './brief-generation-config';
+import type { ModelChunkProfile } from './model-chunk-profile';
 
 declare const Zotero: any;
 
@@ -16,7 +17,12 @@ export const CLOUD_MODEL_ID =
   `cloud:${CLOUD_PROVIDER_ID}:${CLOUD_MODEL_NAME}:${CLOUD_MODEL_DIMENSIONS}`;
 export const CLOUD_BATCH_SIZE = 10;
 export const CLOUD_MAX_INPUT_TOKENS = 128000;
-export const CLOUD_RECOMMENDED_CHUNK_CAP = 3000;
+export const CLOUD_RECOMMENDED_CHUNK_CAP = 4000;
+export const CLOUD_CHUNK_PROFILE: ModelChunkProfile = Object.freeze({
+  defaultChunkTokens: 4000,
+  recommendation: Object.freeze({ kind: 'ratio-cap', ratio: 0.85, cap: CLOUD_RECOMMENDED_CHUNK_CAP }),
+  softMinRatio: 0.25,
+});
 export const CLOUD_DEFAULT_QUERY_ROLE = 'query';
 export const CLOUD_DEFAULT_DOCUMENT_ROLE = 'document';
 export const CLOUD_OUTPUT_TYPE = 'dense' as const;
@@ -153,10 +159,11 @@ export function calculateCloudRecommendedChunkTokens(maxInputTokens: number): nu
   if (!Number.isSafeInteger(maxInputTokens) || maxInputTokens <= 0) {
     throw new CloudConfigRejectedError('Maximum input tokens must be a positive integer.');
   }
-  return Math.max(1, Math.min(
-    CLOUD_RECOMMENDED_CHUNK_CAP,
-    Math.floor(maxInputTokens * 0.85),
-  ));
+  const recommendation = CLOUD_CHUNK_PROFILE.recommendation;
+  const calculated = recommendation.kind === 'ratio-cap'
+    ? Math.min(recommendation.cap, Math.floor(maxInputTokens * recommendation.ratio))
+    : recommendation.defaultTokens;
+  return Math.max(1, Math.min(calculated, maxInputTokens));
 }
 
 export function cloudModelId(settings: Pick<CloudModelSettings, 'provider' | 'modelName' | 'dimensions'>): string {
