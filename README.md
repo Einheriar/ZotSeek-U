@@ -4,6 +4,14 @@
 
 **English** | [简体中文](README-CN.md)
 
+## Installation and Version Migration
+
+> **Important: Zotseek-U is a replacement installation for ZotSeek. Do not install or use both versions side by side.** They retain the same Zotero add-on ID and local data namespace, so installing Zotseek-U replaces the existing ZotSeek installation.
+
+Zotseek-U restarts its independent release numbering at `0.1.0`. Because this is lower than the inherited `1.20.558` development version, Zotero will not offer `0.1.0` as an automatic update to an existing installation and may identify a manual installation as a downgrade.
+
+To switch while preserving the existing index and preferences, download the Zotseek-U XPI and install it **directly over the existing ZotSeek installation** from Zotero's Add-ons Manager. Do not uninstall ZotSeek first: a true uninstall runs its cleanup and removes `zotseek.sqlite` and the `extensions.zotero.zotseek.*` preferences. This manual downgrade is needed only once; after `0.1.0` is installed, later Zotseek-U releases such as `0.1.1` can update normally.
+
 ## Mission
 
 > **Make Zotero foundational infrastructure for reference management in the AI era.**

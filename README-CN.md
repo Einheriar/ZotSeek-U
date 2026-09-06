@@ -4,6 +4,14 @@
 
 [English](README.md) | **简体中文**
 
+## 安装与版本迁移
+
+> **重要：Zotseek-U 是 ZotSeek 的替代安装，不能与原版同时安装或同时使用。** 两者保留相同的 Zotero 插件 ID 和本地数据命名空间，因此安装 Zotseek-U 会替换现有的 ZotSeek。
+
+Zotseek-U 将从 `0.1.0` 重新开始独立版本编号。由于它低于继承自原项目的开发版本 `1.20.558`，Zotero 不会向现有安装自动推送 `0.1.0`，手动安装时也可能将其提示为降级安装。
+
+如果希望保留现有索引和设置，请下载 Zotseek-U XPI，并在 Zotero 的插件管理器中将它**直接覆盖安装到现有 ZotSeek 上**。不要先卸载 ZotSeek：真正卸载会执行清理，删除 `zotseek.sqlite` 和 `extensions.zotero.zotseek.*` 偏好。手动降级只在这次版本体系切换时需要；安装 `0.1.0` 后，后续 `0.1.1` 等 Zotseek-U 版本即可正常自动更新。
+
 ## 项目宗旨
 
 > **让 Zotero 成为文献管理 AI 时代的基础设施。**
