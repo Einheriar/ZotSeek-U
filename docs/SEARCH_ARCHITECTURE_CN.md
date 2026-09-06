@@ -735,6 +735,32 @@ IDF(t)      = ln( 1 + (N − df + 0.5) / (df + 0.5) )              k1 = 1.2, b =
 构建成本与内存开销见[搜索方案](#搜索方案)；关键词分支与 quicksearch 命中的合并规则见[查询分析](#查询分析)。
 
 
+### 分词器选型实测（Plan 24B/24C）
+
+T0 并不是唯一被测过的分词器。Plan 24B 先用 BM25（K1）替换了旧的包含式匹配（K0），Plan 24C 再在
+完全冻结的对照下横评了四个自然词分词器：**T0 `Intl.Segmenter`（生产选型）**、**T1 `PKUSEG-js`**、
+**T2 `jieba-wasm@2.4.0`（search 模式）**、**T3 `Segmentit`**。四臂共享同一 CJK bigram 通道、
+BM25 参数（k1=1.2 / b=0.75）、RRF k=60、E5 向量与同一 50 题集，只换自然词通道；主对比在
+"元数据+笔记语料"（150 篇 / 1000 chunks）上进行，"纯PDF语料（剔除 2 篇中文枢纽）"仅用于确认
+英文/缩写检索不受影响。
+
+![Tokenizer Benchmark - Retrieval Quality](images/plan24c-tokenizer-quality.png)
+
+检索质量上，四个分词器把词法分支拉到同一水平（keyword-only R@1 0.72–0.76），**T2 jieba-wasm 的
+content-hybrid 略胜**（R@1 0.74 / MRR 0.809 / nDCG 0.818；对 T0 为 R@1 +0.04、MRR +0.018）；
+T1/T3 居中。蓝色虚线是没有词法分支时的纯语义水平——所有 BM25 分词器在 MRR/nDCG 上都高于该线，
+说明融合本身有稳定增益。
+
+![Tokenizer Benchmark - Resource & Cost](images/plan24c-tokenizer-resources.png)
+
+资源成本决定了最终选型：**T2 质量最好，但需要 4 MB WASM 资产、约 67 MB 稳定内存增量、约 252 ms
+首查懒加载，且 BM25 构建最慢（5.6 s）**；T1 需要约 163.5 MB 运行时资产与 170 MB 内存；T3 也要
+114.5 MB。D5 权衡后冻结零依赖的 T0——增量收益不值得引入第三方 WASM 与常驻内存，后由 Plan 40
+接入生产。同一轮消融还冻结了两件事：`library-term-patch-v1`（文库关键词词典）**HOLD_OFF**，
+patch ON 无稳定检索收益（元数据+笔记语料 hybrid MRR +0.000032）反而增加索引 2.7%；两篇中文枢纽论文在任何
+分词器下都占满纯PDF 词法 Top10，属于语料级风险而非分词器缺陷。完整数据见 `plan/archive/REPORT-24B`、
+`plan/archive/REPORT-24C` 与 `tokenizer/eval/runs/plan24c-tokenizers-v1/2026-09-01-formal-report-v3/`。
+
 ---
 
 ## 分块策略
@@ -855,6 +881,12 @@ E5 与 BGE-M3 对 Summary、Child Notes、PDF chunk 和查询使用各自的精�
 1000 words ≈ 1300 tokens ≈ 6000 characters
 ```
 
+| maxTokens | 近似规模 |
+|-----------|------------------|
+| 500 | 约 385 词，约 1500 字符 |
+| 800 | 约 615 词，约 2400 字符 |
+| 2000 | 约 1540 词，约 6000 字符 |
+
 Cloud 模型不声称精确的本地 token 计数。其保守预检估算对空白分隔的非 CJK 词保持同样的 1.3 比率，并把 Han、Hiragana、Katakana 和 Hangul 字符按每字 2 token 计。该估算控制 chunk 粒度；provider 仍然是其真实 tokenizer 和上下文上限的最终权威。
 
 所有模型使用独立的 8000 字符上游 chunk 拆分阈值。超限 chunk 会拆成连续片段且不丢尾。耗尽 `maxChunksPerPaper`、或超出 Full 模式 30-Note 来源上限，都可能使条目部分索引。本地 Worker 与 server 路径不做第二次按字符的切除。Transformers.js feature extraction 启用了 tokenizer 截断，因此超限直接调用时使用各本地模型的 `model_max_length`。精确的 E5/BGE-M3 预检计数会记录该情况，但不会用 ZotSeek 报错替换 tokenizer 的自动行为。
@@ -871,6 +903,56 @@ Cloud 模型不声称精确的本地 token 计数。其保守预检估算对空�
 - 避免同一内容出现重复命中
 
 重叠在 RAG 系统中很常见（例如 LangChain 默认约 200 token 重叠），未来可以作为重要信息跨越段落边界场景的增强项加入。
+
+### PDF 前处理解析器实测（Plan 11B）
+
+PDF chunk 的起点是解析器产出的逐页文本，解析质量直接决定装箱边界与检索上限。Plan 11B 在
+`10_Hyperscanning` 语料（153 篇 PDF / 2,362 页）上，用统一 Gold 锚点和 canonical 对比横评了
+4 个外部解析包的 8 个无 OCR profile 与生产基线 `Zotero.PDFWorker.getFullText`：
+
+![PDF Parser Benchmark - Text Quality](images/plan11b-parser-quality.png)
+
+图上可以直接读出三条结论：
+
+- **document-worker 是最接近基线的外部候选**：critical expressions 27/38、阅读顺序 99/106、
+  跨栏 20/20、文本保留率 0.9991，几乎与 PDFWorker direct 打平；但其结构版需要 onnxruntime-web
+  与分类/修复模型（隔离运行 198 s），fulltext 版也依赖 Node 侧 PDF.js 资产（72 s）。
+- **Python 侧包（pdftext / ZRA / PyMuPDF4LLM）普遍输在阅读顺序与跨栏**（59–79 / 106、3–16 / 20），
+  文本保留率也只有 0.94–0.98。
+- 因此冻结结论为**保留 PDFWorker direct 生产主链**，外部结构化能力仅作为可选 sidecar
+  （roles 输出：doc-worker structure 11/20、PyMuPDF4LLM layout 8/20）。
+
+完整方法、逐包复核与失败案例见 `plan/archive/11B-外部PDF解析包无OCR基准比较报告.md`；运行时成本
+（各包 wall time 25–1,200 s）见该报告"运行依赖与成本信号"一节。
+
+### Chunk 尺寸档位实测与 Cloud token 上限估算（Plan 47/54）
+
+chunk 尺寸到底敏不敏感？Plan 54 用 Cloud 嵌入把 Metadata + Notes 语料按 C500–C8000 五档
+`maxTokens` 全量重嵌入并重放 50 题。之所以用 Cloud 模型（qwen3.7-text-embedding，1024 维，
+DashScope），是因为要为五个档位各重嵌入一遍语料，Cloud 批量同步请求让这轮扫描在时间与成本上
+可行；因此这张图读的是**档位趋势**，不能与本章其他 E5 基线的绝对值直接比较。
+
+![Chunk Max-Token Sweep - Retrieval Quality](images/plan54-chunk-tier-sweep.png)
+
+结论：三种搜索方式对档位都不敏感——现行 Hybrid 的 R@10 在五档上稳定在 0.88–0.90，BM25 持平于
+0.85–0.87，纯语义随档位增大缓降（R@10 0.96 → 0.90）。**所以我们认为：对输入上限宽裕的先进
+嵌入模型，chunk 取大一些是安全的**——同一段正文合并进更大的 chunk 后每篇文献的分块数量下降，
+向量更少、索引更小、构建更快，而生产默认 Hybrid 检索没有可测损失（"不损失性能"以 Hybrid 为准；
+纯语义前排的缓降是取大档位的已知代价）。PDF 侧两档（F2000/F4000）语义 R@10 均为 0.91。本轮
+实验未修改生产默认 chunk 值。
+
+Cloud 模型在本地没有 tokenizer，其 token 上限按保守估算器校验（`estimateCloudTokens()`，
+Plan 47 引入；估算器版本只进入 Cloud 索引策略指纹）:
+
+```
+tokens = ceil(CJK 字符数 × 2 + 非 CJK 词数 × 1.3)
+```
+
+- CJK 字符（汉/平假名/片假名/谚文）每个记 **2 tokens**，取百炼官方指南的保守端；
+- 非 CJK 文本按空白切词，每词记 **1.3 tokens**；向上取整。
+
+Cloud 运行时分块的 `maxTokens` 预算与模型硬输入上限都用该估算值校验；E5/BGE-M3 仍走精确
+tokenizer 计数，Nomic 使用其专属估算器，互不影响。
 
 ---
 

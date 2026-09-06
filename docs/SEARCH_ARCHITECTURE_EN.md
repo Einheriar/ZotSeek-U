@@ -742,6 +742,38 @@ IDF(t)      = ln( 1 + (N − df + 0.5) / (df + 0.5) )              k1 = 1.2, b =
 Build cost and memory overhead are in [Search Approach](#search-approach); the merge rules with quicksearch hits are in [Query Analysis](#query-analysis).
 
 
+### Tokenizer Selection Benchmark (Plan 24B/24C)
+
+T0 was not the only tokenizer evaluated. Plan 24B first replaced the legacy substring match (K0)
+with BM25 (K1); Plan 24C then compared four natural-word tokenizers under a fully frozen protocol:
+**T0 `Intl.Segmenter` (production choice)**, **T1 `PKUSEG-js`**, **T2 `jieba-wasm@2.4.0` (search
+mode)** and **T3 `Segmentit`**. All four arms share the same CJK bigram channel, BM25 parameters
+(k1=1.2 / b=0.75), RRF k=60, E5 vectors and the same 50-question set; only the natural-word
+channel changes. The main comparison runs on the Metadata + Notes corpus (150 papers / 1000
+chunks); the PDF-only corpus with the 2 Chinese-dominant hub papers excluded only confirms
+English/abbreviation retrieval is unaffected.
+
+![Tokenizer Benchmark - Retrieval Quality](images/plan24c-tokenizer-quality.png)
+
+On retrieval quality all four tokenizers lift the lexical branch to the same level (keyword-only
+R@1 0.72-0.76), and **T2 jieba-wasm wins content-hybrid slightly** (R@1 0.74 / MRR 0.809 /
+nDCG 0.818; +0.04 R@1 and +0.018 MRR over T0); T1/T3 sit in between. The dashed blue line marks
+the pure-semantic level without a lexical branch — every BM25 tokenizer beats it on MRR/nDCG,
+showing the fusion itself has a stable gain.
+
+![Tokenizer Benchmark - Resource & Cost](images/plan24c-tokenizer-resources.png)
+
+Resource cost decided the final choice: **T2 has the best quality but requires a 4 MB WASM asset,
+about 67 MB stable memory, a ~252 ms lazy first query, and the slowest BM25 build (5.6 s)**; T1
+needs about 163.5 MB of runtime assets and 170 MB of memory; T3 needs 114.5 MB. The D5 decision
+froze the zero-dependency T0 — the incremental quality was not worth a third-party WASM dependency
+and resident memory — which Plan 40 then integrated into production. The same ablation froze two
+more outcomes: `library-term-patch-v1` (library keyword dictionary) stayed **HOLD_OFF** — patch ON
+has no stable retrieval gain (Metadata+Notes hybrid MRR +0.000032) while adding 2.7% index size;
+and the two Chinese hub papers fill the PDF-track lexical Top10 under every tokenizer, a
+corpus-level risk rather than a tokenizer defect. Full data: `plan/archive/REPORT-24B`,
+`plan/archive/REPORT-24C` and `tokenizer/eval/runs/plan24c-tokenizers-v1/2026-09-01-formal-report-v3/`.
+
 ---
 
 ## Chunking Strategy
@@ -981,6 +1013,67 @@ The paper title remains part of Summary/PDF embedding context where the existing
 - Avoids duplicate matches for the same content
 
 Overlap is common in RAG systems (e.g., LangChain defaults to ~200 token overlap) and could be added as a future enhancement for cases where important information spans paragraph boundaries.
+
+### PDF Preprocessing Parser Benchmark (Plan 11B)
+
+The starting point of every PDF chunk is the per-page text a parser produces; parse quality
+directly bounds packing boundaries and retrieval quality. Plan 11B compared 8 no-OCR profiles from
+4 external parser packages against the production baseline `Zotero.PDFWorker.getFullText` on the
+`10_Hyperscanning` corpus (153 PDFs / 2,362 pages) with unified Gold anchors and a canonical
+comparison:
+
+![PDF Parser Benchmark - Text Quality](images/plan11b-parser-quality.png)
+
+Three conclusions read directly from the figure:
+
+- **document-worker is the closest external candidate to the baseline**: critical expressions
+  27/38, reading order 99/106, cross-column 20/20 and text retention 0.9991 — nearly tied with
+  PDFWorker direct; its structure variant needs onnxruntime-web plus classifier/repair models
+  (198 s isolated run) and the fulltext variant depends on Node-side PDF.js assets (72 s).
+- **The Python-side packages (pdftext / ZRA / PyMuPDF4LLM) lose mainly on reading order and
+  cross-column layout** (59-79 / 106 and 3-16 / 20), with text retention of only 0.94-0.98.
+- The frozen decision was therefore to **keep PDFWorker direct as the production main chain**,
+  with external structure capabilities reserved as optional sidecars (roles output: doc-worker
+  structure 11/20, PyMuPDF4LLM layout 8/20).
+
+Full methodology, per-package reviews and failure cases: `plan/archive/11B-外部PDF解析包无OCR基准比较报告.md`;
+runtime costs (wall time 25-1,200 s per package) are in its runtime-dependency section.
+
+### Chunk Max-Token Sweep and Cloud Token Limit Estimate (Plan 47/54)
+
+How sensitive is retrieval to chunk size? Plan 54 re-embedded the Metadata + Notes corpus at
+five `maxTokens` tiers (C500-C8000) with a cloud embedding and replayed the 50 questions. The
+cloud model (qwen3.7-text-embedding, 1024-dim, DashScope) was used because re-embedding the
+whole corpus for five tiers is only practical with batched cloud requests; therefore this figure
+is about the TIER TREND and its absolute values cannot be compared with the E5-based matrices
+elsewhere in this chapter.
+
+![Chunk Max-Token Sweep - Retrieval Quality](images/plan54-chunk-tier-sweep.png)
+
+Conclusion: none of the three search methods is sensitive to the tier - the current Hybrid holds
+R@10 at 0.88-0.90 across all five tiers, BM25 stays at 0.85-0.87, and pure semantic degrades
+mildly with larger chunks (R@10 0.96 -> 0.90). **So for advanced embedding models with generous
+input limits, larger chunks are safe**: merging the same body text into bigger chunks reduces the
+chunk count per paper (fewer vectors, smaller index, faster indexing) without a measurable loss
+in the production default Hybrid ("no performance loss" is anchored on Hybrid; the mild semantic
+front-rank decline is the known cost of very large tiers). On the PDF side both tiers (F2000 /
+F4000) reach semantic R@10 0.91. The experiment did not change production chunk defaults.
+
+Cloud models have no local tokenizer, so their token limit is validated with a conservative
+estimator (`estimateCloudTokens()`, introduced in Plan 47; the estimator version is part of the
+Cloud index strategy fingerprint only):
+
+```
+tokens = ceil(CJK characters x 2 + non-CJK words x 1.3)
+```
+
+- CJK characters (Han / Hiragana / Katakana / Hangul) count **2 tokens each**, the conservative
+  end of the published Bailian guidance;
+- non-CJK text is whitespace-split into words, **1.3 tokens each**; the result is rounded up.
+
+Both the chunking `maxTokens` budget and the model hard input limit are validated against this
+estimate for the Cloud runtime; E5/BGE-M3 keep exact tokenizer counting and Nomic keeps its own
+estimator.
 
 ---
 
