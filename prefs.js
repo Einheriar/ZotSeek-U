@@ -70,9 +70,13 @@ pref("extensions.zotero.zotseek.cloud.consentVersion", 0);
 
 // Cloud literature-brief generation shares the provider, Base URL and secure
 // API key above, but keeps its model contract and verification independent.
+pref("extensions.zotero.zotseek.brief.enabled", false);
 pref("extensions.zotero.zotseek.cloud.brief.modelName", "deepseek-v4-flash-0731");
 pref("extensions.zotero.zotseek.cloud.brief.maxInputTokens", 1000000);
 pref("extensions.zotero.zotseek.cloud.brief.maxOutputTokens", 16384);
 pref("extensions.zotero.zotseek.cloud.brief.thinkingEnabled", true);
 pref("extensions.zotero.zotseek.cloud.brief.connectionVerified", false);
+pref("extensions.zotero.zotseek.cloud.brief.configFingerprint", "");
+pref("extensions.zotero.zotseek.cloud.brief.configRevision", 0);
+pref("extensions.zotero.zotseek.cloud.brief.connectionVerified.binding", "");
 pref("extensions.zotero.zotseek.cloud.brief.consentVersion", 0);

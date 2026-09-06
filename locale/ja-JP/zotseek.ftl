@@ -8,7 +8,7 @@ zotseek-pref-localServerState = Local Server ({ $state })
 zotseek-pref-cloudSlotReady = Cloud ({ $model })
 zotseek-pref-cloudSlotSetup = Cloud (SETUP REQUIRED)
 zotseek-pref-cloudTitle = Cloud Model
-zotseek-pref-cloudDesc = Configure a BYOK Cloud embedding provider. Indexed content and semantic queries are sent to the provider and may incur provider charges. ZotSeek does not charge or receive any share of those fees.
+zotseek-pref-cloudDesc = BYOK のクラウド Embedding サービスを設定します。インデックス対象の内容とセマンティック検索クエリはクラウド事業者に送信されます。Zotseek-U は料金を請求せず、手数料も受け取りません。インデックス作成と検索にはインターネット接続が必要で、事業者の API 利用枠を消費し、料金が発生する場合があります。詳しくはクラウド事業者の料金資料を確認してください。
 zotseek-pref-cloudProvider = Provider
 zotseek-pref-cloudBaseUrl = Base URL
 zotseek-pref-cloudModel = Model
@@ -53,6 +53,8 @@ zotseek-pref-cloudBriefSwitchTitle = Literature brief generation will be unavail
 zotseek-pref-cloudBriefSwitchMessage = Literature brief generation currently supports only Alibaba Bailian. If you switch providers, the brief feature will be unavailable and its connection state will be cleared. Switch anyway?
 zotseek-pref-cloudRebuildTitle = Index remaining papers with Cloud?
 zotseek-pref-cloudRebuildMessage = This will send content from { $count } eligible papers to the configured Cloud provider. Provider charges may apply. Continue?
+zotseek-pref-modelBackfillTitle = 現在のモデルで残りの文献を索引しますか？
+zotseek-pref-modelBackfillMessage = このモデルで索引済みの文献は { $total } 件中 { $covered } 件です。残りの { $missing } 件をバックグラウンドで索引しますか？処理中も Zotero を使用できます。
 ## Context menu items
 zotseek-menu-findSimilar = 類似文献を検索
 zotseek-menu-openZotSeek = ZotSeekを開く…
@@ -63,11 +65,11 @@ zotseek-menu-removeFromIndex = ZotSeekのインデックスから削除
 zotseek-menu-findRelated = 関連文献を検索
 
 ## Toolbar
-zotseek-toolbar-openZotSeek = ZotSeekを開く
+zotseek-toolbar-openZotSeek = Zotseek-Uを開く
 zotseek-toolbar-findSimilar = 類似文献を検索
 
 ## Preference pane
-zotseek-pref-title = ZotSeek
+zotseek-pref-title = Zotseek-U
 zotseek-pref-indexStatistics = インデックス統計
 zotseek-pref-papersIndexed = インデックス済み文献
 zotseek-pref-totalChunks = チャンク数
@@ -90,18 +92,18 @@ zotseek-pref-indexingMode = インデックスモード
 zotseek-pref-abstractOnly = 要旨のみ
 zotseek-pref-abstractOnlyMenu =
     .label = 要旨のみ（高速）
-zotseek-pref-abstractSpeed = 高速 • 文献あたり約1チャンク
-zotseek-pref-abstractDesc = タイトル、50文字以上の要旨、# で始まらないタグをインデックス化します。
+zotseek-pref-abstractSpeed = 高速 · 文献あたり約1チャンク
+zotseek-pref-abstractDesc = タイトル、要旨、# で始まらないタグをインデックス化します。
 zotseek-pref-notes = メタデータ + ノート
 zotseek-pref-notesMenu =
     .label = メタデータ + ノート（PDF処理なし）
-zotseek-pref-notesSpeed = 集中的 • PDF処理なし
-zotseek-pref-notesDesc = 同じメタデータと子ノートをインデックス化し、# で始まるタグは除外します。
+zotseek-pref-notesSpeed = 集中的 · PDF処理なし
+zotseek-pref-notesDesc = 同じメタデータと子ノートをインデックス化します。
 zotseek-pref-fullPaper = 論文全文
 zotseek-pref-fullPaperMenu =
     .label = 論文全文（より詳細）
-zotseek-pref-fullSpeed = 詳細 • ノート + PDF 1ページあたり約1～2チャンク
-zotseek-pref-fullDesc = 同じメタデータ、子ノート、ページ番号付きのPDF全文をインデックス化し、# で始まるタグは除外します。
+zotseek-pref-fullSpeed = 詳細 · 要旨 + ノート + PDF
+zotseek-pref-fullDesc = 同じメタデータ、子ノート、ページ番号付きのPDF全文をインデックス化します。
 zotseek-pref-mcpServer = AIエージェントアクセス
 zotseek-pref-mcpServerLabel =
     .label = AIエージェントによるライブラリの検索と読み取りを許可（ローカルMCPサーバー）
@@ -198,9 +200,9 @@ zotseek-pref-maxChunks = 文献あたりの最大チャンク数
 zotseek-pref-maxChunksDesc = 長い文書の上限（1～200）
 zotseek-pref-excludeBooks =
     .label = 書籍をインデックスから除外
-zotseek-pref-excludeBooksDesc = 書籍はインデックス化されません。書籍の既存のZotSeekインデックスは、次回のインデックス確認時に削除されます。
+zotseek-pref-excludeBooksDesc = 書籍はインデックス化されません。書籍の既存のZotseek-Uインデックスは、次回のインデックス確認時に削除されます。
 zotseek-pref-excludeTag = 除外タグ
-zotseek-pref-excludeTagDesc = このタグを持つ項目はインデックス化されません。一致する項目の既存ZotSeekインデックスは、次回の確認時に削除されます。無効にするには空欄にしてください。
+zotseek-pref-excludeTagDesc = このタグを持つ項目はインデックス化されません。一致する項目の既存Zotseek-Uインデックスは、次回の確認時に削除されます。無効にするには空欄にしてください。
 zotseek-pref-actions = 操作
 zotseek-pref-maintenanceRepair = メンテナンスと修復
 zotseek-pref-updateIndex =
@@ -238,7 +240,7 @@ zotseek-pref-healthPurgeFailedTitle = 削除に失敗しました
 zotseek-search-search =
     .value = 検索:
 zotseek-search-placeholder =
-    .placeholder = 検索語を入力（入力中に自動検索）…
+    .placeholder = 検索語を入力（入力中に自動検索）… | 例：育児ストレスの高さと親子間脳同期の低さに関連する文献
 zotseek-search-addQuery =
     .label = +
     .tooltiptext = AND/OR結合用の検索語を追加
@@ -493,3 +495,117 @@ zotseek-pref-manageModelsTitle = インストール済みモデルの管理
 zotseek-indexing-cloudRebuildConfirmTitle = Rebuild Cloud index?
 zotseek-indexing-cloudRebuildConfirmMsg = About { $count } papers in { $scope } will be sent to the configured Cloud provider and may incur provider charges. Existing complete indexes are kept until each paper is replaced successfully. Continue?
 zotseek-indexing-cloudStrategyRebuildConfirmMsg = The current Cloud index uses an older chunk strategy. Its existing embeddings must be deleted before about { $count } papers in { $scope } are sent again, which may incur provider charges. Other model indexes are kept. Continue?
+
+## 文献ブリーフ設定
+
+zotseek-prefs-group-brief = 文献ブリーフ（実験的）
+zotseek-pref-brief-title = 文献ブリーフ
+zotseek-pref-brief-enabled =
+    .label = 文献ブリーフを有効にする
+zotseek-pref-brief-enabled-desc = 必要に応じて論文の PDF から実験的な文献ブリーフを生成します。
+zotseek-pref-brief-provider = 共有プロバイダー
+zotseek-pref-brief-open-cloud-settings = 認証情報を設定
+zotseek-pref-brief-model = 生成モデル
+zotseek-pref-brief-test = 接続をテスト
+zotseek-pref-brief-create-prompts = 自分用のブリーフプロンプトを作成…
+zotseek-pref-brief-create-prompts-desc = 通常論文用とレビュー・理論論文用のペアプロンプトを作成します。
+zotseek-pref-brief-standard-prompt = 通常論文用プロンプト
+zotseek-pref-brief-review-prompt = レビュー／理論論文用プロンプト
+zotseek-pref-brief-advanced = 詳細設定
+zotseek-pref-brief-import-standard = 通常論文用プロンプトをインポート…
+zotseek-pref-brief-import-review = レビュープロンプトをインポート…
+zotseek-pref-brief-reset-prompts = 組み込みプロンプトに戻す
+zotseek-pref-brief-max-input = 最大入力トークン数
+zotseek-pref-brief-max-input-desc = 生成モデルの入力予算です。
+zotseek-pref-brief-max-output = 最大出力トークン数
+zotseek-pref-brief-max-output-desc = 生成用に確保する出力予算です。
+zotseek-pref-brief-thinking-enabled =
+    .label = 拡張推論を有効にする
+
+## 文献ブリーフプロンプトウィザード
+
+zotseek-brief-prompt-wizard-title = 文献ブリーフプロンプトをカスタマイズ
+zotseek-brief-prompt-wizard-notice = 読みたい内容や好みを入力してください。ZotSeek が通常論文用とレビュー・理論論文用のペアプロンプトを生成します。
+zotseek-brief-prompt-wizard-domain-label = トピックまたは研究分野
+zotseek-brief-prompt-wizard-language-label = 出力言語
+zotseek-brief-prompt-wizard-habits-label = 読み方・分析の好み
+zotseek-brief-prompt-wizard-status-idle = プロンプトを生成する準備ができました。
+zotseek-brief-prompt-wizard-location-label = プロンプトの場所
+zotseek-brief-prompt-wizard-open-location = プロンプトフォルダーを開く
+zotseek-brief-prompt-wizard-cancel = キャンセル
+zotseek-brief-prompt-wizard-generate = プロンプトを生成
+
+## 文献ブリーフの状態と同意
+
+zotseek-pref-brief-prompt-bundled = 組み込み（{ $file }）
+zotseek-pref-brief-prompt-time-unknown = 更新日時不明
+zotseek-pref-brief-prompt-custom = カスタム（{ $file }）、更新日時 { $updated }
+zotseek-pref-brief-provider-summary = プロバイダー：{ $provider } · 認証情報：{ $credential }
+zotseek-pref-brief-key-configured = API キー設定済み
+zotseek-pref-brief-key-missing = API キー未設定
+zotseek-pref-brief-unsupported-provider = 文献ブリーフは現在 Alibaba Bailian のみをサポートしています。
+zotseek-pref-brief-key-required = 文献ブリーフを使用する前に Alibaba Bailian API キーを設定してください。
+zotseek-pref-brief-connection-verified = 接続を確認済み
+zotseek-pref-brief-connection-not-verified = 接続未確認
+zotseek-pref-brief-invalid-settings = 文献ブリーフの設定が無効です：{ $error }
+zotseek-pref-brief-status-failed = 文献ブリーフの生成に失敗しました：{ $error }
+zotseek-pref-brief-settings-saved = 文献ブリーフの設定を保存しました。
+zotseek-pref-brief-cancelling = 文献ブリーフの生成をキャンセルしています…
+zotseek-pref-brief-consent-title = 文献ブリーフの生成を許可しますか？
+zotseek-pref-brief-consent-message = ブリーフを生成するため、ZotSeek は論文のタイトル、要旨、PDF ページのテキストを Alibaba Bailian に送信します。プロンプトテンプレートの作成時には、2 つのテンプレートとフォームの回答を送信します。BYOK アカウントに料金が発生する場合があり、接続テストにも少額の料金が発生する可能性があります。続行しますか？
+zotseek-pref-brief-testing = 接続をテストしています…
+zotseek-pref-brief-test-failed = 接続テストに失敗しました：{ $error }
+zotseek-pref-brief-connection-required = ブリーフを生成する前に接続を確認してください。
+zotseek-pref-brief-import-failed = プロンプトのインポートに失敗しました：{ $error }
+zotseek-pref-brief-reset-title = 組み込みプロンプトに戻しますか？
+zotseek-pref-brief-reset-message = カスタムプロンプトを組み込みプロンプトで置き換えます。続行しますか？
+zotseek-pref-brief-reset-done = 組み込みプロンプトに戻しました。
+
+## Literature brief menu and runtime status
+
+zotseek-menu-generateBrief = 文献ブリーフを生成
+zotseek-brief-disabled = 文献ブリーフは無効になっています。
+zotseek-brief-busy = 別の文献ブリーフタスクが実行中です。
+zotseek-brief-connection-required = 生成する前に文献ブリーフの接続を確認してください。
+zotseek-brief-start-failed = 文献ブリーフの生成を開始できませんでした：{ $error }
+zotseek-brief-cancelling = 文献ブリーフの生成をキャンセルしています…
+zotseek-brief-cancel-task = タスクをキャンセル
+zotseek-brief-cancel-tooltip = この文献ブリーフタスクをキャンセル
+zotseek-brief-progress-title = 文献ブリーフを生成中
+zotseek-brief-progress-summary = { $total } 件中 { $completed } 件完了 · 成功：{ $success } · 失敗：{ $failed } · スキップ：{ $skipped } · キャンセル：{ $cancelled }
+zotseek-brief-progress-active = 処理中：{ $title }
+zotseek-brief-progress-latest = { $title }：{ $status }
+zotseek-brief-progress-latest-with-reason = { $title }：{ $status }（{ $reason }）
+zotseek-brief-progress-complete = 文献ブリーフタスクが完了しました。
+zotseek-brief-summary-title = 文献ブリーフの結果
+zotseek-brief-summary-message = 成功：{ $success } · 失敗：{ $failed } · スキップ：{ $skipped } · キャンセル：{ $cancelled }
+zotseek-brief-status-success = 成功
+zotseek-brief-status-failed = 失敗
+zotseek-brief-status-skipped = スキップ
+zotseek-brief-status-cancelled = キャンセル
+zotseek-brief-skip-reason-insufficient-text = 抽出可能な PDF テキストなし
+zotseek-brief-skip-reason-existing-note = 子ノートが既に存在
+zotseek-brief-skip-reason-no-main-pdf = メイン PDF なし
+zotseek-brief-select-one = 通常の論文または PDF 添付ファイルを 1 つ選択してください。
+zotseek-brief-invalid-selection = 選択した項目は対象の論文または PDF 添付ファイルではありません。
+zotseek-brief-existing-note-title = 既存のブリーフノート
+zotseek-brief-existing-note-message = この論文には子ノートが既にあります。追加の文献ブリーフノートを作成しますか？
+zotseek-brief-select-collection = 先にコレクションを選択してください。
+zotseek-brief-no-eligible = 選択したコレクションに対象の論文がありません。
+zotseek-brief-collection-confirm-title = コレクションの文献ブリーフを生成しますか？
+zotseek-brief-collection-confirm-message = { $count } 件の論文の文献ブリーフを生成しますか？ API 料金が発生する場合があります。
+
+## Literature brief prompt wizard runtime status
+
+zotseek-brief-wizard-unavailable = 開始できません：文献ブリーフサービスを利用できません。
+zotseek-brief-wizard-generating = ペアのプロンプトファイルを生成中…
+zotseek-brief-wizard-required = 研究分野と出力言語の両方を入力してください。
+zotseek-brief-wizard-invalid-result = 文献ブリーフサービスから使用可能な結果が返されませんでした。
+zotseek-brief-wizard-success = プロンプトファイルを正常に生成しました。
+zotseek-brief-wizard-success-no-path = プロンプトファイルを生成しましたが、保存場所が返されませんでした。
+zotseek-brief-wizard-downloaded-not-enabled = プロンプトファイルはダウンロードされましたが、管理対象のペアを有効化できませんでした。再試行するか、手動でインポートしてください。
+zotseek-brief-wizard-canceled = 生成をキャンセルしました。
+zotseek-brief-wizard-canceling = 生成をキャンセルしています…
+zotseek-brief-wizard-failed = 生成に失敗しました。プロンプトファイルは有効化されていません。
+zotseek-brief-wizard-open-failed = プロンプトファイルの場所を開けません。
+zotseek-brief-wizard-init-failed = 文献ブリーフプロンプトウィザードを開始できません。

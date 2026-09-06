@@ -14,12 +14,12 @@ zotseek-menu-findRelated = 查找相关文献
 
 ## Toolbar
 
-zotseek-toolbar-openZotSeek = 打开 ZotSeek
+zotseek-toolbar-openZotSeek = 打开 Zotseek-U
 zotseek-toolbar-findSimilar = 查找相似文献
 
 ## Preference pane
 
-zotseek-pref-title = ZotSeek
+zotseek-pref-title = Zotseek-U
 zotseek-pref-indexStatistics = 索引统计
 zotseek-pref-papersIndexed = 已索引文献
 zotseek-pref-totalChunks = 总分块数
@@ -42,18 +42,18 @@ zotseek-pref-indexingMode = 索引模式
 zotseek-pref-abstractOnly = 仅摘要
 zotseek-pref-abstractOnlyMenu =
     .label = 仅摘要（更快）
-zotseek-pref-abstractSpeed = 快速 • 每篇文献约1个分块
-zotseek-pref-abstractDesc = 索引标题、至少 50 字符的摘要和不以 # 开头的标签。
+zotseek-pref-abstractSpeed = 快速 · 每篇文献约 1 个分块
+zotseek-pref-abstractDesc = 索引标题、摘要和不以 # 开头的标签。
 zotseek-pref-notes = 元数据 + 笔记
 zotseek-pref-notesMenu =
     .label = 元数据 + 笔记（不处理 PDF）
-zotseek-pref-notesSpeed = 专注 • 不处理 PDF
-zotseek-pref-notesDesc = 索引相同的元数据及条目下的子笔记；排除以 # 开头的标签。
+zotseek-pref-notesSpeed = 专注 · 不处理 PDF
+zotseek-pref-notesDesc = 索引相同的元数据及条目下的子笔记。
 zotseek-pref-fullPaper = 全文
 zotseek-pref-fullPaperMenu =
     .label = 全文（更彻底）
-zotseek-pref-fullSpeed = 彻底 • 笔记 + 每个 PDF 页约 1–2 个分块
-zotseek-pref-fullDesc = 索引相同的元数据、子笔记及带页码的完整 PDF 内容；排除以 # 开头的标签。
+zotseek-pref-fullSpeed = 彻底 · 摘要 + 笔记 + PDF
+zotseek-pref-fullDesc = 索引相同的元数据、子笔记及带页码的完整 PDF 内容。
 zotseek-pref-mcpServer = AI 智能体访问
 zotseek-pref-mcpServerLabel =
     .label = 允许 AI 智能体搜索并读取您的文献库（本地 MCP 服务器）
@@ -117,7 +117,7 @@ zotseek-pref-localServerState = Local Server（{ $state }）
 zotseek-pref-cloudSlotReady = Cloud（{ $model }）
 zotseek-pref-cloudSlotSetup = Cloud（需要设置）
 zotseek-pref-cloudTitle = Cloud 模型
-zotseek-pref-cloudDesc = 配置 BYOK 云端 Embedding 服务。索引内容和语义查询会发送给云厂商，并可能产生厂商费用；ZotSeek 不收费，也不从中分成。
+zotseek-pref-cloudDesc = 配置 BYOK 云端 Embedding 服务。索引内容和语义查询会发送给云厂商；Zotseek-U 不收费，也不从中分成。索引和查询均需联网并消耗云厂商 API 额度，可能产生费用；具体计费请参考云厂商的费率文档。
 zotseek-pref-cloudProvider = 服务商
 zotseek-pref-cloudBaseUrl = Base URL
 zotseek-pref-cloudModel = 模型
@@ -162,6 +162,8 @@ zotseek-pref-cloudBriefSwitchTitle = 文献简报生成将不可用
 zotseek-pref-cloudBriefSwitchMessage = 文献简报生成目前仅支持 Alibaba Bailian。切换服务商后简报功能将不可用，其连接状态会被清空。仍要切换吗？
 zotseek-pref-cloudRebuildTitle = 是否使用 Cloud 补齐文献索引？
 zotseek-pref-cloudRebuildMessage = 这会把 { $count } 篇符合条件的文献内容发送给已配置的云厂商，并可能产生厂商费用。是否继续？
+zotseek-pref-modelBackfillTitle = 是否补齐当前模型的文献索引？
+zotseek-pref-modelBackfillMessage = 当前模型已覆盖 { $covered }/{ $total } 篇文献。是否在后台为其余 { $missing } 篇建立索引？索引过程中您仍可继续使用 Zotero。
 zotseek-modelDownloadOpenPage = 打开模型网页
 zotseek-modelDownloadOpenLocation = 打开安装位置
 zotseek-modelDownloadClose = 关闭
@@ -203,9 +205,9 @@ zotseek-pref-maxChunks = 每篇文献最大分块数
 zotseek-pref-maxChunksDesc = 长文档限制（1–200）
 zotseek-pref-excludeBooks =
     .label = 排除书籍
-zotseek-pref-excludeBooksDesc = 书籍将不建立索引；已有的书籍 ZotSeek 索引会在下次检查索引时移除。
+zotseek-pref-excludeBooksDesc = 书籍将不建立索引；已有的书籍 Zotseek-U 索引会在下次检查索引时移除。
 zotseek-pref-excludeTag = 排除标签
-zotseek-pref-excludeTagDesc = 带有此标签的条目将不建立索引；匹配条目的现有 ZotSeek 索引会在下次检查索引时移除。留空以禁用。
+zotseek-pref-excludeTagDesc = 带有此标签的条目将不建立索引；匹配条目的现有 Zotseek-U 索引会在下次检查索引时移除。留空以禁用。
 zotseek-pref-actions = 操作
 zotseek-pref-maintenanceRepair = 维护与修复
 zotseek-pref-updateIndex =
@@ -244,7 +246,7 @@ zotseek-pref-healthPurgeFailedTitle = 清理失败
 zotseek-search-search =
     .value = 搜索：
 zotseek-search-placeholder =
-    .placeholder = 输入搜索查询（输入时自动搜索）…
+    .placeholder = 输入搜索查询（输入时自动搜索）… | 例：较高的育儿压力与较低的亲子脑同步相关的文献
 zotseek-search-addQuery =
     .label = +
     .tooltiptext = 添加查询以进行 AND/OR 组合
@@ -511,3 +513,117 @@ zotseek-prefs-exclusions = 排除项
 zotseek-indexing-cloudRebuildConfirmTitle = 重建 Cloud 索引？
 zotseek-indexing-cloudRebuildConfirmMsg = 预计将把 { $scope } 中的 { $count } 篇文献发送给已配置的云厂商，并可能产生厂商费用。每篇文献成功完成替换前，现有完整索引都会保留。是否继续？
 zotseek-indexing-cloudStrategyRebuildConfirmMsg = 当前 Cloud 索引使用旧版分块策略。必须先删除其现有嵌入，再把 { $scope } 中约 { $count } 篇文献重新发送给云厂商，并可能产生厂商费用；其他模型索引会保留。是否继续？
+
+## 简报设置
+
+zotseek-prefs-group-brief = 简报（实验性）
+zotseek-pref-brief-title = 文献简报
+zotseek-pref-brief-enabled =
+    .label = 启用文献简报
+zotseek-pref-brief-enabled-desc = 按需从文献 PDF 生成实验性的文献简报。
+zotseek-pref-brief-provider = 共享服务商
+zotseek-pref-brief-open-cloud-settings = 配置凭据
+zotseek-pref-brief-model = 生成模型
+zotseek-pref-brief-test = 测试连接
+zotseek-pref-brief-create-prompts = 创建我的简报提示词……
+zotseek-pref-brief-create-prompts-desc = 为普通论文和综述或理论论文创建配套提示词。
+zotseek-pref-brief-standard-prompt = 普通论文提示词
+zotseek-pref-brief-review-prompt = 综述/理论论文提示词
+zotseek-pref-brief-advanced = 高级设置
+zotseek-pref-brief-import-standard = 导入普通论文提示词……
+zotseek-pref-brief-import-review = 导入综述提示词……
+zotseek-pref-brief-reset-prompts = 恢复内置提示词
+zotseek-pref-brief-max-input = 最大输入 token 数
+zotseek-pref-brief-max-input-desc = 生成模型的输入预算。
+zotseek-pref-brief-max-output = 最大输出 token 数
+zotseek-pref-brief-max-output-desc = 为生成预留的输出预算。
+zotseek-pref-brief-thinking-enabled =
+    .label = 启用扩展思考
+
+## 简报提示词引导
+
+zotseek-brief-prompt-wizard-title = 自定义简报提示词
+zotseek-brief-prompt-wizard-notice = 描述你的阅读重点和偏好，ZotSeek 将为普通论文以及综述或理论论文生成一对配套提示词。
+zotseek-brief-prompt-wizard-domain-label = 主题或研究领域
+zotseek-brief-prompt-wizard-language-label = 输出语言
+zotseek-brief-prompt-wizard-habits-label = 阅读与分析习惯
+zotseek-brief-prompt-wizard-status-idle = 准备生成提示词。
+zotseek-brief-prompt-wizard-location-label = 提示词位置
+zotseek-brief-prompt-wizard-open-location = 打开提示词文件夹
+zotseek-brief-prompt-wizard-cancel = 取消
+zotseek-brief-prompt-wizard-generate = 生成提示词
+
+## 简报状态与确认提示
+
+zotseek-pref-brief-prompt-bundled = 内置（{ $file }）
+zotseek-pref-brief-prompt-time-unknown = 更新时间未知
+zotseek-pref-brief-prompt-custom = 自定义（{ $file }），更新于 { $updated }
+zotseek-pref-brief-provider-summary = 服务商：{ $provider } · 凭据：{ $credential }
+zotseek-pref-brief-key-configured = 已配置 API 密钥
+zotseek-pref-brief-key-missing = 未配置 API 密钥
+zotseek-pref-brief-unsupported-provider = 当前简报仅支持 Alibaba Bailian。
+zotseek-pref-brief-key-required = 使用简报前，请先配置 Alibaba Bailian API 密钥。
+zotseek-pref-brief-connection-verified = 连接已验证
+zotseek-pref-brief-connection-not-verified = 连接未验证
+zotseek-pref-brief-invalid-settings = 简报设置无效：{ $error }
+zotseek-pref-brief-status-failed = 简报生成失败：{ $error }
+zotseek-pref-brief-settings-saved = 简报设置已保存。
+zotseek-pref-brief-cancelling = 正在取消简报生成……
+zotseek-pref-brief-consent-title = 允许生成文献简报吗？
+zotseek-pref-brief-consent-message = 生成简报时，ZotSeek 会将文献标题、摘要和 PDF 页文本发送至 Alibaba Bailian；创建提示词模板时，会发送两份模板和你填写的表单内容。你的 BYOK 账户可能产生费用，连接测试也可能产生少量费用。是否继续？
+zotseek-pref-brief-testing = 正在测试连接……
+zotseek-pref-brief-test-failed = 连接测试失败：{ $error }
+zotseek-pref-brief-connection-required = 生成简报前必须先验证连接。
+zotseek-pref-brief-import-failed = 导入提示词失败：{ $error }
+zotseek-pref-brief-reset-title = 恢复内置提示词吗？
+zotseek-pref-brief-reset-message = 这将用内置提示词替换你的自定义提示词。是否继续？
+zotseek-pref-brief-reset-done = 内置提示词已恢复。
+
+## Literature brief menu and runtime status
+
+zotseek-menu-generateBrief = 生成文献简报
+zotseek-brief-disabled = 文献简报功能已关闭。
+zotseek-brief-busy = 已有其他文献简报任务正在运行。
+zotseek-brief-connection-required = 生成前请先验证文献简报连接。
+zotseek-brief-start-failed = 无法启动文献简报生成：{ $error }
+zotseek-brief-cancelling = 正在取消文献简报生成……
+zotseek-brief-cancel-task = 取消任务
+zotseek-brief-cancel-tooltip = 取消当前文献简报任务
+zotseek-brief-progress-title = 文献简报生成
+zotseek-brief-progress-summary = 已完成 { $completed } / { $total } · 成功：{ $success } · 失败：{ $failed } · 跳过：{ $skipped } · 取消：{ $cancelled }
+zotseek-brief-progress-active = 正在处理：{ $title }
+zotseek-brief-progress-latest = { $title }：{ $status }
+zotseek-brief-progress-latest-with-reason = { $title }：{ $status }（{ $reason }）
+zotseek-brief-progress-complete = 文献简报任务已完成。
+zotseek-brief-summary-title = 文献简报结果
+zotseek-brief-summary-message = 成功：{ $success } · 失败：{ $failed } · 跳过：{ $skipped } · 取消：{ $cancelled }
+zotseek-brief-status-success = 成功
+zotseek-brief-status-failed = 失败
+zotseek-brief-status-skipped = 已跳过
+zotseek-brief-status-cancelled = 已取消
+zotseek-brief-skip-reason-insufficient-text = 无可提取的 PDF 文本
+zotseek-brief-skip-reason-existing-note = 已有子笔记
+zotseek-brief-skip-reason-no-main-pdf = 无主 PDF
+zotseek-brief-select-one = 请选择一篇普通论文或一个 PDF 附件。
+zotseek-brief-invalid-selection = 所选项目不是可处理的论文或 PDF 附件。
+zotseek-brief-existing-note-title = 已有简报笔记
+zotseek-brief-existing-note-message = 这篇文献已有子笔记。是否再创建一条文献简报笔记？
+zotseek-brief-select-collection = 请先选择一个文献库集合。
+zotseek-brief-no-eligible = 所选集合中没有可处理的文献。
+zotseek-brief-collection-confirm-title = 生成集合文献简报吗？
+zotseek-brief-collection-confirm-message = 要为 { $count } 篇文献生成简报吗？这可能产生 API 费用。
+
+## Literature brief prompt wizard runtime status
+
+zotseek-brief-wizard-unavailable = 无法启动：文献简报服务不可用。
+zotseek-brief-wizard-generating = 正在生成配套提示词文件……
+zotseek-brief-wizard-required = 请同时填写研究领域和输出语言。
+zotseek-brief-wizard-invalid-result = 文献简报服务没有返回可用结果。
+zotseek-brief-wizard-success = 提示词文件已成功生成。
+zotseek-brief-wizard-success-no-path = 提示词文件已成功生成，但服务没有返回输出位置。
+zotseek-brief-wizard-downloaded-not-enabled = 提示词文件已下载，但未能启用受控双模板。你可以重试，或手动导入已下载的文件。
+zotseek-brief-wizard-canceled = 生成已取消。
+zotseek-brief-wizard-canceling = 正在取消生成……
+zotseek-brief-wizard-failed = 生成失败，未启用任何提示词文件。
+zotseek-brief-wizard-open-failed = 无法打开提示词文件位置。
+zotseek-brief-wizard-init-failed = 无法启动文献简报提示词引导。

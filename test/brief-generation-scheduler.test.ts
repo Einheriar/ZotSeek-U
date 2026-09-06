@@ -185,6 +185,39 @@ describe('brief generation scheduler', () => {
     assert.equal(final.completed, 4);
     assert.deepEqual(final.activeKeys, []);
     assert.deepEqual(final.queuedKeys, []);
-    assert.deepEqual(final.latest, { key: '3', status: 'cancelled' });
+    assert.deepEqual(final.latest, { key: '3', status: 'cancelled', reason: 'cancelled-before-start' });
+  });
+
+  test('reports pre-scan skips with reasons and disjoint counts', async () => {
+    const progress: any[] = [];
+    let called = false;
+    const scheduler = new BriefGenerationScheduler<number>({
+      onProgress: event => progress.push(event),
+    });
+    const outcomes = await scheduler.runCollection([
+      { key: 'existing', skipReason: 'existing-note', run: async () => { called = true; return 1; } },
+      { key: 'ok', run: async () => 2 },
+    ]);
+    assert.equal(called, false);
+    assert.deepEqual(outcomes.map(outcome => ({ key: outcome.key, status: outcome.status, reason: outcome.reason })), [
+      { key: 'existing', status: 'skipped', reason: 'existing-note' },
+      { key: 'ok', status: 'success', reason: undefined },
+    ]);
+    const final = progress.at(-1);
+    assert.deepEqual(final.counts, { success: 1, failed: 0, skipped: 1, cancelled: 0 });
+    assert.equal(final.total, final.counts.success + final.counts.failed + final.counts.skipped + final.counts.cancelled);
+    // The progress checkpoint line explains skips inline, so the latest event
+    // must carry the structured reason alongside the status.
+    const skippedEvent = progress.find(event => event.latest?.key === 'existing');
+    assert.equal(skippedEvent.latest.reason, 'existing-note');
+    const succeededEvent = progress.find(event => event.latest?.key === 'ok');
+    assert.equal(succeededEvent.latest.reason, undefined);
+  });
+
+  test('ignores progress callback exceptions and releases busy state', async () => {
+    const scheduler = new BriefGenerationScheduler<void>({ onProgress: () => { throw new Error('window closed'); } });
+    assert.equal((await scheduler.runCollection([{ key: 'a', run: async () => undefined }]))[0].status, 'success');
+    assert.equal(scheduler.isCollectionActive(), false);
+    assert.equal((await scheduler.runCollection([{ key: 'b', run: async () => undefined }]))[0].status, 'success');
   });
 });

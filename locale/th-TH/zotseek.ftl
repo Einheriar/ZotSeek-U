@@ -10,7 +10,7 @@ zotseek-pref-localServerState = Local Server ({ $state })
 zotseek-pref-cloudSlotReady = Cloud ({ $model })
 zotseek-pref-cloudSlotSetup = Cloud (SETUP REQUIRED)
 zotseek-pref-cloudTitle = Cloud Model
-zotseek-pref-cloudDesc = Configure a BYOK Cloud embedding provider. Indexed content and semantic queries are sent to the provider and may incur provider charges. ZotSeek does not charge or receive any share of those fees.
+zotseek-pref-cloudDesc = กำหนดค่าบริการ Cloud Embedding แบบ BYOK เนื้อหาที่จัดทำดัชนีและคำค้นหาเชิงความหมายจะถูกส่งไปยังผู้ให้บริการคลาวด์ โดย Zotseek-U ไม่เรียกเก็บค่าบริการหรือรับส่วนแบ่งค่าบริการ การจัดทำดัชนีและการค้นหาต้องเชื่อมต่ออินเทอร์เน็ตและใช้โควตา API ของผู้ให้บริการ ซึ่งอาจมีค่าใช้จ่าย โปรดดูรายละเอียดจากเอกสารอัตราค่าบริการของผู้ให้บริการคลาวด์
 zotseek-pref-cloudProvider = Provider
 zotseek-pref-cloudBaseUrl = Base URL
 zotseek-pref-cloudModel = Model
@@ -55,6 +55,8 @@ zotseek-pref-cloudBriefSwitchTitle = Literature brief generation will be unavail
 zotseek-pref-cloudBriefSwitchMessage = Literature brief generation currently supports only Alibaba Bailian. If you switch providers, the brief feature will be unavailable and its connection state will be cleared. Switch anyway?
 zotseek-pref-cloudRebuildTitle = Index remaining papers with Cloud?
 zotseek-pref-cloudRebuildMessage = This will send content from { $count } eligible papers to the configured Cloud provider. Provider charges may apply. Continue?
+zotseek-pref-modelBackfillTitle = สร้างดัชนีรายการที่เหลือด้วยโมเดลปัจจุบันหรือไม่?
+zotseek-pref-modelBackfillMessage = โมเดลนี้ครอบคลุม { $covered } จาก { $total } รายการ ต้องการสร้างดัชนีอีก { $missing } รายการในเบื้องหลังตอนนี้หรือไม่? คุณยังสามารถใช้ Zotero ต่อได้ระหว่างดำเนินการ
 ## Context menu items
 
 zotseek-menu-findSimilar = ค้นหาเอกสารที่คล้ายกัน
@@ -67,12 +69,12 @@ zotseek-menu-findRelated = ค้นหาเอกสารที่เกี�
 
 ## Toolbar
 
-zotseek-toolbar-openZotSeek = เปิด ZotSeek
+zotseek-toolbar-openZotSeek = เปิด Zotseek-U
 zotseek-toolbar-findSimilar = ค้นหาเอกสารที่คล้ายกัน
 
 ## Preference pane
 
-zotseek-pref-title = ZotSeek
+zotseek-pref-title = Zotseek-U
 zotseek-pref-indexStatistics = สถิติดัชนี
 zotseek-pref-papersIndexed = จำนวนเอกสารในดัชนี
 zotseek-pref-totalChunks = จำนวนชิ้นข้อมูลทั้งหมด
@@ -95,18 +97,18 @@ zotseek-pref-indexingMode = โหมดการจัดทำดัชนี
 zotseek-pref-abstractOnly = เฉพาะบทคัดย่อ
 zotseek-pref-abstractOnlyMenu =
     .label = เฉพาะบทคัดย่อ (เร็วกว่า)
-zotseek-pref-abstractSpeed = เร็ว • ประมาณ 1 ชิ้นข้อมูลต่อเอกสาร
-zotseek-pref-abstractDesc = จัดทำดัชนีชื่อเรื่อง บทคัดย่ออย่างน้อย 50 อักขระ และแท็กที่ไม่ขึ้นต้นด้วย #
+zotseek-pref-abstractSpeed = เร็ว · ประมาณ 1 ชิ้นข้อมูลต่อเอกสาร
+zotseek-pref-abstractDesc = จัดทำดัชนีชื่อเรื่อง บทคัดย่อ และแท็กที่ไม่ขึ้นต้นด้วย #
 zotseek-pref-notes = ข้อมูลเมทาดาทา + โน้ต
 zotseek-pref-notesMenu =
     .label = ข้อมูลเมทาดาทา + โน้ต (ไม่ประมวลผล PDF)
-zotseek-pref-notesSpeed = เน้นเฉพาะสาระ • ไม่ประมวลผล PDF
-zotseek-pref-notesDesc = จัดทำดัชนีเมตาดาต้าเดียวกันและโน้ตลูก โดยไม่รวมแท็กที่ขึ้นต้นด้วย #
+zotseek-pref-notesSpeed = เน้นเฉพาะสาระ · ไม่ประมวลผล PDF
+zotseek-pref-notesDesc = จัดทำดัชนีเมตาดาต้าเดียวกันและโน้ตลูก
 zotseek-pref-fullPaper = เอกสารฉบับเต็ม
 zotseek-pref-fullPaperMenu =
     .label = เอกสารฉบับเต็ม (ละเอียดกว่า)
-zotseek-pref-fullSpeed = ละเอียด • โน้ต + ประมาณ 1–2 ชิ้นข้อมูลต่อหน้า PDF
-zotseek-pref-fullDesc = จัดทำดัชนีเมตาดาต้าเดียวกัน โน้ตลูก และเนื้อหา PDF ฉบับเต็มพร้อมเลขหน้า โดยไม่รวมแท็กที่ขึ้นต้นด้วย #
+zotseek-pref-fullSpeed = ละเอียด · บทคัดย่อ + โน้ต + PDF
+zotseek-pref-fullDesc = จัดทำดัชนีเมตาดาต้าเดียวกัน โน้ตลูก และเนื้อหา PDF ฉบับเต็มพร้อมเลขหน้า
 zotseek-pref-mcpServer = การเข้าถึงโดย AI Agent
 zotseek-pref-mcpServerLabel =
     .label = อนุญาตให้ AI agent ค้นหาและอ่านไลบรารีของคุณ (เซิร์ฟเวอร์ MCP ภายในเครื่อง)
@@ -203,9 +205,9 @@ zotseek-pref-maxChunks = ชิ้นข้อมูลสูงสุดต่�
 zotseek-pref-maxChunksDesc = จำกัดสำหรับเอกสารยาว (1–200)
 zotseek-pref-excludeBooks =
     .label = ยกเว้นหนังสือจากการจัดทำดัชนี
-zotseek-pref-excludeBooksDesc = จะไม่จัดทำดัชนีหนังสือ ดัชนี ZotSeek ที่มีอยู่สำหรับหนังสือจะถูกลบในการตรวจสอบดัชนีครั้งถัดไป
+zotseek-pref-excludeBooksDesc = จะไม่จัดทำดัชนีหนังสือ ดัชนี Zotseek-U ที่มีอยู่สำหรับหนังสือจะถูกลบในการตรวจสอบดัชนีครั้งถัดไป
 zotseek-pref-excludeTag = แท็กที่ยกเว้น
-zotseek-pref-excludeTagDesc = รายการที่มีแท็กนี้จะไม่ถูกจัดทำดัชนี ดัชนี ZotSeek ที่มีอยู่สำหรับรายการที่ตรงกันจะถูกลบในการตรวจสอบดัชนีครั้งถัดไป เว้นว่างเพื่อปิดใช้งาน
+zotseek-pref-excludeTagDesc = รายการที่มีแท็กนี้จะไม่ถูกจัดทำดัชนี ดัชนี Zotseek-U ที่มีอยู่สำหรับรายการที่ตรงกันจะถูกลบในการตรวจสอบดัชนีครั้งถัดไป เว้นว่างเพื่อปิดใช้งาน
 zotseek-pref-actions = การดำเนินการ
 zotseek-pref-maintenanceRepair = การบำรุงรักษาและซ่อมแซม
 zotseek-pref-updateIndex =
@@ -244,7 +246,7 @@ zotseek-pref-healthPurgeFailedTitle = กวาดล้างล้มเหล
 zotseek-search-search =
     .value = ค้นหา:
 zotseek-search-placeholder =
-    .placeholder = ป้อนคำค้นหา (ค้นหาอัตโนมัติขณะพิมพ์)…
+    .placeholder = ป้อนคำค้นหา (ค้นหาอัตโนมัติขณะพิมพ์)… | ตัวอย่าง: งานวิจัยที่เชื่อมโยงความเครียดในการเลี้ยงดูที่สูงขึ้นกับการประสานสมองระหว่างพ่อแม่และลูกที่ลดลง
 zotseek-search-addQuery =
     .label = +
     .tooltiptext = เพิ่มคำค้นหาเพื่อรวมแบบ AND/OR
@@ -511,3 +513,117 @@ zotseek-pref-manageModelsTitle = จัดการโมเดลที่ต�
 zotseek-indexing-cloudRebuildConfirmTitle = Rebuild Cloud index?
 zotseek-indexing-cloudRebuildConfirmMsg = About { $count } papers in { $scope } will be sent to the configured Cloud provider and may incur provider charges. Existing complete indexes are kept until each paper is replaced successfully. Continue?
 zotseek-indexing-cloudStrategyRebuildConfirmMsg = The current Cloud index uses an older chunk strategy. Its existing embeddings must be deleted before about { $count } papers in { $scope } are sent again, which may incur provider charges. Other model indexes are kept. Continue?
+
+## การตั้งค่าบทสรุปวรรณกรรม
+
+zotseek-prefs-group-brief = บทสรุปวรรณกรรม (ทดลอง)
+zotseek-pref-brief-title = บทสรุปวรรณกรรม
+zotseek-pref-brief-enabled =
+    .label = เปิดใช้บทสรุปวรรณกรรม
+zotseek-pref-brief-enabled-desc = สร้างบทสรุปวรรณกรรมแบบทดลองจาก PDF ของบทความเมื่อร้องขอ
+zotseek-pref-brief-provider = ผู้ให้บริการที่ใช้ร่วมกัน
+zotseek-pref-brief-open-cloud-settings = ตั้งค่าข้อมูลรับรอง
+zotseek-pref-brief-model = โมเดลสำหรับสร้างเนื้อหา
+zotseek-pref-brief-test = ทดสอบการเชื่อมต่อ
+zotseek-pref-brief-create-prompts = สร้างพรอมต์บทสรุปของฉัน…
+zotseek-pref-brief-create-prompts-desc = สร้างพรอมต์เป็นคู่สำหรับบทความทั่วไปและบทความทบทวนหรือทฤษฎี
+zotseek-pref-brief-standard-prompt = พรอมต์สำหรับบทความทั่วไป
+zotseek-pref-brief-review-prompt = พรอมต์สำหรับบทความทบทวน/ทฤษฎี
+zotseek-pref-brief-advanced = ขั้นสูง
+zotseek-pref-brief-import-standard = นำเข้าพรอมต์มาตรฐาน…
+zotseek-pref-brief-import-review = นำเข้าพรอมต์บทความทบทวน…
+zotseek-pref-brief-reset-prompts = เรียกคืนพรอมต์ในตัว
+zotseek-pref-brief-max-input = โทเค็นอินพุตสูงสุด
+zotseek-pref-brief-max-input-desc = งบประมาณอินพุตของโมเดลสำหรับสร้างเนื้อหา
+zotseek-pref-brief-max-output = โทเค็นเอาต์พุตสูงสุด
+zotseek-pref-brief-max-output-desc = งบประมาณเอาต์พุตที่สงวนไว้สำหรับการสร้างเนื้อหา
+zotseek-pref-brief-thinking-enabled =
+    .label = เปิดใช้การให้เหตุผลแบบขยาย
+
+## ตัวช่วยสร้างพรอมต์บทสรุปวรรณกรรม
+
+zotseek-brief-prompt-wizard-title = ปรับแต่งพรอมต์บทสรุปวรรณกรรม
+zotseek-brief-prompt-wizard-notice = อธิบายจุดเน้นและความต้องการในการอ่านของคุณ ZotSeek จะสร้างพรอมต์เป็นคู่สำหรับบทความทั่วไปและบทความทบทวนหรือทฤษฎี
+zotseek-brief-prompt-wizard-domain-label = หัวข้อหรือสาขาวิจัย
+zotseek-brief-prompt-wizard-language-label = ภาษาผลลัพธ์
+zotseek-brief-prompt-wizard-habits-label = ความต้องการด้านการอ่านและการวิเคราะห์
+zotseek-brief-prompt-wizard-status-idle = พร้อมสร้างพรอมต์
+zotseek-brief-prompt-wizard-location-label = ตำแหน่งพรอมต์
+zotseek-brief-prompt-wizard-open-location = เปิดโฟลเดอร์พรอมต์
+zotseek-brief-prompt-wizard-cancel = ยกเลิก
+zotseek-brief-prompt-wizard-generate = สร้างพรอมต์
+
+## สถานะและการยินยอมสำหรับบทสรุปวรรณกรรม
+
+zotseek-pref-brief-prompt-bundled = ในตัว ({ $file })
+zotseek-pref-brief-prompt-time-unknown = ไม่ทราบเวลาที่อัปเดต
+zotseek-pref-brief-prompt-custom = กำหนดเอง ({ $file }) อัปเดตเมื่อ { $updated }
+zotseek-pref-brief-provider-summary = ผู้ให้บริการ: { $provider } · ข้อมูลรับรอง: { $credential }
+zotseek-pref-brief-key-configured = กำหนดค่า API key แล้ว
+zotseek-pref-brief-key-missing = ยังไม่ได้กำหนดค่า API key
+zotseek-pref-brief-unsupported-provider = ขณะนี้บทสรุปวรรณกรรมรองรับเฉพาะ Alibaba Bailian
+zotseek-pref-brief-key-required = กำหนดค่า Alibaba Bailian API key ก่อนใช้บทสรุปวรรณกรรม
+zotseek-pref-brief-connection-verified = ยืนยันการเชื่อมต่อแล้ว
+zotseek-pref-brief-connection-not-verified = ยังไม่ได้ยืนยันการเชื่อมต่อ
+zotseek-pref-brief-invalid-settings = การตั้งค่าบทสรุปไม่ถูกต้อง: { $error }
+zotseek-pref-brief-status-failed = สร้างบทสรุปไม่สำเร็จ: { $error }
+zotseek-pref-brief-settings-saved = บันทึกการตั้งค่าบทสรุปแล้ว
+zotseek-pref-brief-cancelling = กำลังยกเลิกการสร้างบทสรุป…
+zotseek-pref-brief-consent-title = อนุญาตให้สร้างบทสรุปวรรณกรรมหรือไม่
+zotseek-pref-brief-consent-message = เพื่อสร้างบทสรุป ZotSeek จะส่งชื่อเรื่อง บทคัดย่อ และข้อความจากหน้า PDF ของบทความไปยัง Alibaba Bailian เมื่อสร้างเทมเพลตพรอมต์ ระบบจะส่งเทมเพลตสองชุดและคำตอบจากแบบฟอร์มของคุณ บัญชี BYOK ของคุณอาจมีค่าใช้จ่าย และการทดสอบการเชื่อมต่อก็อาจมีค่าใช้จ่ายเล็กน้อย ดำเนินการต่อหรือไม่
+zotseek-pref-brief-testing = กำลังทดสอบการเชื่อมต่อ…
+zotseek-pref-brief-test-failed = ทดสอบการเชื่อมต่อไม่สำเร็จ: { $error }
+zotseek-pref-brief-connection-required = ยืนยันการเชื่อมต่อก่อนสร้างบทสรุป
+zotseek-pref-brief-import-failed = นำเข้าพรอมต์ไม่สำเร็จ: { $error }
+zotseek-pref-brief-reset-title = เรียกคืนพรอมต์ในตัวหรือไม่
+zotseek-pref-brief-reset-message = พรอมต์ที่กำหนดเองจะถูกแทนที่ด้วยพรอมต์ในตัว ดำเนินการต่อหรือไม่
+zotseek-pref-brief-reset-done = เรียกคืนพรอมต์ในตัวแล้ว
+
+## Literature brief menu and runtime status
+
+zotseek-menu-generateBrief = สร้างบทสรุปวรรณกรรม
+zotseek-brief-disabled = ปิดใช้บทสรุปวรรณกรรมแล้ว
+zotseek-brief-busy = งานบทสรุปวรรณกรรมอื่นกำลังทำงานอยู่
+zotseek-brief-connection-required = ยืนยันการเชื่อมต่อบทสรุปวรรณกรรมก่อนสร้าง
+zotseek-brief-start-failed = เริ่มสร้างบทสรุปวรรณกรรมไม่สำเร็จ: { $error }
+zotseek-brief-cancelling = กำลังยกเลิกการสร้างบทสรุปวรรณกรรม…
+zotseek-brief-cancel-task = ยกเลิกงาน
+zotseek-brief-cancel-tooltip = ยกเลิกงานบทสรุปวรรณกรรมนี้
+zotseek-brief-progress-title = กำลังสร้างบทสรุปวรรณกรรม
+zotseek-brief-progress-summary = เสร็จสิ้น { $completed } จาก { $total } · สำเร็จ: { $success } · ล้มเหลว: { $failed } · ข้าม: { $skipped } · ยกเลิก: { $cancelled }
+zotseek-brief-progress-active = กำลังประมวลผล: { $title }
+zotseek-brief-progress-latest = { $title }: { $status }
+zotseek-brief-progress-latest-with-reason = { $title }: { $status } ({ $reason })
+zotseek-brief-progress-complete = งานบทสรุปวรรณกรรมเสร็จสิ้น
+zotseek-brief-summary-title = ผลลัพธ์บทสรุปวรรณกรรม
+zotseek-brief-summary-message = สำเร็จ: { $success } · ล้มเหลว: { $failed } · ข้าม: { $skipped } · ยกเลิก: { $cancelled }
+zotseek-brief-status-success = สำเร็จ
+zotseek-brief-status-failed = ล้มเหลว
+zotseek-brief-status-skipped = ข้าม
+zotseek-brief-status-cancelled = ยกเลิก
+zotseek-brief-skip-reason-insufficient-text = ไม่มีข้อความ PDF ที่แยกได้
+zotseek-brief-skip-reason-existing-note = มีโน้ตลูกอยู่แล้ว
+zotseek-brief-skip-reason-no-main-pdf = ไม่มี PDF หลัก
+zotseek-brief-select-one = เลือกบทความทั่วไปหรือไฟล์แนบ PDF หนึ่งรายการ
+zotseek-brief-invalid-selection = รายการที่เลือกไม่ใช่บทความหรือไฟล์แนบ PDF ที่ใช้ได้
+zotseek-brief-existing-note-title = โน้ตบทสรุปที่มีอยู่
+zotseek-brief-existing-note-message = บทความนี้มีโน้ตลูกอยู่แล้ว ต้องการสร้างโน้ตบทสรุปวรรณกรรมเพิ่มหรือไม่
+zotseek-brief-select-collection = เลือกคอลเลกชันก่อน
+zotseek-brief-no-eligible = ไม่พบบทความที่ใช้ได้ในคอลเลกชันที่เลือก
+zotseek-brief-collection-confirm-title = สร้างบทสรุปวรรณกรรมสำหรับคอลเลกชันหรือไม่
+zotseek-brief-collection-confirm-message = สร้างบทสรุปวรรณกรรมสำหรับ { $count } บทความหรือไม่ อาจมีค่าใช้จ่าย API
+
+## Literature brief prompt wizard runtime status
+
+zotseek-brief-wizard-unavailable = เริ่มไม่ได้: บริการบทสรุปวรรณกรรมไม่พร้อมใช้งาน
+zotseek-brief-wizard-generating = กำลังสร้างไฟล์พรอมต์แบบคู่…
+zotseek-brief-wizard-required = ระบุสาขาวิจัยและภาษาผลลัพธ์
+zotseek-brief-wizard-invalid-result = บริการบทสรุปวรรณกรรมไม่ส่งผลลัพธ์ที่ใช้ได้กลับมา
+zotseek-brief-wizard-success = สร้างไฟล์พรอมต์สำเร็จ
+zotseek-brief-wizard-success-no-path = สร้างไฟล์พรอมต์สำเร็จ แต่ไม่ได้รับตำแหน่งผลลัพธ์
+zotseek-brief-wizard-downloaded-not-enabled = ดาวน์โหลดไฟล์พรอมต์แล้ว แต่ไม่สามารถเปิดใช้คู่ที่จัดการไว้ได้ โปรดลองอีกครั้งหรือนำเข้าไฟล์ด้วยตนเอง
+zotseek-brief-wizard-canceled = ยกเลิกการสร้างแล้ว
+zotseek-brief-wizard-canceling = กำลังยกเลิกการสร้าง…
+zotseek-brief-wizard-failed = สร้างไม่สำเร็จ ไม่มีการเปิดใช้ไฟล์พรอมต์
+zotseek-brief-wizard-open-failed = เปิดตำแหน่งไฟล์พรอมต์ไม่สำเร็จ
+zotseek-brief-wizard-init-failed = เริ่มตัวช่วยสร้างพรอมต์บทสรุปวรรณกรรมไม่สำเร็จ

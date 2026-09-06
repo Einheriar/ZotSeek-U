@@ -10,7 +10,7 @@ zotseek-pref-localServerState = Local Server ({ $state })
 zotseek-pref-cloudSlotReady = Cloud ({ $model })
 zotseek-pref-cloudSlotSetup = Cloud (SETUP REQUIRED)
 zotseek-pref-cloudTitle = Cloud Model
-zotseek-pref-cloudDesc = Configure a BYOK Cloud embedding provider. Indexed content and semantic queries are sent to the provider and may incur provider charges. ZotSeek does not charge or receive any share of those fees.
+zotseek-pref-cloudDesc = Настройте облачный сервис embedding с собственным ключом API (BYOK). Индексируемые материалы и семантические запросы отправляются облачному провайдеру; Zotseek-U не взимает плату и не получает долю этих платежей. Для индексирования и поиска требуется подключение к Интернету и расходуется квота API провайдера, что может повлечь расходы; подробности см. в тарифной документации провайдера.
 zotseek-pref-cloudProvider = Provider
 zotseek-pref-cloudBaseUrl = Base URL
 zotseek-pref-cloudModel = Model
@@ -55,6 +55,8 @@ zotseek-pref-cloudBriefSwitchTitle = Literature brief generation will be unavail
 zotseek-pref-cloudBriefSwitchMessage = Literature brief generation currently supports only Alibaba Bailian. If you switch providers, the brief feature will be unavailable and its connection state will be cleared. Switch anyway?
 zotseek-pref-cloudRebuildTitle = Index remaining papers with Cloud?
 zotseek-pref-cloudRebuildMessage = This will send content from { $count } eligible papers to the configured Cloud provider. Provider charges may apply. Continue?
+zotseek-pref-modelBackfillTitle = Проиндексировать оставшиеся документы текущей моделью?
+zotseek-pref-modelBackfillMessage = Эта модель охватывает { $covered } из { $total } документов. Проиндексировать оставшиеся { $missing } в фоновом режиме? Во время индексации можно продолжать пользоваться Zotero.
 ## Context menu items
 
 zotseek-menu-findSimilar = Найти похожие документы
@@ -67,12 +69,12 @@ zotseek-menu-findRelated = Найти связанные документы
 
 ## Toolbar
 
-zotseek-toolbar-openZotSeek = Открыть ZotSeek
+zotseek-toolbar-openZotSeek = Открыть Zotseek-U
 zotseek-toolbar-findSimilar = Найти похожие документы
 
 ## Preference pane
 
-zotseek-pref-title = ZotSeek
+zotseek-pref-title = Zotseek-U
 zotseek-pref-indexStatistics = Статистика индекса
 zotseek-pref-papersIndexed = Проиндексированные документы
 zotseek-pref-totalChunks = Всего фрагментов
@@ -95,18 +97,18 @@ zotseek-pref-indexingMode = Режим индексирования
 zotseek-pref-abstractOnly = Только аннотация
 zotseek-pref-abstractOnlyMenu =
     .label = Только аннотация (быстрее)
-zotseek-pref-abstractSpeed = Быстрый • ~1 фрагмент на документ
-zotseek-pref-abstractDesc = Индексирует заголовок, аннотацию от 50 символов и метки, не начинающиеся с #.
+zotseek-pref-abstractSpeed = Быстрый · ~1 фрагмент на документ
+zotseek-pref-abstractDesc = Индексирует заголовок, аннотацию и метки, не начинающиеся с #.
 zotseek-pref-notes = Метаданные + заметки
 zotseek-pref-notesMenu =
     .label = Метаданные + заметки (без обработки PDF)
-zotseek-pref-notesSpeed = Сфокусированный • без обработки PDF
-zotseek-pref-notesDesc = Индексирует те же метаданные и дочерние заметки; метки, начинающиеся с #, исключаются.
+zotseek-pref-notesSpeed = Сфокусированный · без обработки PDF
+zotseek-pref-notesDesc = Индексирует те же метаданные и дочерние заметки.
 zotseek-pref-fullPaper = Полный текст
 zotseek-pref-fullPaperMenu =
     .label = Полный текст (тщательнее)
-zotseek-pref-fullSpeed = Тщательный • заметки + ~1–2 фрагмента на страницу PDF
-zotseek-pref-fullDesc = Индексирует те же метаданные, дочерние заметки и полный текст PDF с номерами страниц; метки с # исключаются.
+zotseek-pref-fullSpeed = Тщательный · аннотация + заметки + PDF
+zotseek-pref-fullDesc = Индексирует те же метаданные, дочерние заметки и полный текст PDF с номерами страниц.
 zotseek-pref-mcpServer = Доступ для AI-агентов
 zotseek-pref-mcpServerLabel =
     .label = Разрешить AI-агентам искать и читать вашу библиотеку (локальный MCP-сервер)
@@ -203,9 +205,9 @@ zotseek-pref-maxChunks = Максимум фрагментов на докуме
 zotseek-pref-maxChunksDesc = Ограничение для длинных документов (1–200)
 zotseek-pref-excludeBooks =
     .label = Исключать книги из индексирования
-zotseek-pref-excludeBooksDesc = Книги не индексируются. Существующие индексы ZotSeek для книг удаляются при следующей проверке индекса.
+zotseek-pref-excludeBooksDesc = Книги не индексируются. Существующие индексы Zotseek-U для книг удаляются при следующей проверке индекса.
 zotseek-pref-excludeTag = Исключаемая метка
-zotseek-pref-excludeTagDesc = Элементы с этой меткой не индексируются. Существующие индексы ZotSeek для таких элементов удаляются при следующей проверке индекса. Оставьте поле пустым, чтобы отключить.
+zotseek-pref-excludeTagDesc = Элементы с этой меткой не индексируются. Существующие индексы Zotseek-U для таких элементов удаляются при следующей проверке индекса. Оставьте поле пустым, чтобы отключить.
 zotseek-pref-actions = Действия
 zotseek-pref-maintenanceRepair = Обслуживание и восстановление
 zotseek-pref-updateIndex =
@@ -244,7 +246,7 @@ zotseek-pref-healthPurgeFailedTitle = Удаление не выполнено
 zotseek-search-search =
     .value = Поиск:
 zotseek-search-placeholder =
-    .placeholder = Введите поисковый запрос (поиск запускается во время ввода)...
+    .placeholder = Введите поисковый запрос (поиск запускается во время ввода)... | Например: публикации о связи высокого родительского стресса с низкой межмозговой синхронизацией родителя и ребёнка
 zotseek-search-addQuery =
     .label = +
     .tooltiptext = Добавить запрос для комбинации AND/OR
@@ -511,3 +513,117 @@ zotseek-pref-manageModelsTitle = Управление установленным
 zotseek-indexing-cloudRebuildConfirmTitle = Rebuild Cloud index?
 zotseek-indexing-cloudRebuildConfirmMsg = About { $count } papers in { $scope } will be sent to the configured Cloud provider and may incur provider charges. Existing complete indexes are kept until each paper is replaced successfully. Continue?
 zotseek-indexing-cloudStrategyRebuildConfirmMsg = The current Cloud index uses an older chunk strategy. Its existing embeddings must be deleted before about { $count } papers in { $scope } are sent again, which may incur provider charges. Other model indexes are kept. Continue?
+
+## Настройки литературных обзоров
+
+zotseek-prefs-group-brief = Литературные обзоры (Экспериментальная функция)
+zotseek-pref-brief-title = Литературные обзоры
+zotseek-pref-brief-enabled =
+    .label = Включить литературные обзоры
+zotseek-pref-brief-enabled-desc = По запросу создавать экспериментальный литературный обзор по PDF статьи.
+zotseek-pref-brief-provider = Общий провайдер
+zotseek-pref-brief-open-cloud-settings = Настроить учетные данные
+zotseek-pref-brief-model = Модель генерации
+zotseek-pref-brief-test = Проверить подключение
+zotseek-pref-brief-create-prompts = Создать мои промпты для обзоров…
+zotseek-pref-brief-create-prompts-desc = Создать парные промпты для обычных статей и обзорных или теоретических работ.
+zotseek-pref-brief-standard-prompt = Промпт для обычных статей
+zotseek-pref-brief-review-prompt = Промпт для обзоров/теории
+zotseek-pref-brief-advanced = Дополнительно
+zotseek-pref-brief-import-standard = Импортировать обычный промпт…
+zotseek-pref-brief-import-review = Импортировать промпт для обзоров…
+zotseek-pref-brief-reset-prompts = Восстановить встроенные промпты
+zotseek-pref-brief-max-input = Максимум входных токенов
+zotseek-pref-brief-max-input-desc = Бюджет входных токенов модели генерации.
+zotseek-pref-brief-max-output = Максимум выходных токенов
+zotseek-pref-brief-max-output-desc = Зарезервированный бюджет выходных токенов.
+zotseek-pref-brief-thinking-enabled =
+    .label = Включить расширенное рассуждение
+
+## Мастер настройки промптов литературных обзоров
+
+zotseek-brief-prompt-wizard-title = Настройка промптов литературных обзоров
+zotseek-brief-prompt-wizard-notice = Опишите свои читательские задачи и предпочтения. ZotSeek создаст парные промпты для обычных статей и обзорных или теоретических работ.
+zotseek-brief-prompt-wizard-domain-label = Тема или область исследования
+zotseek-brief-prompt-wizard-language-label = Язык вывода
+zotseek-brief-prompt-wizard-habits-label = Предпочтения чтения и анализа
+zotseek-brief-prompt-wizard-status-idle = Готово к созданию промптов.
+zotseek-brief-prompt-wizard-location-label = Расположение промптов
+zotseek-brief-prompt-wizard-open-location = Открыть папку с промптами
+zotseek-brief-prompt-wizard-cancel = Отмена
+zotseek-brief-prompt-wizard-generate = Создать промпты
+
+## Состояние и подтверждение для литературных обзоров
+
+zotseek-pref-brief-prompt-bundled = Встроенный ({ $file })
+zotseek-pref-brief-prompt-time-unknown = Время обновления неизвестно
+zotseek-pref-brief-prompt-custom = Пользовательский ({ $file }), обновлено { $updated }
+zotseek-pref-brief-provider-summary = Провайдер: { $provider } · Учетные данные: { $credential }
+zotseek-pref-brief-key-configured = API-ключ настроен
+zotseek-pref-brief-key-missing = API-ключ не настроен
+zotseek-pref-brief-unsupported-provider = Литературные обзоры сейчас поддерживают только Alibaba Bailian.
+zotseek-pref-brief-key-required = Настройте API-ключ Alibaba Bailian перед использованием литературных обзоров.
+zotseek-pref-brief-connection-verified = Подключение проверено
+zotseek-pref-brief-connection-not-verified = Подключение не проверено
+zotseek-pref-brief-invalid-settings = Недопустимые настройки обзора: { $error }
+zotseek-pref-brief-status-failed = Не удалось создать обзор: { $error }
+zotseek-pref-brief-settings-saved = Настройки обзоров сохранены.
+zotseek-pref-brief-cancelling = Отмена создания обзора…
+zotseek-pref-brief-consent-title = Разрешить создание литературного обзора?
+zotseek-pref-brief-consent-message = Для создания обзора ZotSeek отправит в Alibaba Bailian название статьи, аннотацию и текст страниц PDF. При создании шаблонов промптов будут отправлены два шаблона и ваши ответы в форме. Для вашего BYOK-аккаунта может взиматься плата; даже проверка подключения может стоить небольшую сумму. Продолжить?
+zotseek-pref-brief-testing = Проверка подключения…
+zotseek-pref-brief-test-failed = Ошибка проверки подключения: { $error }
+zotseek-pref-brief-connection-required = Проверьте подключение перед созданием обзора.
+zotseek-pref-brief-import-failed = Не удалось импортировать промпт: { $error }
+zotseek-pref-brief-reset-title = Восстановить встроенные промпты?
+zotseek-pref-brief-reset-message = Пользовательские промпты будут заменены встроенными. Продолжить?
+zotseek-pref-brief-reset-done = Встроенные промпты восстановлены.
+
+## Literature brief menu and runtime status
+
+zotseek-menu-generateBrief = Создать литературный обзор
+zotseek-brief-disabled = Литературные обзоры отключены.
+zotseek-brief-busy = Другая задача создания литературного обзора уже выполняется.
+zotseek-brief-connection-required = Проверьте подключение литературного обзора перед созданием.
+zotseek-brief-start-failed = Не удалось начать создание литературного обзора: { $error }
+zotseek-brief-cancelling = Отмена создания литературного обзора…
+zotseek-brief-cancel-task = Отменить задачу
+zotseek-brief-cancel-tooltip = Отменить эту задачу литературного обзора
+zotseek-brief-progress-title = Создание литературного обзора
+zotseek-brief-progress-summary = Завершено { $completed } из { $total } · Успешно: { $success } · Ошибок: { $failed } · Пропущено: { $skipped } · Отменено: { $cancelled }
+zotseek-brief-progress-active = Обработка: { $title }
+zotseek-brief-progress-latest = { $title }: { $status }
+zotseek-brief-progress-latest-with-reason = { $title }: { $status } ({ $reason })
+zotseek-brief-progress-complete = Задача литературного обзора завершена.
+zotseek-brief-summary-title = Результаты литературного обзора
+zotseek-brief-summary-message = Успешно: { $success } · Ошибок: { $failed } · Пропущено: { $skipped } · Отменено: { $cancelled }
+zotseek-brief-status-success = Успешно
+zotseek-brief-status-failed = Ошибка
+zotseek-brief-status-skipped = Пропущено
+zotseek-brief-status-cancelled = Отменено
+zotseek-brief-skip-reason-insufficient-text = нет извлекаемого текста PDF
+zotseek-brief-skip-reason-existing-note = уже есть дочерняя заметка
+zotseek-brief-skip-reason-no-main-pdf = нет основного PDF
+zotseek-brief-select-one = Выберите обычную статью или PDF-вложение.
+zotseek-brief-invalid-selection = Выбранный элемент не является подходящей статьёй или PDF-вложением.
+zotseek-brief-existing-note-title = Существующая заметка обзора
+zotseek-brief-existing-note-message = У этой статьи уже есть дочерняя заметка. Создать дополнительную заметку литературного обзора?
+zotseek-brief-select-collection = Сначала выберите коллекцию.
+zotseek-brief-no-eligible = В выбранной коллекции не найдено подходящих статей.
+zotseek-brief-collection-confirm-title = Создать обзоры для коллекции?
+zotseek-brief-collection-confirm-message = Создать литературные обзоры для { $count } статей? Это может привести к расходам API.
+
+## Literature brief prompt wizard runtime status
+
+zotseek-brief-wizard-unavailable = Не удалось начать: сервис литературных обзоров недоступен.
+zotseek-brief-wizard-generating = Создание парных файлов промптов…
+zotseek-brief-wizard-required = Укажите область исследования и язык вывода.
+zotseek-brief-wizard-invalid-result = Сервис литературных обзоров не вернул пригодный результат.
+zotseek-brief-wizard-success = Файлы промптов успешно созданы.
+zotseek-brief-wizard-success-no-path = Файлы промптов созданы, но расположение не возвращено.
+zotseek-brief-wizard-downloaded-not-enabled = Файлы загружены, но управляемую пару не удалось активировать. Повторите попытку или импортируйте файлы вручную.
+zotseek-brief-wizard-canceled = Создание отменено.
+zotseek-brief-wizard-canceling = Отмена создания…
+zotseek-brief-wizard-failed = Ошибка создания. Файлы промптов не активированы.
+zotseek-brief-wizard-open-failed = Не удалось открыть расположение файлов промптов.
+zotseek-brief-wizard-init-failed = Не удалось запустить мастер промптов литературного обзора.

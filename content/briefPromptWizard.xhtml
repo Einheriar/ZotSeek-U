@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet href="chrome://global/skin/" type="text/css"?>
+<?xml-stylesheet href="chrome://zotero/skin/zotero.css" type="text/css"?>
+<!DOCTYPE window>
+<window
+  xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+  xmlns:html="http://www.w3.org/1999/xhtml"
+  id="zotseek-brief-prompt-wizard"
+  data-l10n-id="zotseek-brief-prompt-wizard-title"
+  width="560"
+  height="430"
+  persist="width,height,screenX,screenY">
+
+  <linkset>
+    <html:link rel="localization" href="zotseek.ftl"/>
+  </linkset>
+
+  <script src="chrome://zotero/content/include.js"/>
+  <script src="chrome://zotero/content/customElements.js"/>
+  <script type="application/javascript" src="chrome://zotseek/content/scripts/brief-prompt-wizard.js"/>
+
+  <vbox flex="1" style="padding: 16px; min-width: 500px;">
+    <description data-l10n-id="zotseek-brief-prompt-wizard-notice"
+                 style="margin-bottom: 14px;"/>
+
+    <hbox align="center" style="margin-bottom: 10px;">
+      <label control="zotseek-brief-wizard-domain"
+             data-l10n-id="zotseek-brief-prompt-wizard-domain-label"
+             style="min-width: 145px;"/>
+      <html:input id="zotseek-brief-wizard-domain" type="text"
+                  required="required" style="flex: 1; padding: 5px;"/>
+    </hbox>
+
+    <hbox align="center" style="margin-bottom: 10px;">
+      <label control="zotseek-brief-wizard-language"
+             data-l10n-id="zotseek-brief-prompt-wizard-language-label"
+             style="min-width: 145px;"/>
+      <html:input id="zotseek-brief-wizard-language" type="text"
+                  required="required" style="flex: 1; padding: 5px;"/>
+    </hbox>
+
+    <vbox style="margin-bottom: 10px;">
+      <label control="zotseek-brief-wizard-habits"
+             data-l10n-id="zotseek-brief-prompt-wizard-habits-label"
+             />
+      <html:textarea id="zotseek-brief-wizard-habits" rows="5"
+                     style="margin-top: 5px; padding: 5px; resize: vertical;"/>
+    </vbox>
+
+    <hbox align="center" style="min-height: 32px;">
+      <label id="zotseek-brief-wizard-status"
+             data-l10n-id="zotseek-brief-prompt-wizard-status-idle"
+             style="color: #666; font-style: italic;"/>
+    </hbox>
+
+    <vbox id="zotseek-brief-wizard-result" hidden="true" style="margin-top: 8px;">
+      <label data-l10n-id="zotseek-brief-prompt-wizard-location-label"
+             />
+      <hbox align="center" style="margin-top: 4px;">
+        <textbox id="zotseek-brief-wizard-path" readonly="true" flex="1" crop="end"/>
+        <button id="zotseek-brief-wizard-open-location"
+                data-l10n-id="zotseek-brief-prompt-wizard-open-location"
+                disabled="true" style="margin-left: 6px;"/>
+      </hbox>
+    </vbox>
+
+    <spacer flex="1"/>
+    <hbox pack="end" style="margin-top: 14px;">
+      <button id="zotseek-brief-wizard-cancel"
+              data-l10n-id="zotseek-brief-prompt-wizard-cancel"
+              style="margin-right: 6px;"/>
+      <button id="zotseek-brief-wizard-generate"
+              data-l10n-id="zotseek-brief-prompt-wizard-generate"
+              default="true"/>
+    </hbox>
+  </vbox>
+</window>

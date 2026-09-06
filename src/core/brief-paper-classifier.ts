@@ -1,10 +1,12 @@
 /** Title-and-abstract router for the two literature-brief prompt slots. */
 
 import type {
+  BriefGenerationTaskContext,
   BriefGenerationMessage,
   BriefGenerationRequestOptions,
   BriefGenerationResult,
 } from './brief-generation-client';
+import { BriefGenerationCancelledError } from './brief-generation-client';
 import { BRIEF_CLASSIFIER_MAX_COMPLETION_TOKENS } from './brief-generation-config';
 
 export { BRIEF_CLASSIFIER_MAX_COMPLETION_TOKENS } from './brief-generation-config';
@@ -125,14 +127,25 @@ function parseClassifications(
 export async function classifyBriefPapers(
   inputs: readonly BriefPaperClassificationInput[],
   client: BriefClassifierGenerationClient,
+  context?: BriefGenerationTaskContext | AbortSignal,
 ): Promise<BriefPaperClassification[]> {
   validateInputs(inputs);
+  const signal = context && 'signal' in context ? context.signal : context;
+  const throwIfCancelled = () => {
+    if (signal?.aborted) throw new BriefGenerationCancelledError();
+    if (context && 'throwIfCancelled' in context) context.throwIfCancelled();
+  };
   for (let attempt = 0; attempt <= BRIEF_CLASSIFIER_PROTOCOL_RETRIES; attempt++) {
+    throwIfCancelled();
     const result = await client.generate(messagesFor(inputs, attempt > 0), {
       retries: 3,
       maxCompletionTokens: BRIEF_CLASSIFIER_MAX_COMPLETION_TOKENS,
+      ...(signal ? { signal } : {}),
     });
     try {
+      if (!result || typeof result.content !== 'string') {
+        throw new BriefPaperClassificationError('Classifier response was not valid text.');
+      }
       return parseClassifications(result.content, inputs);
     } catch (error) {
       if (attempt >= BRIEF_CLASSIFIER_PROTOCOL_RETRIES) throw error;

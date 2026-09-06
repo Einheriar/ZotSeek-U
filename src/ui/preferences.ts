@@ -69,8 +69,14 @@ import {
 } from '../core/cloud-model-config';
 import { CloudEmbeddingClient } from '../core/cloud-embedding-client';
 import { createCloudEmbeddingRequestAdapter } from '../core/cloud-embedding-adapter';
-import { cloudCredentialStore, maskCloudApiKey } from '../core/cloud-credential-store';
+import {
+  cloudCredentialStore,
+  getCloudCredentialRevision,
+  maskCloudApiKey,
+} from '../core/cloud-credential-store';
 import { confirmCloudDisclosure, promptForCloudApiKey } from './cloud-model-prompt';
+import { briefService } from '../core/brief-service';
+import type { BriefPromptSlot } from '../core/brief-prompt-store';
 
 declare const Services: any;
 declare const Zotero: any;
@@ -93,6 +99,26 @@ function docAlive(doc: any): boolean {
 function setCloudStatus(doc: any, message: string): void {
   const status = doc.getElementById('zotseek-cloud-status');
   if (status) status.textContent = message;
+}
+
+/**
+ * Bind a Cloud probe to the exact non-secret contract it tested.  A probe can
+ * finish after the user changed the provider, region, model, or endpoint; in
+ * that case its result must not certify the newer configuration.
+ */
+function cloudConnectionFingerprint(settings: CloudModelSettings): string {
+  return JSON.stringify({
+    provider: settings.provider,
+    baseUrl: settings.baseUrl,
+    bailianRegion: settings.bailianRegion,
+    modelName: settings.modelName,
+    dimensions: settings.dimensions,
+    maxInputTokens: settings.maxInputTokens,
+    queryRole: settings.queryRole,
+    documentRole: settings.documentRole,
+    batchSize: settings.batchSize,
+    customBaseUrl: settings.customBaseUrl,
+  });
 }
 
 /**
@@ -347,9 +373,14 @@ async function testCloudConnection(doc: any): Promise<boolean> {
     return false;
   }
   setCloudStatus(doc, getString('pref-cloudTesting'));
+  const testedCredentialRevision = getCloudCredentialRevision(settings.provider);
+  const testedSettingsFingerprint = cloudConnectionFingerprint(settings);
   try {
     const apiKey = await cloudCredentialStore.get(settings.provider);
     if (!apiKey) {
+      // A key may have been removed outside this preferences window. Do not
+      // leave a previously verified provider looking usable in that case.
+      setCloudConnectionVerified(false, settings.provider);
       setCloudStatus(doc, getString('pref-cloudApiKeyMissing'));
       return false;
     }
@@ -361,6 +392,11 @@ async function testCloudConnection(doc: any): Promise<boolean> {
       batchSize: settings.batchSize,
     });
     await client.probe();
+    const currentSettings = getCloudModelSettings();
+    if (getCloudCredentialRevision(settings.provider) !== testedCredentialRevision
+        || cloudConnectionFingerprint(currentSettings) !== testedSettingsFingerprint) {
+      throw new Error('The Cloud credential or model settings changed during testing.');
+    }
     setCloudConnectionVerified(true, settings.provider);
     if (getActiveModelSelectionId() === CLOUD_SLOT_SELECTION_ID) embeddingPipeline.reset();
     setCloudStatus(doc, getString('pref-cloudConnectionVerified'));
@@ -404,11 +440,10 @@ async function maybePromptReindex(doc: any, modelId: string): Promise<void> {
   const cloud = getModel(modelId)?.runtime === 'cloud';
   const yes = Services.prompt.confirm(
     doc.defaultView || null,
-    cloud ? getString('pref-cloudRebuildTitle') : 'Index remaining items',
+    cloud ? getString('pref-cloudRebuildTitle') : getString('pref-modelBackfillTitle'),
     cloud
       ? getString('pref-cloudRebuildMessage', { count: missing })
-      : `This model covers ${covered} of ${total} items. Index the remaining ${missing} `
-        + `in the background now? You can keep using Zotero while it runs.`,
+      : getString('pref-modelBackfillMessage', { covered, total, missing }),
   );
   if (yes) {
     const zs = (typeof Zotero !== 'undefined') ? (Zotero as any).ZotSeek : null;
@@ -569,29 +604,128 @@ async function renderCoverage(doc: any): Promise<void> {
     ? 'No items indexed yet.'
     : `${covered} of ${total} items searchable with the active model.`;
   el.appendChild(text);
-  // When the active model doesn't cover the whole library yet, offer a button
-  // to index the missing items (without having to switch models to get the prompt).
-  if (total > 0 && covered < total) {
-    const zs = (typeof Zotero !== 'undefined') ? (Zotero as any).ZotSeek : null;
-    const busy = !!(zs && zs.indexing);
-    const btn = doc.createElement('button') as any;
-    btn.style.cssText = 'margin-left:8px;';
-    btn.textContent = busy ? 'Indexing in the background...' : `Index remaining ${total - covered}`;
-    btn.disabled = busy;
-    if (!busy) {
-      btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        btn.textContent = 'Indexing in the background...';
-        try {
-          if (zs && zs.api && typeof zs.api.reindexForActiveModel === 'function') {
-            await zs.api.reindexForActiveModel();
-          }
-        } catch { /* progress + errors are surfaced by the indexing UI */ }
-        if (docAlive(doc)) await renderCoverage(doc);
+}
+
+function setBriefStatus(doc: any, message: string): void {
+  const status = doc.getElementById('zotseek-brief-connection-status');
+  if (status) status.textContent = message;
+}
+
+function setBriefSettingsStatus(doc: any, message: string): void {
+  const status = doc.getElementById('zotseek-brief-settings-status');
+  if (status) status.textContent = message;
+}
+
+function briefPromptSummary(prompt: any): string {
+  if (prompt?.source === 'bundled') {
+    return getString('pref-brief-prompt-bundled', { file: prompt.filename || '' });
+  }
+  const updated = prompt?.updatedAt
+    ? new Date(prompt.updatedAt).toLocaleString()
+    : getString('pref-brief-prompt-time-unknown');
+  return getString('pref-brief-prompt-custom', {
+    file: prompt?.filename || '',
+    updated,
+  });
+}
+
+async function renderBriefSettings(doc: any): Promise<void> {
+  try {
+    const status = await briefService.getStatus();
+    const checkbox = doc.getElementById('zotseek-pref-brief-enabled') as any;
+    if (checkbox) checkbox.checked = status.enabled;
+
+    const provider = doc.getElementById('zotseek-brief-provider-status');
+    if (provider) {
+      provider.textContent = getString('pref-brief-provider-summary', {
+        provider: status.providerLabel,
+        credential: status.hasCredential
+          ? getString('pref-brief-key-configured')
+          : getString('pref-brief-key-missing'),
       });
     }
-    el.appendChild(btn);
+
+    const model = doc.getElementById('zotseek-brief-model') as HTMLInputElement | null;
+    const maxInput = doc.getElementById('zotseek-brief-max-input') as HTMLInputElement | null;
+    const maxOutput = doc.getElementById('zotseek-brief-max-output') as HTMLInputElement | null;
+    const thinking = doc.getElementById('zotseek-brief-thinking-enabled') as any;
+    if (model) model.value = status.config.settings.modelName;
+    if (maxInput) maxInput.value = String(status.config.settings.maxInputTokens);
+    if (maxOutput) maxOutput.value = String(status.config.settings.maxOutputTokens);
+    if (thinking) thinking.checked = status.config.settings.thinkingEnabled;
+
+    const standard = doc.getElementById('zotseek-brief-standard-prompt-status');
+    const review = doc.getElementById('zotseek-brief-review-prompt-status');
+    if (standard) standard.textContent = briefPromptSummary(status.prompts.standard);
+    if (review) review.textContent = briefPromptSummary(status.prompts.review);
+
+    const connectionKey = !status.providerSupported
+      ? 'pref-brief-unsupported-provider'
+      : !status.hasCredential
+        ? 'pref-brief-key-required'
+        : status.connectionVerified
+          ? 'pref-brief-connection-verified'
+          : 'pref-brief-connection-not-verified';
+    setBriefStatus(doc, getString(connectionKey));
+    if (status.config.status === 'invalid') {
+      setBriefSettingsStatus(doc, getString('pref-brief-invalid-settings', {
+        error: status.config.error || '',
+      }));
+    } else if (!status.busy) {
+      setBriefSettingsStatus(doc, '');
+    }
+
+    const test = doc.getElementById('zotseek-brief-test') as any;
+    const create = doc.getElementById('zotseek-brief-create-prompts') as any;
+    if (test) test.disabled = status.busy || !status.providerSupported || !status.hasCredential;
+    if (create) {
+      create.disabled = status.busy || !status.enabled || !status.connectionVerified;
+    }
+  } catch (error: any) {
+    setBriefStatus(doc, getString('pref-brief-status-failed', {
+      error: error?.message || error,
+    }));
   }
+}
+
+function saveBriefSettingsFromUI(doc: any): boolean {
+  const model = (doc.getElementById('zotseek-brief-model') as HTMLInputElement | null)?.value || '';
+  const maxInput = Number((doc.getElementById('zotseek-brief-max-input') as HTMLInputElement | null)?.value);
+  const maxOutput = Number((doc.getElementById('zotseek-brief-max-output') as HTMLInputElement | null)?.value);
+  const thinking = (doc.getElementById('zotseek-brief-thinking-enabled') as any)?.checked === true;
+  try {
+    briefService.updateSettings({
+      modelName: model,
+      maxInputTokens: maxInput,
+      maxOutputTokens: maxOutput,
+      thinkingEnabled: thinking,
+    });
+    setBriefSettingsStatus(doc, getString('pref-brief-settings-saved'));
+    return true;
+  } catch (error: any) {
+    setBriefSettingsStatus(doc, getString('pref-brief-invalid-settings', {
+      error: error?.message || error,
+    }));
+    return false;
+  }
+}
+
+async function pickBriefPromptFile(doc: any, slot: BriefPromptSlot): Promise<void> {
+  const Z = getZotero();
+  if (!Z?.FilePicker) throw new Error('Zotero FilePicker is unavailable.');
+  const picker = new Z.FilePicker();
+  picker.init(
+    doc.defaultView || null,
+    getString(slot === 'standard'
+      ? 'pref-brief-import-standard'
+      : 'pref-brief-import-review'),
+    picker.modeOpen,
+  );
+  picker.appendFilter('Markdown / Text', '*.md; *.txt');
+  const result = await picker.show();
+  if (result !== picker.returnOK || !picker.file?.path) return;
+  await briefService.importPrompt(slot, picker.file.path);
+  await renderBriefSettings(doc);
 }
 
 async function renderManageModels(doc: any): Promise<void> {
@@ -777,6 +911,7 @@ class PreferencesManager {
       // Advanced server models are configured in a profile-side JSON template.
       renderServerTemplateStatus(this.window.document);
       await renderCloudSettings(this.window.document);
+      await renderBriefSettings(this.window.document);
 
       // Keep collapsible groups in sync with the Settings search field
       initPrefsGroupSearchSync(this.window.document);
@@ -826,6 +961,7 @@ class PreferencesManager {
       mcpServer: Z.Prefs.get('zotseek.mcpServer.enabled', true) ?? false,
       indexScope: Z.Prefs.get('zotseek.indexScope', true) || 'user',
       autoCompact: Z.Prefs.get('zotseek.autoCompact', true) ?? true,
+      briefEnabled: Z.Prefs.get('zotseek.brief.enabled', true) ?? false,
     };
 
     this.logger.debug(`Loaded preferences: ${JSON.stringify(prefs)}`);
@@ -844,6 +980,7 @@ class PreferencesManager {
     this.setCheckboxValue('zotseek-pref-autoIndex', prefs.autoIndex);
     this.setCheckboxValue('zotseek-pref-mcpServer', prefs.mcpServer);
     this.setCheckboxValue('zotseek-pref-autoCompact', prefs.autoCompact);
+    this.setCheckboxValue('zotseek-pref-brief-enabled', prefs.briefEnabled);
 
     // Automatic compaction rides on Zotero.DB.onIdle, which only exists on
     // Zotero 10+. Disable the control rather than hide it, so the requirement
@@ -1079,6 +1216,7 @@ class PreferencesManager {
     };
 
     const saveChangedCloudSettings = async (): Promise<void> => {
+      briefService.cancelAll();
       const settings = saveCloudSettingsFromUI(doc);
       if (!settings) return;
       // Reflect verification invalidation before asynchronous model/UI refreshes.
@@ -1089,6 +1227,7 @@ class PreferencesManager {
           : getString('pref-cloudConnectionNotVerified'),
       );
       await refreshCloudDependents();
+      await renderBriefSettings(doc);
     };
 
     const cloudProvider = doc.getElementById('zotseek-cloud-provider') as HTMLSelectElement | null;
@@ -1114,16 +1253,20 @@ class PreferencesManager {
       }
       const preview = doc.getElementById('zotseek-cloud-key-preview');
       if (preview) preview.textContent = '';
+      briefService.cancelAll();
       setCloudProvider(newProvider);
       await renderCloudSettings(doc);
       await refreshCloudDependents();
+      await renderBriefSettings(doc);
     });
 
     const resetCloudSettings = doc.getElementById('zotseek-cloud-reset-settings');
     resetCloudSettings?.addEventListener('command', async () => {
+      briefService.cancelAll();
       resetCloudModelSettings();
       await renderCloudSettings(doc);
       await refreshCloudDependents();
+      await renderBriefSettings(doc);
     });
 
     const cloudMaxInputTokens = doc.getElementById(
@@ -1165,11 +1308,13 @@ class PreferencesManager {
 
     const cloudSetKey = doc.getElementById('zotseek-cloud-set-key');
     cloudSetKey?.addEventListener('command', async () => {
+      briefService.cancelAll();
       if (await promptAndSaveCloudApiKey(doc) &&
           getActiveModelSelectionId() === CLOUD_SLOT_SELECTION_ID) {
         embeddingPipeline.reset();
       }
       await populateModelMenu(doc);
+      await renderBriefSettings(doc);
     });
 
     const cloudRemoveKey = doc.getElementById('zotseek-cloud-remove-key');
@@ -1183,6 +1328,7 @@ class PreferencesManager {
       try {
         const provider = getCloudModelSettings().provider;
         const wasActive = getActiveModelSelectionId() === CLOUD_SLOT_SELECTION_ID;
+        briefService.cancelAll();
         await cloudCredentialStore.clear(provider);
         setCloudConnectionVerified(false, provider);
         if (wasActive) await embeddingPipeline.setModel(DEFAULT_MODEL_ID);
@@ -1190,6 +1336,7 @@ class PreferencesManager {
         await renderCloudSettings(doc);
         await populateModelMenu(doc);
         await renderCoverage(doc);
+        await renderBriefSettings(doc);
       } catch (error: any) {
         setCloudStatus(doc, getString('pref-cloudSecureStorageError', {
           error: error?.message || error,
@@ -1201,12 +1348,132 @@ class PreferencesManager {
     cloudTest?.addEventListener('command', async () => {
       await testCloudConnection(doc);
       await populateModelMenu(doc);
+      await renderBriefSettings(doc);
     });
 
     const cloudAutoIndex = doc.getElementById('zotseek-cloud-auto-index') as any;
     cloudAutoIndex?.addEventListener('command', () => {
       setCloudAutoIndexAllowed(cloudAutoIndex.checked === true);
       autoIndexManager.reload();
+    });
+
+    const briefEnabled = doc.getElementById('zotseek-pref-brief-enabled') as any;
+    briefEnabled?.addEventListener('command', async () => {
+      briefService.setEnabled(briefEnabled.checked === true);
+      if (briefEnabled.checked !== true) {
+        setBriefSettingsStatus(doc, getString('pref-brief-cancelling'));
+      }
+      await renderBriefSettings(doc);
+    });
+
+    const openCloudSettings = doc.getElementById('zotseek-brief-open-cloud-settings');
+    openCloudSettings?.addEventListener('command', () => {
+      const modelGroup = doc.getElementById('zotseek-group-models') as any;
+      const cloudGroup = doc.getElementById('zotseek-cloud-settings') as any;
+      if (modelGroup) modelGroup.open = true;
+      if (cloudGroup) cloudGroup.open = true;
+      cloudGroup?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+    });
+
+    for (const id of [
+      'zotseek-brief-model',
+      'zotseek-brief-max-input',
+      'zotseek-brief-max-output',
+      'zotseek-brief-thinking-enabled',
+    ]) {
+      doc.getElementById(id)?.addEventListener('change', async () => {
+        if (saveBriefSettingsFromUI(doc)) await renderBriefSettings(doc);
+      });
+    }
+
+    const briefTest = doc.getElementById('zotseek-brief-test') as any;
+    briefTest?.addEventListener('command', async () => {
+      if (!saveBriefSettingsFromUI(doc)) return;
+      if (!briefService.hasCurrentConsent()) {
+        const accepted = confirmCloudDisclosure(
+          Services.prompt,
+          doc.defaultView || null,
+          getString('pref-brief-consent-title'),
+          getString('pref-brief-consent-message'),
+        );
+        if (!accepted) return;
+        briefService.recordConsent();
+      }
+      briefTest.disabled = true;
+      setBriefStatus(doc, getString('pref-brief-testing'));
+      try {
+        await briefService.testConnection();
+        setBriefStatus(doc, getString('pref-brief-connection-verified'));
+      } catch (error: any) {
+        setBriefStatus(doc, getString('pref-brief-test-failed', {
+          error: error?.message || error,
+        }));
+      } finally {
+        await renderBriefSettings(doc);
+      }
+    });
+
+    const createPrompts = doc.getElementById('zotseek-brief-create-prompts');
+    createPrompts?.addEventListener('command', async () => {
+      try {
+        const status = await briefService.getStatus();
+        if (!status.enabled || !status.connectionVerified) {
+          setBriefStatus(doc, getString('pref-brief-connection-required'));
+          return;
+        }
+        const args = {
+          input: {
+            initialLanguage: String(
+              Services?.locale?.appLocaleAsBCP47 || (Z as any)?.locale || '',
+            ),
+          },
+          output: null,
+        };
+        (doc.defaultView as any)?.openDialog?.(
+          'chrome://zotseek/content/briefPromptWizard.xhtml',
+          '',
+          'chrome,dialog,modal,centerscreen,resizable=yes',
+          args,
+        );
+        await renderBriefSettings(doc);
+      } catch (error: any) {
+        setBriefSettingsStatus(doc, getString('pref-brief-status-failed', {
+          error: error?.message || error,
+        }));
+      }
+    });
+
+    for (const [id, slot] of [
+      ['zotseek-brief-import-standard', 'standard'],
+      ['zotseek-brief-import-review', 'review'],
+    ] as const) {
+      doc.getElementById(id)?.addEventListener('command', async () => {
+        try {
+          await pickBriefPromptFile(doc, slot);
+        } catch (error: any) {
+          setBriefSettingsStatus(doc, getString('pref-brief-import-failed', {
+            error: error?.message || error,
+          }));
+        }
+      });
+    }
+
+    const resetBriefPrompts = doc.getElementById('zotseek-brief-reset-prompts');
+    resetBriefPrompts?.addEventListener('command', async () => {
+      if (!Services.prompt.confirm(
+        doc.defaultView || null,
+        getString('pref-brief-reset-title'),
+        getString('pref-brief-reset-message'),
+      )) return;
+      try {
+        await briefService.resetPrompts();
+        await renderBriefSettings(doc);
+        setBriefSettingsStatus(doc, getString('pref-brief-reset-done'));
+      } catch (error: any) {
+        setBriefSettingsStatus(doc, getString('pref-brief-status-failed', {
+          error: error?.message || error,
+        }));
+      }
     });
 
     const defaultSearchMode = doc.getElementById('zotseek-pref-defaultSearchMode') as any;

@@ -261,4 +261,35 @@ describe('brief generation client', () => {
       /unexpected brief generation model/,
     );
   });
+
+  test('rejects a null response message as a deterministic protocol error', async () => {
+    let attempts = 0;
+    const client = new BriefGenerationClient(config, {
+      fetch: async () => {
+        attempts++;
+        return response(200, success({ choices: [{ finish_reason: 'stop', message: null }] }));
+      },
+    });
+    await assert.rejects(
+      () => client.generate([{ role: 'user', content: 'evidence' }]),
+      (error: any) => error instanceof BriefGenerationRequestError
+        && error.category === 'protocol'
+        && !/TypeError|null/.test(error.message),
+    );
+    assert.equal(attempts, 1);
+  });
+
+  test('does not echo an unapproved provider error code', async () => {
+    const client = new BriefGenerationClient(config, {
+      fetch: async () => response(400, {
+        error: { code: 'secret-key-not-for-logs <script>alert(1)</script>' },
+      }),
+    });
+    await assert.rejects(
+      () => client.generate([{ role: 'user', content: 'evidence' }], 0),
+      (error: any) => error instanceof BriefGenerationRequestError
+        && !error.message.includes('secret-key-not-for-logs')
+        && error.category === 'invalid-request',
+    );
+  });
 });

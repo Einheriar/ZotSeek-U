@@ -1,5 +1,7 @@
 /** Secure storage for Cloud BYOK credentials. Never falls back to prefs or plaintext files. */
 
+import { invalidateBriefConnectionVerification } from './brief-generation-config';
+
 declare const Components: any;
 declare const ChromeUtils: any;
 declare const Services: any;
@@ -8,6 +10,36 @@ declare const Zotero: any;
 const LOGIN_ORIGIN = 'chrome://zotseek';
 const LOGIN_REALM = 'ZotSeek Cloud Embedding API Key (encrypted)';
 const COMPAT_CIPHERTEXT_PREFIX = 'zotseek-oskeystore-v1:';
+const CREDENTIAL_REVISION_PREF = 'zotseek.cloud.credentialRevision';
+
+function credentialRevisionPref(provider: string): string {
+  return `${CREDENTIAL_REVISION_PREF}.${provider}`;
+}
+
+/** Non-secret monotonic revision used to invalidate stale async verification. */
+export function getCloudCredentialRevision(provider: string): number {
+  try {
+    const value = Number(Zotero?.Prefs?.get?.(credentialRevisionPref(provider), true));
+    return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function bumpCloudCredentialRevision(provider: string): void {
+  try {
+    Zotero?.Prefs?.set?.(
+      credentialRevisionPref(provider),
+      getCloudCredentialRevision(provider) + 1,
+      true,
+    );
+  } catch {
+    // Test environments and early startup may not expose preferences yet.
+  }
+  if (provider === 'alibaba-bailian') {
+    try { invalidateBriefConnectionVerification(); } catch { /* preferences unavailable */ }
+  }
+}
 
 /**
  * One encrypted login per provider. The login username is the stable provider
@@ -184,6 +216,10 @@ export class CloudCredentialStore {
       const replacement = env.makeLogin(username, encrypted);
       if (current.length > 0) await env.modify(current[0], replacement);
       else await env.add(replacement);
+      // The primary value is already changed at this point. Invalidate any
+      // verification before best-effort duplicate cleanup, so a cleanup error
+      // cannot leave an old key certified.
+      bumpCloudCredentialRevision(provider);
       // Remove stale duplicates only after the new value has been stored.
       for (const duplicate of current.slice(1)) await env.remove(duplicate);
     } catch (error: any) {
@@ -198,6 +234,7 @@ export class CloudCredentialStore {
       for (const login of await this.matchingLogins(cloudCredentialUsername(provider))) {
         await env.remove(login);
       }
+      bumpCloudCredentialRevision(provider);
     } catch {
       throw new CloudCredentialStorageError('Could not remove the Cloud API key from secure storage.');
     }

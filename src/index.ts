@@ -50,7 +50,10 @@ import {
   openIndexConfigChangePrompt,
   openIndexConfirmationPrompt,
 } from './ui/index-config-change-prompt';
-import { showServerModelConfigurationPromptIfNeeded } from './ui/server-model-prompt';
+import {
+  revealFileLocation,
+  showServerModelConfigurationPromptIfNeeded,
+} from './ui/server-model-prompt';
 import { identityFromItem, libraryKeyFromLocalID, localItemIDFromIdentity } from './core/identity-resolver';
 import {
   getActiveModel,
@@ -92,6 +95,7 @@ import './dev/suites/task-42b-server-registry';
 import './dev/suites/task-42c-server-client';
 import './dev/suites/task-45-cloud';
 import './dev/suites/task-47-z10-db-hooks';
+import './dev/suites/task-57-brief';
 import { collectCollectionItems } from './utils/collection-items';
 import {
   BulkIndexScope,
@@ -105,6 +109,43 @@ import {
   isItemExcludedFromIndex,
   readIndexExclusionPolicy,
 } from './utils/index-exclusion';
+import {
+  briefService,
+  type BriefGenerationRequest,
+  type BriefJobResult,
+} from './core/brief-service';
+import type { BriefSchedulerProgress } from './core/brief-generation-scheduler';
+
+/**
+ * Read live Child Notes through Zotero's item API.  A missing/invalid API is
+ * treated as an error rather than as "no notes", because generating another
+ * external brief in that state could silently bypass the duplicate safeguard.
+ */
+function hasBriefChildNotes(parent: any): boolean {
+  if (!parent || typeof parent.getNotes !== 'function') return false;
+  const noteIDs = parent.getNotes();
+  if (!Array.isArray(noteIDs)) throw new Error('Zotero returned an invalid Child Note list.');
+  const items = getZotero()?.Items;
+  if (!items || typeof items.get !== 'function') throw new Error('Zotero Note lookup is unavailable.');
+  return noteIDs.some((id: number) => {
+    const note = items.get(id);
+    return !!note && note.deleted !== true && note.isDeleted?.() !== true;
+  });
+}
+
+/**
+ * Localized labels for the known Brief skip-reason machine values.  Historical
+ * spellings (underscore vs hyphen) normalize to one label at this single UI
+ * boundary; an unknown reason falls back to the plain status label instead of
+ * leaking a raw locale key into the progress window.
+ */
+const BRIEF_SKIP_REASON_LABELS: Readonly<Record<string, string>> = {
+  insufficient_text: 'brief-skip-reason-insufficient-text',
+  'no-text': 'brief-skip-reason-insufficient-text',
+  existing_note: 'brief-skip-reason-existing-note',
+  'existing-note': 'brief-skip-reason-existing-note',
+  no_main_pdf: 'brief-skip-reason-no-main-pdf',
+};
 
 /**
  * Don't bother compacting zotseek.sqlite on idle below this much reclaimable
@@ -287,6 +328,10 @@ class ZotSeekPlugin {
   private serverBackgroundSkipLogged = false;
   private chunkStrategyNoticeShown = false;
   private collectionMenuRegistrationID: string | null = null;
+  private briefProgressWindow: StableProgressWindow | null = null;
+  private briefTitles = new Map<string, string>();
+  private briefItemMenuPopup: any = null;
+  private briefItemMenuShowing: (() => void) | null = null;
 
   // Hooks for bootstrap.js
   public hooks = {
@@ -348,11 +393,15 @@ class ZotSeekPlugin {
       'zotseek.cloud.connectionVerified': false, // legacy global state, read as the Bailian fallback
       'zotseek.cloud.autoIndex': false,
       'zotseek.cloud.consentVersion': 0, // legacy global consent, read as the Bailian fallback
+      'zotseek.brief.enabled': false,
       'zotseek.cloud.brief.modelName': 'deepseek-v4-flash-0731',
       'zotseek.cloud.brief.maxInputTokens': 1000000,
       'zotseek.cloud.brief.maxOutputTokens': 16384,
       'zotseek.cloud.brief.thinkingEnabled': true,
       'zotseek.cloud.brief.connectionVerified': false,
+      'zotseek.cloud.brief.connectionVerified.binding': '',
+      'zotseek.cloud.brief.configFingerprint': '',
+      'zotseek.cloud.brief.configRevision': 0,
       'zotseek.cloud.brief.consentVersion': 0,
       'zotseek.autoCompact': true, // Reclaim space in zotseek.sqlite during Zotero's idle maintenance (Zotero 10+)
       // Experimental: run embeddings on the GPU via WebGPU (Zotero 11+ only).
@@ -455,6 +504,7 @@ class ZotSeekPlugin {
     // Register context menu using Zotero 8 MenuManager API (preferred)
     // Falls back to XUL injection for older versions
     this.registerContextMenu();
+    briefService.setProgressListener(progress => this.onBriefProgress(progress));
 
     // Register preference pane
     this.registerPreferencePane();
@@ -989,6 +1039,17 @@ class ZotSeekPlugin {
               void this.onIndexCollection();
             },
           },
+          {
+            menuType: 'menuitem',
+            l10nID: 'zotseek-menuCollection-generateBriefs',
+            icon: 'chrome://zotseek/content/icons/icon-toolbar.svg',
+            onShowing: (_event: any, context: any) => {
+              context.setVisible(briefService.isEnabled());
+            },
+            onCommand: () => {
+              void this.onGenerateCollectionBriefs();
+            },
+          },
         ],
       });
 
@@ -1053,10 +1114,23 @@ class ZotSeekPlugin {
     removeFromIndexItem.setAttribute('label', getString('menu-removeFromIndex'));
     removeFromIndexItem.addEventListener('command', () => this.onRemoveFromIndex());
 
+    const generateBriefItem = doc.createXULElement('menuitem');
+    generateBriefItem.id = 'zotseek-generate-brief';
+    generateBriefItem.setAttribute('label', getString('menu-generateBrief'));
+    generateBriefItem.addEventListener('command', () => this.onGenerateSelectedBrief());
+    const updateBriefVisibility = () => {
+      generateBriefItem.hidden = !briefService.isEnabled();
+    };
+    updateBriefVisibility();
+    itemMenu.addEventListener('popupshowing', updateBriefVisibility);
+    this.briefItemMenuPopup = itemMenu;
+    this.briefItemMenuShowing = updateBriefVisibility;
+
     itemMenu.appendChild(separator);
     itemMenu.appendChild(findSimilarItem);
     itemMenu.appendChild(indexSelectedItem);
     itemMenu.appendChild(removeFromIndexItem);
+    itemMenu.appendChild(generateBriefItem);
 
     this.logger.info('Context menu registered successfully');
   }
@@ -1522,6 +1596,265 @@ class ZotSeekPlugin {
       ? { type: 'items', items: identities }
       : undefined;
     await this.indexItems(selectedItems, scope);
+  }
+
+  private async ensureBriefGenerationReady(): Promise<boolean> {
+    try {
+      const status = await briefService.getStatus();
+      if (!status.enabled) {
+        this.showAlert(getString('brief-disabled'));
+        return false;
+      }
+      // Manual jobs are FIFO and may accept another distinct item while the
+      // current item is running.  Collection and prompt jobs remain mutually
+      // exclusive with every new entry point.
+      if (status.busy && status.busyMode !== 'manual') {
+        this.showAlert(getString('brief-busy'));
+        return false;
+      }
+      if (!status.providerSupported || !status.hasCredential || !status.connectionVerified) {
+        this.showAlert(getString('brief-connection-required'));
+        return false;
+      }
+      if (!status.consentCurrent) {
+        const accepted = Services.prompt.confirm(
+          getZotero()?.getMainWindow() || null,
+          getString('pref-brief-consent-title'),
+          getString('pref-brief-consent-message'),
+        );
+        if (!accepted) return false;
+        briefService.recordConsent();
+      }
+      return true;
+    } catch (error: any) {
+      this.showAlert(getString('brief-start-failed', { error: error?.message || error }));
+      return false;
+    }
+  }
+
+  private resolveBriefSelection(item: any): {
+    parent: any;
+    target: { parent?: any; attachment?: any };
+  } | null {
+    const Z = getZotero();
+    const feedItem = typeof item?.isFeedItem === 'function'
+      ? item.isFeedItem() === true
+      : item?.isFeedItem === true;
+    if (!item || item.deleted === true || item.isDeleted?.() === true
+        || feedItem
+        || item.inTrash === true) return null;
+    if (item.isRegularItem?.() === true) {
+      return { parent: item, target: { parent: item } };
+    }
+    if (item.isAttachment?.() === true && item.isPDFAttachment?.() === true) {
+      const parentID = Number(item.parentID ?? item.parentItemID);
+      const parent = Number.isSafeInteger(parentID) && parentID > 0
+        ? Z?.Items?.get?.(parentID)
+        : null;
+      const parentFeed = typeof parent?.isFeedItem === 'function'
+        ? parent.isFeedItem() === true
+        : parent?.isFeedItem === true;
+      if (parent?.isRegularItem?.() !== true || parent.deleted === true
+          || parent.isDeleted?.() === true || parentFeed) return null;
+      return { parent, target: { attachment: item } };
+    }
+    return null;
+  }
+
+  private startBriefProgress(titles: Map<string, string>): void {
+    // Manual FIFO entries share one progress window.  Replacing it for every
+    // click would orphan the first task's window and lose its title mapping.
+    if (this.briefProgressWindow) {
+      for (const [key, title] of titles) this.briefTitles.set(key, title);
+      return;
+    }
+    this.briefTitles = new Map(titles);
+    let progressWindow: StableProgressWindow;
+    const cancel = () => {
+      briefService.cancelAll();
+      progressWindow.updateProgress(getString('brief-cancelling'), null);
+    };
+    progressWindow = new StableProgressWindow({
+      title: getString('brief-progress-title'),
+      closeOnClick: false,
+      cancelCallback: cancel,
+      cancelOnWindowClose: true,
+      stopCallback: () => {
+        cancel();
+        return true;
+      },
+      stopLabel: getString('brief-cancel-task'),
+      stoppingLabel: getString('brief-cancelling'),
+      stopTooltip: getString('brief-cancel-tooltip'),
+    });
+    this.briefProgressWindow = progressWindow;
+  }
+
+  private onBriefProgress(progress: BriefSchedulerProgress): void {
+    const window = this.briefProgressWindow;
+    if (!window) return;
+    const percent = progress.total > 0
+      ? Math.round((progress.completed / progress.total) * 100)
+      : 0;
+    const active = progress.activeKeys.slice(0, 3).map(key =>
+      getString('brief-progress-active', { title: this.briefTitles.get(key) || key })
+    );
+    window.updateProgress(
+      getString('brief-progress-summary', {
+        completed: progress.completed,
+        total: progress.total,
+        success: progress.counts.success,
+        failed: progress.counts.failed,
+        skipped: progress.counts.skipped,
+        cancelled: progress.counts.cancelled,
+      }),
+      percent,
+      active,
+    );
+    if (progress.latest) {
+      const title = this.briefTitles.get(progress.latest.key) || progress.latest.key;
+      const status = getString(`brief-status-${progress.latest.status}`);
+      const reasonKey = progress.latest.status === 'skipped' && progress.latest.reason
+        ? BRIEF_SKIP_REASON_LABELS[progress.latest.reason]
+        : undefined;
+      window.addCheckpointLine(reasonKey
+        ? getString('brief-progress-latest-with-reason', { title, status, reason: getString(reasonKey) })
+        : getString('brief-progress-latest', { title, status }));
+    }
+    if (progress.total > 0 && progress.completed === progress.total
+        && progress.activeKeys.length === 0 && progress.queuedKeys.length === 0) {
+      window.complete(getString('brief-progress-complete'), true);
+      this.briefProgressWindow = null;
+      this.briefTitles.clear();
+    }
+  }
+
+  private showBriefSummary(results: readonly BriefJobResult[]): void {
+    const counts = { success: 0, failed: 0, skipped: 0, cancelled: 0 };
+    for (const result of results) counts[result.status]++;
+    this.showAlert(getString('brief-summary-message', counts), getString('brief-summary-title'));
+  }
+
+  private async onGenerateSelectedBrief(): Promise<void> {
+    const selected = this.zoteroAPI.getSelectedItems();
+    if (selected.length !== 1) {
+      this.showAlert(getString('brief-select-one'));
+      return;
+    }
+    const resolved = this.resolveBriefSelection(selected[0]);
+    if (!resolved) {
+      this.showAlert(getString('brief-invalid-selection'));
+      return;
+    }
+    const identity = identityFromItem(resolved.parent);
+    if (!identity) {
+      this.showAlert(getString('brief-invalid-selection'));
+      return;
+    }
+    let hasNotes = false;
+    try {
+      hasNotes = hasBriefChildNotes(resolved.parent);
+    } catch (error: any) {
+      this.showAlert(getString('brief-start-failed', { error: error?.message || error }));
+      return;
+    }
+    if (hasNotes && !Services.prompt.confirm(
+      getZotero()?.getMainWindow() || null,
+      getString('brief-existing-note-title'),
+      getString('brief-existing-note-message'),
+    )) return;
+    if (!await this.ensureBriefGenerationReady()) return;
+
+    const key = `${identity.libraryKey}|${identity.itemKey}`;
+    const title = resolved.parent.getField?.('title') || identity.itemKey;
+    this.startBriefProgress(new Map([[key, title]]));
+    try {
+      const result = await briefService.enqueueManual({
+        key,
+        target: resolved.target,
+        allowExistingNotes: hasNotes,
+      });
+      this.showBriefSummary([result]);
+    } catch (error: any) {
+      // A duplicate/manual-queue race must not close the window belonging to
+      // an already-running FIFO task.
+      if (briefService.getBusyMode() !== 'manual') {
+        this.briefProgressWindow?.error(getString('brief-start-failed', {
+          error: error?.message || error,
+        }), true);
+        this.briefProgressWindow = null;
+      }
+      this.showAlert(getString('brief-start-failed', { error: error?.message || error }));
+    }
+  }
+
+  private async onGenerateCollectionBriefs(): Promise<void> {
+    const Z = getZotero();
+    const pane = Z?.getActiveZoteroPane?.();
+    const collections: any[] = typeof pane?.getSelectedCollections === 'function'
+      ? (pane.getSelectedCollections() || [])
+      : [pane?.getSelectedCollection?.()].filter(Boolean);
+    if (collections.length === 0) {
+      this.showAlert(getString('brief-select-collection'));
+      return;
+    }
+    try {
+      const items = await collectCollectionItems(
+        this.zoteroAPI,
+        collections.map(collection => ({
+          libraryId: collection.libraryID,
+          collectionId: collection.id,
+        })),
+      );
+      const requests: BriefGenerationRequest[] = [];
+      const titles = new Map<string, string>();
+      const stableSeen = new Set<string>();
+      let billableCount = 0;
+      for (const item of items) {
+        const resolved = this.resolveBriefSelection(item);
+        if (!resolved || resolved.target.attachment) continue;
+        const identity = identityFromItem(resolved.parent);
+        if (!identity) continue;
+        const key = `${identity.libraryKey}|${identity.itemKey}`;
+        if (stableSeen.has(key)) continue;
+        stableSeen.add(key);
+        const existing = hasBriefChildNotes(resolved.parent);
+        requests.push({
+          key,
+          target: { parent: resolved.parent },
+          ...(existing ? { skipReason: 'existing_note' } : {}),
+        });
+        if (!existing) billableCount++;
+        titles.set(key, resolved.parent.getField?.('title') || identity.itemKey);
+      }
+      if (requests.length === 0) {
+        this.showAlert(getString('brief-no-eligible'));
+        return;
+      }
+      if (billableCount === 0) {
+        this.showBriefSummary(requests.map(request => ({
+          key: request.key,
+          status: 'skipped',
+          reason: 'existing_note',
+        })));
+        return;
+      }
+      if (!await this.ensureBriefGenerationReady()) return;
+      if (!Services.prompt.confirm(
+        Z?.getMainWindow?.() || null,
+        getString('brief-collection-confirm-title'),
+        getString('brief-collection-confirm-message', { count: billableCount }),
+      )) return;
+      this.startBriefProgress(titles);
+      const results = await briefService.runCollection(requests);
+      this.showBriefSummary(results);
+    } catch (error: any) {
+      this.briefProgressWindow?.error(getString('brief-start-failed', {
+        error: error?.message || error,
+      }), true);
+      this.briefProgressWindow = null;
+      this.showAlert(getString('brief-start-failed', { error: error?.message || error }));
+    }
   }
 
   /**
@@ -2879,6 +3212,13 @@ class ZotSeekPlugin {
   async onShutdown(): Promise<void> {
     this.logger.info('Shutting down plugin');
 
+    // Stop billable Brief work before tearing down windows and shared state.
+    briefService.cancelAll();
+    await briefService.waitForIdle();
+    briefService.setProgressListener(null);
+    this.briefProgressWindow?.close();
+    this.briefProgressWindow = null;
+
     // Cancel a scheduled/running startup reconciliation pass.
     autoIndexManager.stop();
     indexFreshnessNotifier.stop();
@@ -2902,6 +3242,17 @@ class ZotSeekPlugin {
       Z.MenuManager.unregisterMenu(this.collectionMenuRegistrationID);
       this.collectionMenuRegistrationID = null;
     }
+
+    if (this.briefItemMenuPopup && this.briefItemMenuShowing) {
+      try {
+        this.briefItemMenuPopup.removeEventListener(
+          'popupshowing',
+          this.briefItemMenuShowing,
+        );
+      } catch { /* main window may already be gone */ }
+    }
+    this.briefItemMenuPopup = null;
+    this.briefItemMenuShowing = null;
 
     // Unregister Tools menu and reader toolbar
     toolbarButton.unregisterToolsMenu();
@@ -2927,6 +3278,7 @@ class ZotSeekPlugin {
       'zotseek-index-collection',
       'zotseek-index-library',
       'zotseek-remove-from-index',
+      'zotseek-generate-brief',
       'zotseek-separator',
     ];
     for (const id of ids) {
@@ -3005,6 +3357,49 @@ class ZotSeekPlugin {
     reindexForActiveModel: () => this.reindexForActiveModel(),
     checkForIndexUpdates: () => this.checkForIndexUpdates(),
     refreshChunkStrategyState: (showNotice?: boolean) => this.refreshChunkStrategyState(showNotice),
+    getBriefStatus: () => briefService.getStatus(),
+    testBriefConnection: () => briefService.testConnection(),
+    cancelBriefJobs: () => briefService.cancelAll(),
+    customizeBriefPrompts: async (form: any) => {
+      const result = await briefService.customizePrompts(form);
+      const downloadRecords = result.save?.downloads?.files
+        ? Object.values(result.save.downloads.files) as any[]
+        : [];
+      const files = downloadRecords
+        .map((file: any) => ({ path: file.path }))
+        .filter(file => typeof file.path === 'string' && file.path.length > 0);
+      const outputPath = downloadRecords.find(file => file.status === 'downloaded'
+        && typeof file.path === 'string' && file.path.length > 0)?.path
+        || files[0]?.path;
+      const publicSave = result.save
+        ? {
+            status: result.save.status,
+            downloads: result.save.downloads,
+            ...(result.save.publication ? {
+              publication: {
+                status: result.save.publication.status,
+                version: result.save.publication.version,
+                error: result.save.publication.error,
+              },
+            } : {}),
+          }
+        : undefined;
+      return {
+        correctedProtocol: result.correctedProtocol,
+        ...(publicSave ? { save: publicSave } : {}),
+        // The file picker helper accepts a file path and can reveal its
+        // containing folder.  Returning the directory here made the wrapper
+        // point one level above the actual downloaded prompt files.
+        outputPath,
+        files,
+      };
+    },
+    cancelBriefPromptCustomization: () => briefService.cancelPromptCustomization(),
+    openBriefPromptDownloadLocation: (path: string) => {
+      if (!revealFileLocation(path)) {
+        throw new Error('Could not reveal the prompt download location.');
+      }
+    },
   };
 }
 

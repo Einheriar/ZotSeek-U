@@ -12,6 +12,10 @@ export const BRIEF_CONSENT_VERSION = 1;
 
 export const BRIEF_CONNECTION_VERIFIED_PREF =
   'zotseek.cloud.brief.connectionVerified';
+export const BRIEF_CONFIG_FINGERPRINT_PREF =
+  'zotseek.cloud.brief.configFingerprint';
+export const BRIEF_CONFIG_REVISION_PREF =
+  'zotseek.cloud.brief.configRevision';
 
 const MODEL_NAME_PREF = 'zotseek.cloud.brief.modelName';
 const MAX_INPUT_TOKENS_PREF = 'zotseek.cloud.brief.maxInputTokens';
@@ -33,6 +37,26 @@ export interface BriefGenerationSettingsInput {
   thinkingEnabled: boolean;
 }
 
+export type BriefGenerationConfigStatus = 'default' | 'valid' | 'invalid';
+
+export interface BriefGenerationConfigSnapshot {
+  settings: BriefGenerationSettings;
+  status: BriefGenerationConfigStatus;
+  /** A non-secret digest of the generation settings and protocol version. */
+  fingerprint: string;
+  /** Monotonic local revision; callers may bind async verification to it. */
+  revision: number;
+  error?: string;
+}
+
+export interface BriefConnectionVerificationBinding {
+  configFingerprint: string;
+  configRevision: number;
+  /** Optional caller-owned, non-secret credential/endpoint revision. */
+  credentialRevision?: string | number;
+  endpointFingerprint?: string;
+}
+
 export class BriefGenerationConfigError extends Error {
   readonly code = 'BRIEF_GENERATION_CONFIG_ERROR' as const;
 
@@ -46,19 +70,8 @@ function readPref(key: string): unknown {
   try { return Zotero.Prefs.get(key, true); } catch { return undefined; }
 }
 
-function storedString(key: string, fallback: string): string {
-  const value = readPref(key);
-  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
-}
-
-function storedPositiveInteger(key: string, fallback: number): number {
-  const value = Number(readPref(key));
-  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
-}
-
-function storedBoolean(key: string, fallback: boolean): boolean {
-  const value = readPref(key);
-  return typeof value === 'boolean' ? value : fallback;
+function hasPref(key: string): boolean {
+  return readPref(key) !== undefined;
 }
 
 export function validateBriefGenerationSettings(
@@ -83,11 +96,8 @@ export function validateBriefGenerationSettings(
       `Brief generation maximum output tokens must be at least ${BRIEF_CLASSIFIER_MAX_COMPLETION_TOKENS}.`,
     );
   }
-  if (input.maxOutputTokens >= input.maxInputTokens) {
-    throw new BriefGenerationConfigError(
-      'Brief generation maximum output tokens must be smaller than the input budget.',
-    );
-  }
+  // Provider contracts may publish separate prompt-input and completion
+  // ceilings. Their relative sizes are not a reliable context-window check.
   if (typeof input.thinkingEnabled !== 'boolean') {
     throw new BriefGenerationConfigError('Brief generation thinking mode must be a boolean.');
   }
@@ -99,46 +109,184 @@ export function validateBriefGenerationSettings(
   };
 }
 
-export function getBriefGenerationSettings(): BriefGenerationSettings {
-  const stored = {
-    modelName: storedString(MODEL_NAME_PREF, BRIEF_MODEL_NAME),
-    maxInputTokens: storedPositiveInteger(MAX_INPUT_TOKENS_PREF, BRIEF_MAX_INPUT_TOKENS),
-    maxOutputTokens: storedPositiveInteger(MAX_OUTPUT_TOKENS_PREF, BRIEF_MAX_OUTPUT_TOKENS),
-    thinkingEnabled: storedBoolean(THINKING_ENABLED_PREF, BRIEF_THINKING_ENABLED),
+const DEFAULT_BRIEF_SETTINGS: BriefGenerationSettings = Object.freeze({
+  modelName: BRIEF_MODEL_NAME,
+  maxInputTokens: BRIEF_MAX_INPUT_TOKENS,
+  maxOutputTokens: BRIEF_MAX_OUTPUT_TOKENS,
+  thinkingEnabled: BRIEF_THINKING_ENABLED,
+});
+
+function briefFingerprint(settings: BriefGenerationSettings): string {
+  // FNV-1a is sufficient here: this is an equality binding, not a secret hash.
+  const input = `brief-config-v${BRIEF_PIPELINE_VERSION}:${JSON.stringify(settings)}`;
+  let hash = 2166136261;
+  for (let index = 0; index < input.length; index++) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+function storedRevision(): number {
+  const value = Number(readPref(BRIEF_CONFIG_REVISION_PREF));
+  return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+function nextRevision(): number {
+  const revision = storedRevision() + 1;
+  Zotero.Prefs.set(BRIEF_CONFIG_REVISION_PREF, revision, true);
+  return revision;
+}
+
+export function getBriefGenerationConfigSnapshot(): BriefGenerationConfigSnapshot {
+  const anyStored = [
+    MODEL_NAME_PREF,
+    MAX_INPUT_TOKENS_PREF,
+    MAX_OUTPUT_TOKENS_PREF,
+    THINKING_ENABLED_PREF,
+  ].some(hasPref);
+  const raw = {
+    modelName: readPref(MODEL_NAME_PREF),
+    maxInputTokens: readPref(MAX_INPUT_TOKENS_PREF),
+    maxOutputTokens: readPref(MAX_OUTPUT_TOKENS_PREF),
+    thinkingEnabled: readPref(THINKING_ENABLED_PREF),
   };
-  try {
-    return validateBriefGenerationSettings(stored);
-  } catch {
+  if (!anyStored) {
     return {
-      modelName: BRIEF_MODEL_NAME,
-      maxInputTokens: BRIEF_MAX_INPUT_TOKENS,
-      maxOutputTokens: BRIEF_MAX_OUTPUT_TOKENS,
-      thinkingEnabled: BRIEF_THINKING_ENABLED,
+      settings: DEFAULT_BRIEF_SETTINGS,
+      status: 'default',
+      fingerprint: briefFingerprint(DEFAULT_BRIEF_SETTINGS),
+      revision: storedRevision(),
     };
   }
+  try {
+    const settings = validateBriefGenerationSettings(raw as BriefGenerationSettingsInput);
+    return {
+      settings,
+      status: 'valid',
+      fingerprint: briefFingerprint(settings),
+      revision: storedRevision(),
+    };
+  } catch (error: any) {
+    const message = error instanceof BriefGenerationConfigError
+      ? error.message
+      : 'Stored brief generation configuration is invalid.';
+    // A damaged value must never preserve an earlier successful verification.
+    setBriefConnectionVerified(false);
+    return {
+      settings: DEFAULT_BRIEF_SETTINGS,
+      status: 'invalid',
+      fingerprint: briefFingerprint(DEFAULT_BRIEF_SETTINGS),
+      revision: storedRevision(),
+      error: message,
+    };
+  }
+}
+
+export function getBriefGenerationSettings(): BriefGenerationSettings {
+  return getBriefGenerationConfigSnapshot().settings;
 }
 
 export function setBriefGenerationSettings(
   input: BriefGenerationSettingsInput,
 ): BriefGenerationSettings {
-  const previous = getBriefGenerationSettings();
+  const previousSnapshot = getBriefGenerationConfigSnapshot();
   const settings = validateBriefGenerationSettings(input);
   Zotero.Prefs.set(MODEL_NAME_PREF, settings.modelName, true);
   Zotero.Prefs.set(MAX_INPUT_TOKENS_PREF, settings.maxInputTokens, true);
   Zotero.Prefs.set(MAX_OUTPUT_TOKENS_PREF, settings.maxOutputTokens, true);
   Zotero.Prefs.set(THINKING_ENABLED_PREF, settings.thinkingEnabled, true);
-  if (JSON.stringify(previous) !== JSON.stringify(settings)) {
+  if (previousSnapshot.status !== 'valid'
+      || JSON.stringify(previousSnapshot.settings) !== JSON.stringify(settings)) {
+    nextRevision();
     setBriefConnectionVerified(false);
   }
   return settings;
 }
 
-export function isBriefConnectionVerified(): boolean {
-  try { return Zotero.Prefs.get(BRIEF_CONNECTION_VERIFIED_PREF, true) === true; } catch { return false; }
+export function getBriefGenerationConfigFingerprint(): string {
+  return getBriefGenerationConfigSnapshot().fingerprint;
 }
 
-export function setBriefConnectionVerified(verified: boolean): void {
+export function getBriefGenerationConfigRevision(): number {
+  return getBriefGenerationConfigSnapshot().revision;
+}
+
+export function isBriefConnectionVerified(
+  expected?: Partial<BriefConnectionVerificationBinding>,
+): boolean {
+  try {
+    if (Zotero.Prefs.get(BRIEF_CONNECTION_VERIFIED_PREF, true) !== true) return false;
+    const snapshot = getBriefGenerationConfigSnapshot();
+    if (snapshot.status === 'invalid') return false;
+    const storedFingerprint = Zotero.Prefs.get(BRIEF_CONFIG_FINGERPRINT_PREF, true);
+    const storedConfigRevisionRaw = Number(Zotero.Prefs.get(BRIEF_CONFIG_REVISION_PREF, true));
+    const storedConfigRevision = Number.isSafeInteger(storedConfigRevisionRaw)
+      ? storedConfigRevisionRaw : snapshot.revision;
+    if (storedFingerprint !== snapshot.fingerprint || storedConfigRevision !== snapshot.revision) {
+      return false;
+    }
+    const binding = readVerificationBinding();
+    if (!binding || binding.configFingerprint !== snapshot.fingerprint
+        || binding.configRevision !== snapshot.revision) return false;
+    if (expected?.configFingerprint !== undefined && binding?.configFingerprint !== expected.configFingerprint) return false;
+    if (expected?.configRevision !== undefined && binding?.configRevision !== expected.configRevision) return false;
+    if (expected?.credentialRevision !== undefined && binding?.credentialRevision !== expected.credentialRevision) return false;
+    if (expected?.endpointFingerprint !== undefined && binding?.endpointFingerprint !== expected.endpointFingerprint) return false;
+    return true;
+  } catch { return false; }
+}
+
+function readVerificationBinding(): BriefConnectionVerificationBinding | null {
+  const value = readPref(`${BRIEF_CONNECTION_VERIFIED_PREF}.binding`);
+  if (typeof value !== 'string' || !value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object'
+      ? parsed as BriefConnectionVerificationBinding
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function getBriefConnectionVerificationBinding(): BriefConnectionVerificationBinding | null {
+  return readVerificationBinding();
+}
+
+export function setBriefConnectionVerified(
+  verified: boolean,
+  binding?: Partial<BriefConnectionVerificationBinding>,
+): void {
   Zotero.Prefs.set(BRIEF_CONNECTION_VERIFIED_PREF, verified === true, true);
+  if (verified) {
+    const snapshot = getBriefGenerationConfigSnapshot();
+    const complete: BriefConnectionVerificationBinding = {
+      configFingerprint: binding?.configFingerprint || snapshot.fingerprint,
+      configRevision: binding?.configRevision ?? snapshot.revision,
+      ...(binding?.credentialRevision !== undefined
+        ? { credentialRevision: binding.credentialRevision } : {}),
+      ...(binding?.endpointFingerprint !== undefined
+        ? { endpointFingerprint: binding.endpointFingerprint } : {}),
+    };
+    Zotero.Prefs.set(BRIEF_CONFIG_FINGERPRINT_PREF, complete.configFingerprint, true);
+    if (!Number.isSafeInteger(Number(readPref(BRIEF_CONFIG_REVISION_PREF)))) {
+      Zotero.Prefs.set(BRIEF_CONFIG_REVISION_PREF, snapshot.revision, true);
+    }
+    Zotero.Prefs.set(
+      `${BRIEF_CONNECTION_VERIFIED_PREF}.binding`,
+      JSON.stringify(complete),
+      true,
+    );
+  } else {
+    Zotero.Prefs.set(BRIEF_CONFIG_FINGERPRINT_PREF, '', true);
+    Zotero.Prefs.set(`${BRIEF_CONNECTION_VERIFIED_PREF}.binding`, '', true);
+  }
+}
+
+/** Invalidate verification when a caller-owned credential or endpoint changes. */
+export function invalidateBriefConnectionVerification(): void {
+  setBriefConnectionVerified(false);
 }
 
 export function hasCurrentBriefConsent(): boolean {

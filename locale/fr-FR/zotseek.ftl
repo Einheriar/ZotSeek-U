@@ -10,7 +10,7 @@ zotseek-pref-localServerState = Local Server ({ $state })
 zotseek-pref-cloudSlotReady = Cloud ({ $model })
 zotseek-pref-cloudSlotSetup = Cloud (SETUP REQUIRED)
 zotseek-pref-cloudTitle = Cloud Model
-zotseek-pref-cloudDesc = Configure a BYOK Cloud embedding provider. Indexed content and semantic queries are sent to the provider and may incur provider charges. ZotSeek does not charge or receive any share of those fees.
+zotseek-pref-cloudDesc = Configurez un service d'embeddings Cloud avec BYOK. Le contenu indexé et les requêtes sémantiques sont envoyés au fournisseur ; Zotseek-U ne facture rien et ne perçoit aucune part de ces frais. L'indexation et la recherche nécessitent une connexion Internet et consomment le quota API du fournisseur, ce qui peut entraîner des frais ; consultez sa documentation tarifaire pour plus de détails.
 zotseek-pref-cloudProvider = Provider
 zotseek-pref-cloudBaseUrl = Base URL
 zotseek-pref-cloudModel = Model
@@ -55,6 +55,8 @@ zotseek-pref-cloudBriefSwitchTitle = Literature brief generation will be unavail
 zotseek-pref-cloudBriefSwitchMessage = Literature brief generation currently supports only Alibaba Bailian. If you switch providers, the brief feature will be unavailable and its connection state will be cleared. Switch anyway?
 zotseek-pref-cloudRebuildTitle = Index remaining papers with Cloud?
 zotseek-pref-cloudRebuildMessage = This will send content from { $count } eligible papers to the configured Cloud provider. Provider charges may apply. Continue?
+zotseek-pref-modelBackfillTitle = Indexer les documents restants avec le modèle actuel ?
+zotseek-pref-modelBackfillMessage = Ce modèle couvre { $covered } documents sur { $total }. Indexer maintenant les { $missing } documents restants en arrière-plan ? Vous pouvez continuer à utiliser Zotero pendant l’indexation.
 ## Context menu items
 
 zotseek-menu-findSimilar = Trouver des documents similaires
@@ -67,12 +69,12 @@ zotseek-menu-findRelated = Trouver des documents associés
 
 ## Toolbar
 
-zotseek-toolbar-openZotSeek = Ouvrir ZotSeek
+zotseek-toolbar-openZotSeek = Ouvrir Zotseek-U
 zotseek-toolbar-findSimilar = Trouver des documents similaires
 
 ## Preference pane
 
-zotseek-pref-title = ZotSeek
+zotseek-pref-title = Zotseek-U
 zotseek-pref-indexStatistics = Statistiques de l’index
 zotseek-pref-papersIndexed = Documents indexés
 zotseek-pref-totalChunks = Segments totaux
@@ -95,18 +97,18 @@ zotseek-pref-indexingMode = Mode d’indexation
 zotseek-pref-abstractOnly = Résumés uniquement
 zotseek-pref-abstractOnlyMenu =
     .label = Résumés uniquement (plus rapide)
-zotseek-pref-abstractSpeed = Rapide • environ 1 segment par document
-zotseek-pref-abstractDesc = Indexe le titre, les résumés d’au moins 50 caractères et les étiquettes ne commençant pas par #.
+zotseek-pref-abstractSpeed = Rapide · environ 1 segment par document
+zotseek-pref-abstractDesc = Indexe le titre, le résumé et les étiquettes ne commençant pas par #.
 zotseek-pref-notes = Métadonnées + notes
 zotseek-pref-notesMenu =
     .label = Métadonnées + notes (sans traitement des PDF)
-zotseek-pref-notesSpeed = Ciblé • aucun traitement des PDF
-zotseek-pref-notesDesc = Indexe les mêmes métadonnées et les notes enfants ; les étiquettes commençant par # sont exclues.
+zotseek-pref-notesSpeed = Ciblé · aucun traitement des PDF
+zotseek-pref-notesDesc = Indexe les mêmes métadonnées et les notes enfants.
 zotseek-pref-fullPaper = Document complet
 zotseek-pref-fullPaperMenu =
     .label = Document complet (plus approfondi)
-zotseek-pref-fullSpeed = Approfondi • notes + environ 1 à 2 segments par page PDF
-zotseek-pref-fullDesc = Indexe les mêmes métadonnées, les notes enfants et le PDF complet avec numéros de page ; les étiquettes commençant par # sont exclues.
+zotseek-pref-fullSpeed = Approfondi · Résumé + notes + PDF
+zotseek-pref-fullDesc = Indexe les mêmes métadonnées, les notes enfants et le PDF complet avec numéros de page.
 zotseek-pref-mcpServer = Accès des agents IA
 zotseek-pref-mcpServerLabel =
     .label = Autoriser les agents IA à rechercher et lire votre bibliothèque (serveur MCP local)
@@ -203,9 +205,9 @@ zotseek-pref-maxChunks = Nombre maximal de segments par document
 zotseek-pref-maxChunksDesc = Limite pour les documents longs (1–200)
 zotseek-pref-excludeBooks =
     .label = Exclure les livres de l’indexation
-zotseek-pref-excludeBooksDesc = Les livres ne seront pas indexés. Les index ZotSeek existants des livres seront supprimés lors de la prochaine vérification de l’index.
+zotseek-pref-excludeBooksDesc = Les livres ne seront pas indexés. Les index Zotseek-U existants des livres seront supprimés lors de la prochaine vérification de l’index.
 zotseek-pref-excludeTag = Étiquette à exclure
-zotseek-pref-excludeTagDesc = Les éléments portant cette étiquette ne seront pas indexés. Les index ZotSeek existants des éléments correspondants seront supprimés lors de la prochaine vérification de l’index. Laissez vide pour désactiver.
+zotseek-pref-excludeTagDesc = Les éléments portant cette étiquette ne seront pas indexés. Les index Zotseek-U existants des éléments correspondants seront supprimés lors de la prochaine vérification de l’index. Laissez vide pour désactiver.
 zotseek-pref-actions = Actions
 zotseek-pref-maintenanceRepair = Maintenance et réparation
 zotseek-pref-updateIndex =
@@ -244,7 +246,7 @@ zotseek-pref-healthPurgeFailedTitle = Échec de la purge
 zotseek-search-search =
     .value = Rechercher :
 zotseek-search-placeholder =
-    .placeholder = Saisissez votre requête (recherche automatique pendant la saisie)…
+    .placeholder = Saisissez votre requête (recherche automatique pendant la saisie)… | Ex. : Articles reliant un stress parental élevé à une moindre synchronie cérébrale parent-enfant
 zotseek-search-addQuery =
     .label = +
     .tooltiptext = Ajouter une requête pour une combinaison ET/OU
@@ -511,3 +513,117 @@ zotseek-pref-manageModelsTitle = Gérer les modèles installés
 zotseek-indexing-cloudRebuildConfirmTitle = Rebuild Cloud index?
 zotseek-indexing-cloudRebuildConfirmMsg = About { $count } papers in { $scope } will be sent to the configured Cloud provider and may incur provider charges. Existing complete indexes are kept until each paper is replaced successfully. Continue?
 zotseek-indexing-cloudStrategyRebuildConfirmMsg = The current Cloud index uses an older chunk strategy. Its existing embeddings must be deleted before about { $count } papers in { $scope } are sent again, which may incur provider charges. Other model indexes are kept. Continue?
+
+## Paramètres des synthèses bibliographiques
+
+zotseek-prefs-group-brief = Synthèses bibliographiques (Expérimental)
+zotseek-pref-brief-title = Synthèses bibliographiques
+zotseek-pref-brief-enabled =
+    .label = Activer les synthèses bibliographiques
+zotseek-pref-brief-enabled-desc = Générer à la demande une synthèse bibliographique expérimentale à partir du PDF d’un article.
+zotseek-pref-brief-provider = Fournisseur partagé
+zotseek-pref-brief-open-cloud-settings = Configurer les identifiants
+zotseek-pref-brief-model = Modèle de génération
+zotseek-pref-brief-test = Tester la connexion
+zotseek-pref-brief-create-prompts = Créer mes prompts de synthèse…
+zotseek-pref-brief-create-prompts-desc = Créer des prompts associés pour les articles standard et les articles de revue ou de théorie.
+zotseek-pref-brief-standard-prompt = Prompt pour article standard
+zotseek-pref-brief-review-prompt = Prompt pour revue/théorie
+zotseek-pref-brief-advanced = Avancé
+zotseek-pref-brief-import-standard = Importer le prompt standard…
+zotseek-pref-brief-import-review = Importer le prompt de revue…
+zotseek-pref-brief-reset-prompts = Restaurer les prompts intégrés
+zotseek-pref-brief-max-input = Nombre maximal de tokens en entrée
+zotseek-pref-brief-max-input-desc = Budget d’entrée du modèle de génération.
+zotseek-pref-brief-max-output = Nombre maximal de tokens en sortie
+zotseek-pref-brief-max-output-desc = Budget de sortie réservé à la génération.
+zotseek-pref-brief-thinking-enabled =
+    .label = Activer le raisonnement étendu
+
+## Assistant de prompts pour les synthèses bibliographiques
+
+zotseek-brief-prompt-wizard-title = Personnaliser les prompts de synthèse bibliographique
+zotseek-brief-prompt-wizard-notice = Décrivez vos axes de lecture et vos préférences. ZotSeek générera des prompts associés pour les articles standard et les articles de revue ou de théorie.
+zotseek-brief-prompt-wizard-domain-label = Sujet ou domaine de recherche
+zotseek-brief-prompt-wizard-language-label = Langue de sortie
+zotseek-brief-prompt-wizard-habits-label = Préférences de lecture et d’analyse
+zotseek-brief-prompt-wizard-status-idle = Prêt à générer les prompts.
+zotseek-brief-prompt-wizard-location-label = Emplacement des prompts
+zotseek-brief-prompt-wizard-open-location = Ouvrir le dossier des prompts
+zotseek-brief-prompt-wizard-cancel = Annuler
+zotseek-brief-prompt-wizard-generate = Générer les prompts
+
+## État et consentement des synthèses bibliographiques
+
+zotseek-pref-brief-prompt-bundled = Intégré ({ $file })
+zotseek-pref-brief-prompt-time-unknown = Heure de mise à jour inconnue
+zotseek-pref-brief-prompt-custom = Personnalisé ({ $file }), mis à jour le { $updated }
+zotseek-pref-brief-provider-summary = Fournisseur : { $provider } · Identifiant : { $credential }
+zotseek-pref-brief-key-configured = Clé API configurée
+zotseek-pref-brief-key-missing = Clé API non configurée
+zotseek-pref-brief-unsupported-provider = Les synthèses bibliographiques ne prennent actuellement en charge qu’Alibaba Bailian.
+zotseek-pref-brief-key-required = Configurez une clé API Alibaba Bailian avant d’utiliser les synthèses bibliographiques.
+zotseek-pref-brief-connection-verified = Connexion vérifiée
+zotseek-pref-brief-connection-not-verified = Connexion non vérifiée
+zotseek-pref-brief-invalid-settings = Paramètres de synthèse invalides : { $error }
+zotseek-pref-brief-status-failed = Échec de la génération de la synthèse : { $error }
+zotseek-pref-brief-settings-saved = Paramètres des synthèses enregistrés.
+zotseek-pref-brief-cancelling = Annulation de la génération de la synthèse…
+zotseek-pref-brief-consent-title = Autoriser la génération d’une synthèse bibliographique ?
+zotseek-pref-brief-consent-message = Pour générer une synthèse, ZotSeek enverra à Alibaba Bailian le titre, le résumé et le texte des pages PDF de l’article. Lors de la création de modèles de prompts, les deux modèles et vos réponses au formulaire seront envoyés. Votre compte BYOK peut entraîner des frais ; même un test de connexion peut occasionner de faibles frais. Continuer ?
+zotseek-pref-brief-testing = Test de la connexion…
+zotseek-pref-brief-test-failed = Échec du test de connexion : { $error }
+zotseek-pref-brief-connection-required = Vérifiez la connexion avant de générer une synthèse.
+zotseek-pref-brief-import-failed = Échec de l’importation du prompt : { $error }
+zotseek-pref-brief-reset-title = Restaurer les prompts intégrés ?
+zotseek-pref-brief-reset-message = Vos prompts personnalisés seront remplacés par les prompts intégrés. Continuer ?
+zotseek-pref-brief-reset-done = Prompts intégrés restaurés.
+
+## Literature brief menu and runtime status
+
+zotseek-menu-generateBrief = Générer une synthèse bibliographique
+zotseek-brief-disabled = Les synthèses bibliographiques sont désactivées.
+zotseek-brief-busy = Une autre tâche de synthèse bibliographique est déjà en cours.
+zotseek-brief-connection-required = Vérifiez la connexion de synthèse bibliographique avant de générer.
+zotseek-brief-start-failed = Impossible de démarrer la génération de la synthèse bibliographique : { $error }
+zotseek-brief-cancelling = Annulation de la génération de la synthèse bibliographique…
+zotseek-brief-cancel-task = Annuler la tâche
+zotseek-brief-cancel-tooltip = Annuler cette tâche de synthèse bibliographique
+zotseek-brief-progress-title = Génération de la synthèse bibliographique
+zotseek-brief-progress-summary = { $completed } sur { $total } terminés · Réussis : { $success } · Échecs : { $failed } · Ignorés : { $skipped } · Annulés : { $cancelled }
+zotseek-brief-progress-active = Traitement : { $title }
+zotseek-brief-progress-latest = { $title} : { $status }
+zotseek-brief-progress-latest-with-reason = { $title } : { $status } ({ $reason })
+zotseek-brief-progress-complete = Tâche de synthèse bibliographique terminée.
+zotseek-brief-summary-title = Résultats de la synthèse bibliographique
+zotseek-brief-summary-message = Réussis : { $success } · Échecs : { $failed } · Ignorés : { $skipped } · Annulés : { $cancelled }
+zotseek-brief-status-success = Réussi
+zotseek-brief-status-failed = Échec
+zotseek-brief-status-skipped = Ignoré
+zotseek-brief-status-cancelled = Annulé
+zotseek-brief-skip-reason-insufficient-text = aucun texte PDF exploitable
+zotseek-brief-skip-reason-existing-note = possède déjà une note enfant
+zotseek-brief-skip-reason-no-main-pdf = pas de PDF principal
+zotseek-brief-select-one = Sélectionnez un article standard ou une pièce jointe PDF.
+zotseek-brief-invalid-selection = L’élément sélectionné n’est pas un article ni une pièce jointe PDF admissible.
+zotseek-brief-existing-note-title = Note de synthèse existante
+zotseek-brief-existing-note-message = Cet article possède déjà une note enfant. Créer une note de synthèse bibliographique supplémentaire ?
+zotseek-brief-select-collection = Sélectionnez d’abord une collection.
+zotseek-brief-no-eligible = Aucun article admissible n’a été trouvé dans la collection sélectionnée.
+zotseek-brief-collection-confirm-title = Générer des synthèses pour la collection ?
+zotseek-brief-collection-confirm-message = Générer des synthèses bibliographiques pour { $count } articles ? Des frais d’API peuvent s’appliquer.
+
+## Literature brief prompt wizard runtime status
+
+zotseek-brief-wizard-unavailable = Impossible de démarrer : le service de synthèse bibliographique est indisponible.
+zotseek-brief-wizard-generating = Génération des fichiers de prompts associés…
+zotseek-brief-wizard-required = Indiquez un domaine de recherche et une langue de sortie.
+zotseek-brief-wizard-invalid-result = Le service de synthèse bibliographique n’a renvoyé aucun résultat utilisable.
+zotseek-brief-wizard-success = Fichiers de prompts générés avec succès.
+zotseek-brief-wizard-success-no-path = Fichiers de prompts générés avec succès ; aucun emplacement n’a été renvoyé.
+zotseek-brief-wizard-downloaded-not-enabled = Les fichiers ont été téléchargés, mais la paire gérée n’a pas pu être activée. Réessayez ou importez-les manuellement.
+zotseek-brief-wizard-canceled = Génération annulée.
+zotseek-brief-wizard-canceling = Annulation de la génération…
+zotseek-brief-wizard-failed = Échec de la génération. Aucun fichier de prompt n’a été activé.
+zotseek-brief-wizard-open-failed = Impossible d’ouvrir l’emplacement des fichiers de prompts.
+zotseek-brief-wizard-init-failed = Impossible de démarrer l’assistant de prompts de synthèse bibliographique.

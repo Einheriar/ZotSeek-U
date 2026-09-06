@@ -224,7 +224,7 @@
 <groupbox style="margin-bottom: 4px;">
   <label><html:h2 data-l10n-id="zotseek-pref-embeddingModelTitle">Embedding Model</html:h2></label>
   <hbox align="center">
-    <label value="Model:" style="min-width: 120px;" />
+    <html:label data-l10n-id="zotseek-pref-model" style="display:inline-block; min-width:120px;">Model:</html:label>
     <menulist id="zotseek-pref-embeddingModel" native="true">
       <menupopup/>
     </menulist>
@@ -554,6 +554,89 @@
       <html:span data-l10n-id="zotseek-pref-defaultSearchModeDesc" style="font-size: 11px; color: var(--zotseek-text-secondary);">Used for new searches; Hybrid combines semantic and keyword matching.</html:span>
     </html:div>
   </html:div>
+</groupbox>
+
+</html:details>
+
+<html:details class="zotseek-prefs-group" id="zotseek-group-brief">
+  <html:summary data-l10n-id="zotseek-prefs-group-brief">Literature Briefs (Experimental)</html:summary>
+
+<!-- Literature Briefs -->
+<groupbox>
+  <label><html:h2 data-l10n-id="zotseek-pref-brief-title">Literature Briefs</html:h2></label>
+
+  <checkbox id="zotseek-pref-brief-enabled"
+            label="Enable literature briefs"
+            data-l10n-id="zotseek-pref-brief-enabled"
+            native="true"
+            checked="false" />
+  <html:p data-l10n-id="zotseek-pref-brief-enabled-desc"
+          style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 4px 0 10px 24px;">
+    Adds commands for generating a new child Note from a paper PDF. Existing Notes and prompts are never removed when this is disabled.
+  </html:p>
+
+  <html:div class="zotseek-settings-box"
+            style="border-radius: 6px; padding: 12px; border-width: 1px; border-style: solid;">
+    <html:div style="display: grid; grid-template-columns: 180px minmax(0, 1fr) auto; gap: 10px 12px; align-items: center;">
+      <html:span data-l10n-id="zotseek-pref-brief-provider">Shared provider</html:span>
+      <html:span id="zotseek-brief-provider-status" style="color: var(--zotseek-text-secondary);">—</html:span>
+      <button id="zotseek-brief-open-cloud-settings" data-l10n-id="zotseek-pref-brief-open-cloud-settings" label="Configure credentials" />
+
+      <html:label data-l10n-id="zotseek-pref-brief-model" for="zotseek-brief-model">Generation model</html:label>
+      <html:input id="zotseek-brief-model" class="zotseek-input" type="text"
+                  style="width: 100%; box-sizing: border-box; padding: 4px 8px; border-radius: 4px; border-width: 1px; border-style: solid;" />
+      <button id="zotseek-brief-test" data-l10n-id="zotseek-pref-brief-test" label="Test connection" />
+    </html:div>
+    <html:p id="zotseek-brief-connection-status"
+            style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 8px 0 0 0;">—</html:p>
+  </html:div>
+
+  <html:div style="margin-top: 12px; display: flex; align-items: center; gap: 10px;">
+    <button id="zotseek-brief-create-prompts"
+            data-l10n-id="zotseek-pref-brief-create-prompts"
+            label="Create my brief prompts…" />
+    <html:span data-l10n-id="zotseek-pref-brief-create-prompts-desc"
+               style="font-size: 11px; color: var(--zotseek-text-secondary);">
+      Optional: personalize both built-in templates for your field and reading language.
+    </html:span>
+  </html:div>
+
+  <html:div style="display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 6px 12px; margin-top: 12px;">
+    <html:span data-l10n-id="zotseek-pref-brief-standard-prompt">Standard paper prompt</html:span>
+    <html:span id="zotseek-brief-standard-prompt-status" style="color: var(--zotseek-text-secondary);">—</html:span>
+    <html:span data-l10n-id="zotseek-pref-brief-review-prompt">Review/theory prompt</html:span>
+    <html:span id="zotseek-brief-review-prompt-status" style="color: var(--zotseek-text-secondary);">—</html:span>
+  </html:div>
+
+  <html:details class="zotseek-model-settings" id="zotseek-brief-advanced" style="margin: 12px 0 0;">
+    <html:summary data-l10n-id="zotseek-pref-brief-advanced">Advanced</html:summary>
+    <html:div style="padding: 10px 4px 0;">
+      <html:div style="display: flex; flex-wrap: wrap; gap: 8px;">
+        <button id="zotseek-brief-import-standard" data-l10n-id="zotseek-pref-brief-import-standard" label="Import standard prompt…" />
+        <button id="zotseek-brief-import-review" data-l10n-id="zotseek-pref-brief-import-review" label="Import review prompt…" />
+        <button id="zotseek-brief-reset-prompts" data-l10n-id="zotseek-pref-brief-reset-prompts" label="Restore built-in prompts" />
+      </html:div>
+      <html:div style="display: grid; grid-template-columns: 180px 160px minmax(0, 1fr); gap: 10px 12px; align-items: center; margin-top: 12px;">
+        <html:label data-l10n-id="zotseek-pref-brief-max-input" for="zotseek-brief-max-input">Maximum input tokens</html:label>
+        <html:input id="zotseek-brief-max-input" class="zotseek-input" type="number" min="1" step="1"
+                    style="width: 100%; box-sizing: border-box; padding: 4px 8px; border-radius: 4px; border-width: 1px; border-style: solid;" />
+        <html:span data-l10n-id="zotseek-pref-brief-max-input-desc" style="font-size: 11px; color: var(--zotseek-text-secondary);">Generation-model input budget.</html:span>
+
+        <html:label data-l10n-id="zotseek-pref-brief-max-output" for="zotseek-brief-max-output">Maximum output tokens</html:label>
+        <html:input id="zotseek-brief-max-output" class="zotseek-input" type="number" min="4096" step="1"
+                    style="width: 100%; box-sizing: border-box; padding: 4px 8px; border-radius: 4px; border-width: 1px; border-style: solid;" />
+        <html:span data-l10n-id="zotseek-pref-brief-max-output-desc" style="font-size: 11px; color: var(--zotseek-text-secondary);">Reserved generation output budget.</html:span>
+      </html:div>
+      <checkbox id="zotseek-brief-thinking-enabled"
+                label="Enable thinking mode"
+                data-l10n-id="zotseek-pref-brief-thinking-enabled"
+                native="true"
+                checked="true"
+                style="margin-top: 10px;" />
+      <html:p id="zotseek-brief-settings-status"
+              style="color: var(--zotseek-text-secondary); font-size: 11px; margin: 8px 0 0; min-height: 14px;"></html:p>
+    </html:div>
+  </html:details>
 </groupbox>
 
 </html:details>

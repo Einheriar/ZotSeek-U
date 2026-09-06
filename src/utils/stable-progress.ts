@@ -20,6 +20,8 @@ export interface StableProgressOptions {
   stopLabel?: string;
   stoppingLabel?: string;
   stopTooltip?: string;
+  /** Treat a user-closing popup as cancellation while work is active. */
+  cancelOnWindowClose?: boolean;
 }
 
 // Cap on visible checkpoint lines. Every createLine makes Zotero's _move()
@@ -46,6 +48,9 @@ export class StableProgressWindow {
   private stopState: 'running' | 'pausing' | 'paused' = 'running';
   private stopButton: any = null;
   private progressLookupWarningLogged = false;
+  private cancelOnWindowClose = false;
+  private closeListenerAttached = false;
+  private programmaticClose = false;
 
   // Pause/resume state
   private paused = false;
@@ -65,6 +70,7 @@ export class StableProgressWindow {
     this.stopLabel = options.stopLabel || '';
     this.stoppingLabel = options.stoppingLabel || '';
     this.stopTooltip = options.stopTooltip || '';
+    this.cancelOnWindowClose = options.cancelOnWindowClose === true;
     this.startTime = Date.now();
     
     try {
@@ -249,6 +255,7 @@ export class StableProgressWindow {
 
         // Auto-close after delay (15 seconds to allow reading stats)
         if (autoClose) {
+          this.programmaticClose = true;
           this.progressWindow.startCloseTimer(15000);
         }
       } else {
@@ -275,6 +282,7 @@ export class StableProgressWindow {
 
         // Keep error visible longer
         if (autoClose) {
+          this.programmaticClose = true;
           this.progressWindow.startCloseTimer(8000);
         }
       } else {
@@ -291,6 +299,7 @@ export class StableProgressWindow {
   close(): void {
     try {
       if (this.progressWindow) {
+        this.programmaticClose = true;
         this.progressWindow.close();
         this.logger.debug('Progress window closed');
       }
@@ -442,6 +451,7 @@ export class StableProgressWindow {
           const win = doc?.defaultView;
           if (win && !win.closed) {
             this.progressWin = win;
+            this.attachCloseCancellation(win);
             this.progressLookupWarningLogged = false;
             return win;
           }
@@ -458,6 +468,21 @@ export class StableProgressWindow {
       }
     }
     return null;
+  }
+
+  private attachCloseCancellation(win: any): void {
+    if (!this.cancelOnWindowClose || this.closeListenerAttached) return;
+    this.closeListenerAttached = true;
+    win.addEventListener('unload', () => {
+      if (this.programmaticClose || this.cancelled) return;
+      this.cancelled = true;
+      try {
+        if (this.cancelCallback) this.cancelCallback();
+        else this.stopCallback?.();
+      } catch (error: any) {
+        this.logger.error(`Progress close cancellation failed: ${error?.message || error}`);
+      }
+    }, { once: true });
   }
 
   // Window size constraints

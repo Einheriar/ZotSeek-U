@@ -14,12 +14,12 @@ zotseek-menu-findRelated = Find Related Documents
 
 ## Toolbar
 
-zotseek-toolbar-openZotSeek = Open ZotSeek
+zotseek-toolbar-openZotSeek = Open Zotseek-U
 zotseek-toolbar-findSimilar = Find Similar Documents
 
 ## Preference pane
 
-zotseek-pref-title = ZotSeek
+zotseek-pref-title = Zotseek-U
 zotseek-pref-indexStatistics = Index Statistics
 zotseek-pref-papersIndexed = Papers Indexed
 zotseek-pref-totalChunks = Total Chunks
@@ -42,18 +42,18 @@ zotseek-pref-indexingMode = Indexing Mode
 zotseek-pref-abstractOnly = Abstract only
 zotseek-pref-abstractOnlyMenu =
     .label = Abstract only (faster)
-zotseek-pref-abstractSpeed = Fast • ~1 chunk per paper
-zotseek-pref-abstractDesc = Indexes title, abstracts of at least 50 characters, and tags not starting with #.
+zotseek-pref-abstractSpeed = Fast · ~1 chunk per paper
+zotseek-pref-abstractDesc = Indexes title, abstract, and tags not starting with #.
 zotseek-pref-notes = Metadata + notes
 zotseek-pref-notesMenu =
     .label = Metadata + notes (no PDF processing)
-zotseek-pref-notesSpeed = Focused • no PDF processing
-zotseek-pref-notesDesc = Indexes the same metadata plus child notes; tags starting with # are excluded.
+zotseek-pref-notesSpeed = Focused · no PDF processing
+zotseek-pref-notesDesc = Indexes the same metadata plus child notes.
 zotseek-pref-fullPaper = Full paper
 zotseek-pref-fullPaperMenu =
     .label = Full paper (more thorough)
-zotseek-pref-fullSpeed = Thorough • notes + ~1-2 chunks per PDF page
-zotseek-pref-fullDesc = Indexes the same metadata, child notes, and full PDF content with page numbers; tags starting with # are excluded.
+zotseek-pref-fullSpeed = Thorough · Abstract + Notes + PDF
+zotseek-pref-fullDesc = Indexes the same metadata, child notes, and full PDF content with page numbers.
 zotseek-pref-mcpServer = AI Agent Access
 zotseek-pref-mcpServerLabel =
     .label = Allow AI agents to search and read your library (local MCP server)
@@ -117,7 +117,7 @@ zotseek-pref-localServerState = Local Server ({ $state })
 zotseek-pref-cloudSlotReady = Cloud ({ $model })
 zotseek-pref-cloudSlotSetup = Cloud (SETUP REQUIRED)
 zotseek-pref-cloudTitle = Cloud Model
-zotseek-pref-cloudDesc = Configure a BYOK Cloud embedding provider. Indexed content and semantic queries are sent to the provider and may incur provider charges. ZotSeek does not charge or receive any share of those fees.
+zotseek-pref-cloudDesc = Configure a BYOK Cloud embedding service. Indexed content and semantic queries are sent to the cloud provider; Zotseek-U does not charge or receive any share of those fees. Indexing and searching both require an internet connection and consume the provider's API quota, which may incur charges; see the provider's pricing documentation for details.
 zotseek-pref-cloudProvider = Provider
 zotseek-pref-cloudBaseUrl = Base URL
 zotseek-pref-cloudModel = Model
@@ -162,6 +162,8 @@ zotseek-pref-cloudBriefSwitchTitle = Literature brief generation will be unavail
 zotseek-pref-cloudBriefSwitchMessage = Literature brief generation currently supports only Alibaba Bailian. If you switch providers, the brief feature will be unavailable and its connection state will be cleared. Switch anyway?
 zotseek-pref-cloudRebuildTitle = Index remaining papers with Cloud?
 zotseek-pref-cloudRebuildMessage = This will send content from { $count } eligible papers to the configured Cloud provider. Provider charges may apply. Continue?
+zotseek-pref-modelBackfillTitle = Index remaining items?
+zotseek-pref-modelBackfillMessage = This model covers { $covered } of { $total } items. Index the remaining { $missing } in the background now? You can keep using Zotero while it runs.
 zotseek-modelDownloadOpenPage = Open model page
 zotseek-modelDownloadOpenLocation = Open installation location
 zotseek-modelDownloadClose = Close
@@ -203,9 +205,9 @@ zotseek-pref-maxChunks = Max chunks per paper
 zotseek-pref-maxChunksDesc = Limit for long documents (1-200)
 zotseek-pref-excludeBooks =
     .label = Exclude books from indexing
-zotseek-pref-excludeBooksDesc = Books will not be indexed. Existing ZotSeek indexes for books are removed by the next index check.
+zotseek-pref-excludeBooksDesc = Books will not be indexed. Existing Zotseek-U indexes for books are removed by the next index check.
 zotseek-pref-excludeTag = Exclude tag
-zotseek-pref-excludeTagDesc = Items with this tag will not be indexed. Existing ZotSeek indexes for matching items are removed by the next index check. Leave empty to disable.
+zotseek-pref-excludeTagDesc = Items with this tag will not be indexed. Existing Zotseek-U indexes for matching items are removed by the next index check. Leave empty to disable.
 zotseek-pref-actions = Actions
 zotseek-pref-maintenanceRepair = Maintenance and Repair
 zotseek-pref-updateIndex =
@@ -244,7 +246,7 @@ zotseek-pref-healthPurgeFailedTitle = Purge Failed
 zotseek-search-search =
     .value = Search:
 zotseek-search-placeholder =
-    .placeholder = Enter your search query (auto-searches as you type)...
+    .placeholder = Enter your search query (auto-searches as you type)... | E.g.: Studies linking higher parenting stress to lower parent-child brain synchrony
 zotseek-search-addQuery =
     .label = +
     .tooltiptext = Add another query for AND/OR combination
@@ -511,3 +513,117 @@ zotseek-pref-manageModelsTitle = Manage installed models
 zotseek-indexing-cloudRebuildConfirmTitle = Rebuild Cloud index?
 zotseek-indexing-cloudRebuildConfirmMsg = About { $count } papers in { $scope } will be sent to the configured Cloud provider and may incur provider charges. Existing complete indexes are kept until each paper is replaced successfully. Continue?
 zotseek-indexing-cloudStrategyRebuildConfirmMsg = The current Cloud index uses an older chunk strategy. Its existing embeddings must be deleted before about { $count } papers in { $scope } are sent again, which may incur provider charges. Other model indexes are kept. Continue?
+
+## Literature brief settings
+
+zotseek-prefs-group-brief = Literature Briefs (Experimental)
+zotseek-pref-brief-title = Literature Briefs
+zotseek-pref-brief-enabled =
+    .label = Enable literature briefs
+zotseek-pref-brief-enabled-desc = Generate an experimental literature brief from a paper's PDF when requested.
+zotseek-pref-brief-provider = Shared provider
+zotseek-pref-brief-open-cloud-settings = Configure credentials
+zotseek-pref-brief-model = Generation model
+zotseek-pref-brief-test = Test connection
+zotseek-pref-brief-create-prompts = Create my brief prompts…
+zotseek-pref-brief-create-prompts-desc = Create paired prompts for standard papers and reviews or theory papers.
+zotseek-pref-brief-standard-prompt = Standard paper prompt
+zotseek-pref-brief-review-prompt = Review/theory prompt
+zotseek-pref-brief-advanced = Advanced
+zotseek-pref-brief-import-standard = Import standard prompt…
+zotseek-pref-brief-import-review = Import review prompt…
+zotseek-pref-brief-reset-prompts = Restore built-in prompts
+zotseek-pref-brief-max-input = Maximum input tokens
+zotseek-pref-brief-max-input-desc = Generation-model input budget.
+zotseek-pref-brief-max-output = Maximum output tokens
+zotseek-pref-brief-max-output-desc = Reserved generation output budget.
+zotseek-pref-brief-thinking-enabled =
+    .label = Enable extended reasoning
+
+## Literature brief prompt wizard
+
+zotseek-brief-prompt-wizard-title = Customize Literature Brief Prompts
+zotseek-brief-prompt-wizard-notice = Describe your reading focus and preferences. ZotSeek will generate paired prompts for standard papers and reviews or theory papers.
+zotseek-brief-prompt-wizard-domain-label = Topic or research domain
+zotseek-brief-prompt-wizard-language-label = Output language
+zotseek-brief-prompt-wizard-habits-label = Reading and analysis preferences
+zotseek-brief-prompt-wizard-status-idle = Ready to generate prompts.
+zotseek-brief-prompt-wizard-location-label = Prompt location
+zotseek-brief-prompt-wizard-open-location = Open prompt folder
+zotseek-brief-prompt-wizard-cancel = Cancel
+zotseek-brief-prompt-wizard-generate = Generate prompts
+
+## Literature brief status and consent
+
+zotseek-pref-brief-prompt-bundled = Built-in ({ $file })
+zotseek-pref-brief-prompt-time-unknown = Update time unavailable
+zotseek-pref-brief-prompt-custom = Custom ({ $file }), updated { $updated }
+zotseek-pref-brief-provider-summary = Provider: { $provider } · Credential: { $credential }
+zotseek-pref-brief-key-configured = API key configured
+zotseek-pref-brief-key-missing = API key not configured
+zotseek-pref-brief-unsupported-provider = Literature briefs currently support Alibaba Bailian only.
+zotseek-pref-brief-key-required = Configure an Alibaba Bailian API key before using literature briefs.
+zotseek-pref-brief-connection-verified = Connection verified
+zotseek-pref-brief-connection-not-verified = Connection not verified
+zotseek-pref-brief-invalid-settings = Invalid brief settings: { $error }
+zotseek-pref-brief-status-failed = Brief generation failed: { $error }
+zotseek-pref-brief-settings-saved = Brief settings saved.
+zotseek-pref-brief-cancelling = Cancelling brief generation…
+zotseek-pref-brief-consent-title = Allow literature brief generation?
+zotseek-pref-brief-consent-message = To generate a brief, ZotSeek will send the paper title, abstract, and PDF page text to Alibaba Bailian. When creating prompt templates, it will send the two templates and your form responses. Your BYOK account may incur charges, and even a connection test may incur a small charge. Continue?
+zotseek-pref-brief-testing = Testing connection…
+zotseek-pref-brief-test-failed = Connection test failed: { $error }
+zotseek-pref-brief-connection-required = Verify the connection before generating a brief.
+zotseek-pref-brief-import-failed = Failed to import prompt: { $error }
+zotseek-pref-brief-reset-title = Restore built-in prompts?
+zotseek-pref-brief-reset-message = This will replace your custom prompts with the built-in prompts. Continue?
+zotseek-pref-brief-reset-done = Built-in prompts restored.
+
+## Literature brief menu and runtime status
+
+zotseek-menu-generateBrief = Generate literature brief
+zotseek-brief-disabled = Literature briefs are disabled.
+zotseek-brief-busy = Another literature brief task is already running.
+zotseek-brief-connection-required = Verify the literature brief connection before generating.
+zotseek-brief-start-failed = Could not start literature brief generation: { $error }
+zotseek-brief-cancelling = Cancelling literature brief generation…
+zotseek-brief-cancel-task = Cancel task
+zotseek-brief-cancel-tooltip = Cancel this literature brief task
+zotseek-brief-progress-title = Literature brief generation
+zotseek-brief-progress-summary = Completed { $completed } of { $total } · Success: { $success } · Failed: { $failed } · Skipped: { $skipped } · Cancelled: { $cancelled }
+zotseek-brief-progress-active = Processing: { $title }
+zotseek-brief-progress-latest = { $title }: { $status }
+zotseek-brief-progress-latest-with-reason = { $title }: { $status } ({ $reason })
+zotseek-brief-progress-complete = Literature brief task complete.
+zotseek-brief-summary-title = Literature brief results
+zotseek-brief-summary-message = Success: { $success } · Failed: { $failed } · Skipped: { $skipped } · Cancelled: { $cancelled }
+zotseek-brief-status-success = Succeeded
+zotseek-brief-status-failed = Failed
+zotseek-brief-status-skipped = Skipped
+zotseek-brief-status-cancelled = Cancelled
+zotseek-brief-skip-reason-insufficient-text = no extractable PDF text
+zotseek-brief-skip-reason-existing-note = already has a child note
+zotseek-brief-skip-reason-no-main-pdf = no main PDF
+zotseek-brief-select-one = Select one regular paper or PDF attachment.
+zotseek-brief-invalid-selection = The selected item is not an eligible paper or PDF attachment.
+zotseek-brief-existing-note-title = Existing brief note
+zotseek-brief-existing-note-message = This paper already has a child note. Create an additional literature brief note?
+zotseek-brief-select-collection = Select a collection first.
+zotseek-brief-no-eligible = No eligible papers were found in the selected collection.
+zotseek-brief-collection-confirm-title = Generate collection literature briefs?
+zotseek-brief-collection-confirm-message = Generate literature briefs for { $count } papers? This may incur API charges.
+
+## Literature brief prompt wizard runtime status
+
+zotseek-brief-wizard-unavailable = Unable to start: the literature brief service is unavailable.
+zotseek-brief-wizard-generating = Generating paired prompt files…
+zotseek-brief-wizard-required = Provide both a research field and an output language.
+zotseek-brief-wizard-invalid-result = The literature brief service returned no usable result.
+zotseek-brief-wizard-success = Prompt files generated successfully.
+zotseek-brief-wizard-success-no-path = Prompt files generated successfully; no output location was returned.
+zotseek-brief-wizard-downloaded-not-enabled = Prompt files were downloaded, but the managed pair could not be activated. You can retry or import the downloaded files manually.
+zotseek-brief-wizard-canceled = Generation canceled.
+zotseek-brief-wizard-canceling = Canceling generation…
+zotseek-brief-wizard-failed = Generation failed. No prompt files were activated.
+zotseek-brief-wizard-open-failed = Unable to open the prompt file location.
+zotseek-brief-wizard-init-failed = Unable to start the literature brief prompt wizard.

@@ -8,7 +8,7 @@ zotseek-pref-localServerState = Local Server ({ $state })
 zotseek-pref-cloudSlotReady = Cloud ({ $model })
 zotseek-pref-cloudSlotSetup = Cloud (SETUP REQUIRED)
 zotseek-pref-cloudTitle = Cloud Model
-zotseek-pref-cloudDesc = Configure a BYOK Cloud embedding provider. Indexed content and semantic queries are sent to the provider and may incur provider charges. ZotSeek does not charge or receive any share of those fees.
+zotseek-pref-cloudDesc = BYOK 클라우드 Embedding 서비스를 구성합니다. 색인 콘텐츠와 의미 검색어가 클라우드 제공업체로 전송되며, Zotseek-U는 요금을 부과하거나 수수료를 받지 않습니다. 색인과 검색 모두 인터넷 연결이 필요하고 제공업체의 API 할당량을 사용하므로 비용이 발생할 수 있습니다. 자세한 요금은 클라우드 제공업체의 요금 문서를 참조하세요.
 zotseek-pref-cloudProvider = Provider
 zotseek-pref-cloudBaseUrl = Base URL
 zotseek-pref-cloudModel = Model
@@ -53,6 +53,8 @@ zotseek-pref-cloudBriefSwitchTitle = Literature brief generation will be unavail
 zotseek-pref-cloudBriefSwitchMessage = Literature brief generation currently supports only Alibaba Bailian. If you switch providers, the brief feature will be unavailable and its connection state will be cleared. Switch anyway?
 zotseek-pref-cloudRebuildTitle = Index remaining papers with Cloud?
 zotseek-pref-cloudRebuildMessage = This will send content from { $count } eligible papers to the configured Cloud provider. Provider charges may apply. Continue?
+zotseek-pref-modelBackfillTitle = 현재 모델로 나머지 문헌을 색인하시겠습니까?
+zotseek-pref-modelBackfillMessage = 이 모델로 색인된 문헌은 { $total }개 중 { $covered }개입니다. 나머지 { $missing }개를 백그라운드에서 색인하시겠습니까? 색인 중에도 Zotero를 계속 사용할 수 있습니다.
 ## Context menu items
 zotseek-menu-findSimilar = 유사 문서 찾기
 zotseek-menu-openZotSeek = ZotSeek 열기…
@@ -63,11 +65,11 @@ zotseek-menu-removeFromIndex = ZotSeek 색인에서 제거
 zotseek-menu-findRelated = 관련 문서 찾기
 
 ## Toolbar
-zotseek-toolbar-openZotSeek = ZotSeek 열기
+zotseek-toolbar-openZotSeek = Zotseek-U 열기
 zotseek-toolbar-findSimilar = 유사 문서 찾기
 
 ## Preference pane
-zotseek-pref-title = ZotSeek
+zotseek-pref-title = Zotseek-U
 zotseek-pref-indexStatistics = 색인 통계
 zotseek-pref-papersIndexed = 색인된 문서
 zotseek-pref-totalChunks = 총 청크 수
@@ -90,18 +92,18 @@ zotseek-pref-indexingMode = 색인 모드
 zotseek-pref-abstractOnly = 초록만
 zotseek-pref-abstractOnlyMenu =
     .label = 초록만 (빠름)
-zotseek-pref-abstractSpeed = 빠름 • 문서당 약 1개 청크
-zotseek-pref-abstractDesc = 제목, 50자 이상의 초록, #으로 시작하지 않는 태그를 색인합니다.
+zotseek-pref-abstractSpeed = 빠름 · 문서당 약 1개 청크
+zotseek-pref-abstractDesc = 제목, 초록, #으로 시작하지 않는 태그를 색인합니다.
 zotseek-pref-notes = 메타데이터 + 노트
 zotseek-pref-notesMenu =
     .label = 메타데이터 + 노트 (PDF 처리 안 함)
-zotseek-pref-notesSpeed = 집중 • PDF 처리 안 함
-zotseek-pref-notesDesc = 동일한 메타데이터와 하위 노트를 색인하며 #으로 시작하는 태그는 제외합니다.
+zotseek-pref-notesSpeed = 집중 · PDF 처리 안 함
+zotseek-pref-notesDesc = 동일한 메타데이터와 하위 노트를 색인합니다.
 zotseek-pref-fullPaper = 전체 문서
 zotseek-pref-fullPaperMenu =
     .label = 전체 문서 (더 철저함)
-zotseek-pref-fullSpeed = 철저 • 노트 + PDF 페이지당 약 1~2개 청크
-zotseek-pref-fullDesc = 동일한 메타데이터, 하위 노트 및 페이지 번호가 포함된 PDF 전체 내용을 색인하며 # 태그는 제외합니다.
+zotseek-pref-fullSpeed = 철저 · 초록 + 노트 + PDF
+zotseek-pref-fullDesc = 동일한 메타데이터, 하위 노트 및 페이지 번호가 포함된 PDF 전체 내용을 색인합니다.
 zotseek-pref-mcpServer = AI 에이전트 액세스
 zotseek-pref-mcpServerLabel =
     .label = AI 에이전트의 라이브러리 검색 및 읽기 허용 (로컬 MCP 서버)
@@ -198,9 +200,9 @@ zotseek-pref-maxChunks = 문서당 최대 청크
 zotseek-pref-maxChunksDesc = 긴 문서의 제한 (1~200)
 zotseek-pref-excludeBooks =
     .label = 책을 색인에서 제외
-zotseek-pref-excludeBooksDesc = 책은 색인되지 않습니다. 책의 기존 ZotSeek 색인은 다음 색인 확인 때 제거됩니다.
+zotseek-pref-excludeBooksDesc = 책은 색인되지 않습니다. 책의 기존 Zotseek-U 색인은 다음 색인 확인 때 제거됩니다.
 zotseek-pref-excludeTag = 제외할 태그
-zotseek-pref-excludeTagDesc = 이 태그가 있는 항목은 색인되지 않습니다. 일치하는 항목의 기존 ZotSeek 색인은 다음 확인 때 제거됩니다. 사용하지 않으려면 비워 두세요.
+zotseek-pref-excludeTagDesc = 이 태그가 있는 항목은 색인되지 않습니다. 일치하는 항목의 기존 Zotseek-U 색인은 다음 확인 때 제거됩니다. 사용하지 않으려면 비워 두세요.
 zotseek-pref-actions = 작업
 zotseek-pref-maintenanceRepair = 유지 관리 및 복구
 zotseek-pref-updateIndex =
@@ -238,7 +240,7 @@ zotseek-pref-healthPurgeFailedTitle = 삭제 실패
 zotseek-search-search =
     .value = 검색:
 zotseek-search-placeholder =
-    .placeholder = 검색어를 입력하세요 (입력하는 동안 자동 검색)…
+    .placeholder = 검색어를 입력하세요 (입력하는 동안 자동 검색)… | 예: 높은 양육 스트레스와 낮은 부모-자녀 간 뇌 동기화의 관련 문헌
 zotseek-search-addQuery =
     .label = +
     .tooltiptext = AND/OR 조합을 위한 검색어 추가
@@ -493,3 +495,117 @@ zotseek-pref-manageModelsTitle = 설치된 모델 관리
 zotseek-indexing-cloudRebuildConfirmTitle = Rebuild Cloud index?
 zotseek-indexing-cloudRebuildConfirmMsg = About { $count } papers in { $scope } will be sent to the configured Cloud provider and may incur provider charges. Existing complete indexes are kept until each paper is replaced successfully. Continue?
 zotseek-indexing-cloudStrategyRebuildConfirmMsg = The current Cloud index uses an older chunk strategy. Its existing embeddings must be deleted before about { $count } papers in { $scope } are sent again, which may incur provider charges. Other model indexes are kept. Continue?
+
+## 문헌 브리프 설정
+
+zotseek-prefs-group-brief = 문헌 브리프 (실험적)
+zotseek-pref-brief-title = 문헌 브리프
+zotseek-pref-brief-enabled =
+    .label = 문헌 브리프 활성화
+zotseek-pref-brief-enabled-desc = 필요할 때 논문의 PDF에서 실험적인 문헌 브리프를 생성합니다.
+zotseek-pref-brief-provider = 공유 제공업체
+zotseek-pref-brief-open-cloud-settings = 자격 증명 구성
+zotseek-pref-brief-model = 생성 모델
+zotseek-pref-brief-test = 연결 테스트
+zotseek-pref-brief-create-prompts = 내 브리프 프롬프트 만들기…
+zotseek-pref-brief-create-prompts-desc = 일반 논문과 리뷰 또는 이론 논문에 사용할 프롬프트 쌍을 만듭니다.
+zotseek-pref-brief-standard-prompt = 일반 논문 프롬프트
+zotseek-pref-brief-review-prompt = 리뷰/이론 프롬프트
+zotseek-pref-brief-advanced = 고급
+zotseek-pref-brief-import-standard = 일반 프롬프트 가져오기…
+zotseek-pref-brief-import-review = 리뷰 프롬프트 가져오기…
+zotseek-pref-brief-reset-prompts = 기본 제공 프롬프트 복원
+zotseek-pref-brief-max-input = 최대 입력 토큰
+zotseek-pref-brief-max-input-desc = 생성 모델 입력 예산입니다.
+zotseek-pref-brief-max-output = 최대 출력 토큰
+zotseek-pref-brief-max-output-desc = 생성을 위해 예약된 출력 예산입니다.
+zotseek-pref-brief-thinking-enabled =
+    .label = 확장 추론 활성화
+
+## 문헌 브리프 프롬프트 마법사
+
+zotseek-brief-prompt-wizard-title = 문헌 브리프 프롬프트 사용자 지정
+zotseek-brief-prompt-wizard-notice = 읽기 목적과 선호 사항을 설명하세요. ZotSeek가 일반 논문과 리뷰 또는 이론 논문용 프롬프트 쌍을 생성합니다.
+zotseek-brief-prompt-wizard-domain-label = 주제 또는 연구 분야
+zotseek-brief-prompt-wizard-language-label = 출력 언어
+zotseek-brief-prompt-wizard-habits-label = 읽기 및 분석 선호 사항
+zotseek-brief-prompt-wizard-status-idle = 프롬프트를 생성할 준비가 되었습니다.
+zotseek-brief-prompt-wizard-location-label = 프롬프트 위치
+zotseek-brief-prompt-wizard-open-location = 프롬프트 폴더 열기
+zotseek-brief-prompt-wizard-cancel = 취소
+zotseek-brief-prompt-wizard-generate = 프롬프트 생성
+
+## 문헌 브리프 상태 및 동의
+
+zotseek-pref-brief-prompt-bundled = 기본 제공 ({ $file })
+zotseek-pref-brief-prompt-time-unknown = 업데이트 시간 알 수 없음
+zotseek-pref-brief-prompt-custom = 사용자 지정 ({ $file }), 업데이트됨 { $updated }
+zotseek-pref-brief-provider-summary = 제공업체: { $provider } · 자격 증명: { $credential }
+zotseek-pref-brief-key-configured = API 키 구성됨
+zotseek-pref-brief-key-missing = API 키가 구성되지 않음
+zotseek-pref-brief-unsupported-provider = 문헌 브리프는 현재 Alibaba Bailian만 지원합니다.
+zotseek-pref-brief-key-required = 문헌 브리프를 사용하기 전에 Alibaba Bailian API 키를 구성하세요.
+zotseek-pref-brief-connection-verified = 연결 확인됨
+zotseek-pref-brief-connection-not-verified = 연결이 확인되지 않음
+zotseek-pref-brief-invalid-settings = 잘못된 브리프 설정: { $error }
+zotseek-pref-brief-status-failed = 브리프 생성 실패: { $error }
+zotseek-pref-brief-settings-saved = 브리프 설정이 저장되었습니다.
+zotseek-pref-brief-cancelling = 브리프 생성을 취소하는 중…
+zotseek-pref-brief-consent-title = 문헌 브리프 생성을 허용하시겠습니까?
+zotseek-pref-brief-consent-message = 브리프를 생성하기 위해 ZotSeek가 논문의 제목, 초록, PDF 페이지 텍스트를 Alibaba Bailian으로 전송합니다. 프롬프트 템플릿을 만들 때는 두 템플릿과 양식 응답을 전송합니다. BYOK 계정에 요금이 발생할 수 있으며 연결 테스트에도 소액의 요금이 발생할 수 있습니다. 계속하시겠습니까?
+zotseek-pref-brief-testing = 연결 테스트 중…
+zotseek-pref-brief-test-failed = 연결 테스트 실패: { $error }
+zotseek-pref-brief-connection-required = 브리프를 생성하기 전에 연결을 확인하세요.
+zotseek-pref-brief-import-failed = 프롬프트 가져오기 실패: { $error }
+zotseek-pref-brief-reset-title = 기본 제공 프롬프트를 복원하시겠습니까?
+zotseek-pref-brief-reset-message = 사용자 지정 프롬프트가 기본 제공 프롬프트로 대체됩니다. 계속하시겠습니까?
+zotseek-pref-brief-reset-done = 기본 제공 프롬프트가 복원되었습니다.
+
+## Literature brief menu and runtime status
+
+zotseek-menu-generateBrief = 문헌 브리프 생성
+zotseek-brief-disabled = 문헌 브리프가 비활성화되어 있습니다.
+zotseek-brief-busy = 다른 문헌 브리프 작업이 이미 실행 중입니다.
+zotseek-brief-connection-required = 생성하기 전에 문헌 브리프 연결을 확인하세요.
+zotseek-brief-start-failed = 문헌 브리프 생성을 시작하지 못했습니다: { $error }
+zotseek-brief-cancelling = 문헌 브리프 생성을 취소하는 중…
+zotseek-brief-cancel-task = 작업 취소
+zotseek-brief-cancel-tooltip = 이 문헌 브리프 작업 취소
+zotseek-brief-progress-title = 문헌 브리프 생성
+zotseek-brief-progress-summary = { $total }개 중 { $completed }개 완료 · 성공: { $success } · 실패: { $failed } · 건너뜀: { $skipped } · 취소됨: { $cancelled }
+zotseek-brief-progress-active = 처리 중: { $title }
+zotseek-brief-progress-latest = { $title }: { $status }
+zotseek-brief-progress-latest-with-reason = { $title }: { $status } ({ $reason })
+zotseek-brief-progress-complete = 문헌 브리프 작업이 완료되었습니다.
+zotseek-brief-summary-title = 문헌 브리프 결과
+zotseek-brief-summary-message = 성공: { $success } · 실패: { $failed } · 건너뜀: { $skipped } · 취소됨: { $cancelled }
+zotseek-brief-status-success = 성공
+zotseek-brief-status-failed = 실패
+zotseek-brief-status-skipped = 건너뜀
+zotseek-brief-status-cancelled = 취소됨
+zotseek-brief-skip-reason-insufficient-text = 추출 가능한 PDF 텍스트 없음
+zotseek-brief-skip-reason-existing-note = 하위 노트가 이미 있음
+zotseek-brief-skip-reason-no-main-pdf = 기본 PDF 없음
+zotseek-brief-select-one = 일반 논문 또는 PDF 첨부 파일 하나를 선택하세요.
+zotseek-brief-invalid-selection = 선택한 항목은 유효한 논문 또는 PDF 첨부 파일이 아닙니다.
+zotseek-brief-existing-note-title = 기존 브리프 노트
+zotseek-brief-existing-note-message = 이 논문에는 하위 노트가 이미 있습니다. 문헌 브리프 노트를 하나 더 만들까요?
+zotseek-brief-select-collection = 먼저 컬렉션을 선택하세요.
+zotseek-brief-no-eligible = 선택한 컬렉션에서 대상 논문을 찾지 못했습니다.
+zotseek-brief-collection-confirm-title = 컬렉션 문헌 브리프를 생성할까요?
+zotseek-brief-collection-confirm-message = { $count }개 논문의 문헌 브리프를 생성할까요? API 요금이 발생할 수 있습니다.
+
+## Literature brief prompt wizard runtime status
+
+zotseek-brief-wizard-unavailable = 시작할 수 없습니다. 문헌 브리프 서비스를 사용할 수 없습니다.
+zotseek-brief-wizard-generating = 쌍으로 된 프롬프트 파일을 생성하는 중…
+zotseek-brief-wizard-required = 연구 분야와 출력 언어를 모두 입력하세요.
+zotseek-brief-wizard-invalid-result = 문헌 브리프 서비스에서 사용할 수 있는 결과를 반환하지 않았습니다.
+zotseek-brief-wizard-success = 프롬프트 파일을 성공적으로 생성했습니다.
+zotseek-brief-wizard-success-no-path = 프롬프트 파일을 생성했지만 출력 위치가 반환되지 않았습니다.
+zotseek-brief-wizard-downloaded-not-enabled = 프롬프트 파일은 다운로드되었지만 관리되는 쌍을 활성화하지 못했습니다. 다시 시도하거나 파일을 수동으로 가져오세요.
+zotseek-brief-wizard-canceled = 생성을 취소했습니다.
+zotseek-brief-wizard-canceling = 생성을 취소하는 중…
+zotseek-brief-wizard-failed = 생성에 실패했습니다. 프롬프트 파일을 활성화하지 않았습니다.
+zotseek-brief-wizard-open-failed = 프롬프트 파일 위치를 열 수 없습니다.
+zotseek-brief-wizard-init-failed = 문헌 브리프 프롬프트 마법사를 시작할 수 없습니다.

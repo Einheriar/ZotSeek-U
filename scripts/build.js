@@ -254,6 +254,23 @@ const collectionExportDialogBuildOptions = {
   logLevel: 'info',
 };
 
+// Experimental Brief prompt customisation wizard build configuration
+const briefPromptWizardBuildOptions = {
+  entryPoints: [path.resolve(srcDir, 'ui/brief-prompt-wizard.ts')],
+  bundle: true,
+  outfile: path.resolve(buildDir, 'content/scripts/brief-prompt-wizard.js'),
+  format: 'iife',
+  platform: 'browser',
+  target: ['firefox128'],
+  minify: !isDev,
+  sourcemap: isDev ? 'inline' : false,
+  define: {
+    'process.env.NODE_ENV': isDev ? '"development"' : '"production"',
+  },
+  external: [],
+  logLevel: 'info',
+};
+
 
 async function build() {
   try {
@@ -284,6 +301,9 @@ async function build() {
 
       await esbuild.build(collectionExportDialogBuildOptions);
       console.log('Collection export dialog bundle complete!');
+
+      await esbuild.build(briefPromptWizardBuildOptions);
+      console.log('Brief prompt wizard bundle complete!');
 
       console.log('Build complete!');
     }

@@ -16,6 +16,12 @@ export interface BriefNoteProvenance {
   pipelineVersion: number;
   pdfAttachmentKey: string;
   pageCount: number;
+  /** Added by the evidence pipeline; optional to keep schema-1 Notes readable. */
+  libraryKey?: string;
+  totalPages?: number;
+  indexedPages?: number;
+  coverage?: 'complete' | 'partial';
+  promptSlot?: BriefPaperKind;
 }
 
 export type BriefNoteProvenanceInput = Omit<
@@ -42,7 +48,15 @@ function validate(value: any): BriefNoteProvenance {
       typeof value.promptHash !== 'string' || !/^[0-9a-f]{64}$/.test(value.promptHash) ||
       !Number.isSafeInteger(value.pipelineVersion) || value.pipelineVersion <= 0 ||
       typeof value.pdfAttachmentKey !== 'string' || !value.pdfAttachmentKey.trim() ||
-      !Number.isSafeInteger(value.pageCount) || value.pageCount <= 0) {
+      !Number.isSafeInteger(value.pageCount) || value.pageCount <= 0 ||
+      (value.libraryKey !== undefined &&
+        (typeof value.libraryKey !== 'string' || !value.libraryKey.trim())) ||
+      (value.totalPages !== undefined &&
+        (!Number.isSafeInteger(value.totalPages) || value.totalPages <= 0)) ||
+      (value.indexedPages !== undefined &&
+        (!Number.isSafeInteger(value.indexedPages) || value.indexedPages < 0)) ||
+      (value.coverage !== undefined && value.coverage !== 'complete' && value.coverage !== 'partial') ||
+      (value.promptSlot !== undefined && value.promptSlot !== 'review' && value.promptSlot !== 'standard')) {
     throw new BriefNoteProvenanceError('Literature-brief provenance is invalid.');
   }
   return {
@@ -56,6 +70,21 @@ function validate(value: any): BriefNoteProvenance {
     pipelineVersion: value.pipelineVersion,
     pdfAttachmentKey: value.pdfAttachmentKey,
     pageCount: value.pageCount,
+    ...(typeof value.libraryKey === 'string' && value.libraryKey.trim()
+      ? { libraryKey: value.libraryKey }
+      : {}),
+    ...(Number.isSafeInteger(value.totalPages) && value.totalPages > 0
+      ? { totalPages: value.totalPages }
+      : {}),
+    ...(Number.isSafeInteger(value.indexedPages) && value.indexedPages >= 0
+      ? { indexedPages: value.indexedPages }
+      : {}),
+    ...(value.coverage === 'complete' || value.coverage === 'partial'
+      ? { coverage: value.coverage }
+      : {}),
+    ...(value.promptSlot === 'review' || value.promptSlot === 'standard'
+      ? { promptSlot: value.promptSlot }
+      : {}),
   };
 }
 

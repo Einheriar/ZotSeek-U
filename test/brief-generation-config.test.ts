@@ -8,6 +8,9 @@ import {
   BRIEF_CLASSIFIER_MAX_COMPLETION_TOKENS,
   BRIEF_MODEL_NAME,
   getBriefGenerationSettings,
+  getBriefGenerationConfigSnapshot,
+  getBriefGenerationConfigFingerprint,
+  getBriefGenerationConfigRevision,
   hasCurrentBriefConsent,
   isBriefConnectionVerified,
   recordCurrentBriefConsent,
@@ -62,7 +65,11 @@ describe('brief generation configuration', () => {
       }),
       /must be at least/,
     );
-    assert.throws(() => setBriefGenerationSettings({ ...valid, maxOutputTokens: 100000 }), /smaller/);
+    assert.doesNotThrow(() => setBriefGenerationSettings({
+      ...valid,
+      maxInputTokens: 8000,
+      maxOutputTokens: 100000,
+    }));
   });
 
   test('uses separate consent and connection state', () => {
@@ -89,5 +96,39 @@ describe('brief generation configuration', () => {
     });
     assert.equal(isBriefConnectionVerified(), false);
     assert.equal(getCloudModelSettings().baseUrl, BAILIAN_REGION_INTL_BASE_URL);
+  });
+
+  test('exposes damaged stored configuration and revokes its verification', () => {
+    const zotero = installZoteroStub({
+      'zotseek.cloud.brief.modelName': BRIEF_MODEL_NAME,
+      'zotseek.cloud.brief.maxInputTokens': 100000,
+      'zotseek.cloud.brief.maxOutputTokens': 'not-a-number',
+      'zotseek.cloud.brief.thinkingEnabled': true,
+      'zotseek.cloud.brief.connectionVerified': true,
+    });
+    const snapshot = getBriefGenerationConfigSnapshot();
+    assert.equal(snapshot.status, 'invalid');
+    assert.ok(snapshot.error);
+    assert.equal(isBriefConnectionVerified(), false);
+    assert.equal(getBriefGenerationConfigFingerprint(), snapshot.fingerprint);
+    assert.equal(getBriefGenerationConfigRevision(), snapshot.revision);
+    assert.equal(zotero.prefs.get('zotseek.cloud.brief.connectionVerified'), false);
+  });
+
+  test('binds verification to the non-secret config fingerprint and revision', () => {
+    const zotero = installZoteroStub();
+    const fingerprint = getBriefGenerationConfigFingerprint();
+    const revision = getBriefGenerationConfigRevision();
+    setBriefConnectionVerified(true, {
+      configFingerprint: fingerprint,
+      configRevision: revision,
+      credentialRevision: 7,
+    });
+    assert.equal(isBriefConnectionVerified({ credentialRevision: 7 }), true);
+    assert.equal(isBriefConnectionVerified({ credentialRevision: 8 }), false);
+    assert.equal(
+      typeof zotero.prefs.get('zotseek.cloud.brief.connectionVerified.binding'),
+      'string',
+    );
   });
 });

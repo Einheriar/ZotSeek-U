@@ -21,6 +21,7 @@ function memoryEnvironment(
   const bundledFiles = new Map<string, Uint8Array>(Object.entries(bundled));
   const operations: string[] = [];
   let failMove = false;
+  let downloadDirectory: string | undefined;
   const environment: BriefPromptStoreEnvironment = {
     profileDir: '/profile',
     join: (...parts) => parts.join('/').replace(/\/{2,}/g, '/'),
@@ -53,6 +54,10 @@ function memoryEnvironment(
       if (!value) throw new Error('missing bundled prompt');
       return value;
     },
+    getDownloadDirectory: async () => {
+      if (!downloadDirectory) throw new Error('download directory unavailable');
+      return downloadDirectory;
+    },
   };
   return {
     environment,
@@ -60,6 +65,7 @@ function memoryEnvironment(
     bundledFiles,
     operations,
     failNextMove: () => { failMove = true; },
+    setDownloadDirectory: (path: string | undefined) => { downloadDirectory = path; },
   };
 }
 
@@ -146,5 +152,69 @@ describe('brief prompt store', () => {
     );
     assert.equal(new TextDecoder().decode(memory.files.get(destination)), 'previous prompt');
     assert.equal(memory.files.has(`${destination}.tmp-test`), false);
+  });
+
+  test('publishes a complete pair behind one atomic active record', async () => {
+    const published = await store.publishPair({ standard: '# Personal standard', review: '# Personal review' });
+    assert.equal(published.status, 'enabled');
+    assert.ok(published.version);
+    const version = published.version;
+    assert.equal((await store.loadRequired()).standard.content, '# Personal standard');
+    assert.equal((await store.loadRequired()).review.content, '# Personal review');
+    const activeBytes = memory.files.get(store.getActiveRecordPath());
+    assert.ok(activeBytes);
+    assert.match(new TextDecoder().decode(activeBytes), /"schema":1/);
+    assert.equal(memory.files.has(store.getVersionPromptPath(version, 'standard')), true);
+    assert.equal(memory.files.has(store.getVersionPromptPath(version, 'review')), true);
+  });
+
+  test('a single-slot import after paired publication preserves the other slot', async () => {
+    await store.publishPair({ standard: '# old standard', review: '# old review' });
+    const imported = await store.importFromFile('standard', '/imports/standard.md');
+    assert.equal(imported.content, '# 中文提示词');
+    const current = await store.loadRequired();
+    assert.equal(current.standard.content, '# 中文提示词');
+    assert.equal(current.review.content, '# old review');
+  });
+
+  test('downloads both files with safe non-overwriting names and reports partial failure', async () => {
+    memory.setDownloadDirectory('/downloads');
+    const result = await store.downloadPair({ standard: '# standard', review: '# review' });
+    assert.equal(result.status, 'downloaded');
+    assert.match(result.files.standard.path || '', /zotseek-brief-standard-.*\.md$/);
+    assert.match(result.files.review.path || '', /zotseek-brief-review-.*\.md$/);
+    assert.notEqual(result.files.standard.path, result.files.review.path);
+    const save = await store.saveGeneratedPair({ standard: '# next standard', review: '# next review' });
+    assert.equal(save.status, 'enabled');
+    assert.equal((await store.loadRequired()).review.content, '# next review');
+  });
+
+  test('cancellation before the active-record commit does not enable a partial pair', async () => {
+    const controller = new AbortController();
+    let writes = 0;
+    const originalWrite = memory.environment.write;
+    memory.environment.write = async (path, bytes) => {
+      await originalWrite(path, bytes);
+      writes++;
+      if (writes === 2) controller.abort();
+    };
+    await assert.rejects(
+      () => store.publishPair({ standard: '# cancelled standard', review: '# cancelled review' }, { signal: controller.signal }),
+      /cancelled/,
+    );
+    assert.equal(await memory.environment.exists(store.getActiveRecordPath()), false);
+    assert.equal((await store.loadRequired()).standard.source, 'bundled');
+  });
+
+  test('restores the validated bundled pair without deleting managed history', async () => {
+    const published = await store.publishPair({ standard: '# custom standard', review: '# custom review' });
+    assert.ok(published.version);
+    const historicalStandard = store.getVersionPromptPath(published.version!, 'standard');
+    const restored = await store.resetToBundled();
+    assert.equal(restored.standard.source, 'bundled');
+    assert.equal(restored.review.source, 'bundled');
+    assert.equal(await memory.environment.exists(store.getActiveRecordPath()), false);
+    assert.equal(await memory.environment.exists(historicalStandard), true);
+    assert.equal((await store.loadRequired()).standard.content, '# Bundled standard prompt');
   });
 });

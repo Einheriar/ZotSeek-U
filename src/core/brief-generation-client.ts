@@ -36,6 +36,39 @@ export interface BriefGenerationRequestOptions {
   retries?: number;
   /** Per-request ceiling for reasoning plus visible output. */
   maxCompletionTokens?: number;
+  /** Shared task cancellation signal. */
+  signal?: AbortSignal;
+}
+
+export type BriefProviderErrorCategory =
+  | 'authentication'
+  | 'permission'
+  | 'invalid-request'
+  | 'rate-limited'
+  | 'context-limit'
+  | 'server'
+  | 'upstream'
+  | 'protocol'
+  | 'timeout';
+
+export interface BriefGenerationTaskContext {
+  readonly signal: AbortSignal;
+  readonly cancelled: boolean;
+  cancel(): void;
+  throwIfCancelled(): void;
+}
+
+/** One cancellation object shared by extraction, classification, generation and commit. */
+export function createBriefGenerationTaskContext(): BriefGenerationTaskContext {
+  const controller = new AbortController();
+  return {
+    get signal() { return controller.signal; },
+    get cancelled() { return controller.signal.aborted; },
+    cancel: () => controller.abort(),
+    throwIfCancelled: () => {
+      if (controller.signal.aborted) throw new BriefGenerationCancelledError();
+    },
+  };
 }
 
 export interface BriefGenerationUsage {
@@ -62,6 +95,7 @@ export class BriefGenerationRequestError extends Error {
     public readonly status?: number,
     public readonly retryAfterMs?: number,
     public readonly retryable = false,
+    public readonly category: BriefProviderErrorCategory = 'protocol',
   ) {
     super(message);
     this.name = 'BriefGenerationRequestError';
@@ -115,11 +149,26 @@ function safeProviderCode(body: string): string | undefined {
     const parsed = JSON.parse(body);
     const candidate = parsed?.error?.code ?? parsed?.code ?? parsed?.error?.type;
     if (typeof candidate !== 'string') return undefined;
-    const safe = candidate.replace(/[^a-zA-Z0-9._-]/g, '').slice(0, 64);
-    return safe || undefined;
+    // Only stable, documented provider labels may cross the error boundary.
+    // Sanitizing arbitrary provider text is not a reliable redaction method.
+    const allowed = new Set([
+      'invalid_api_key', 'permission_denied', 'rate_limit', 'context_length_exceeded',
+      'invalid_request_error', 'server_error', 'insufficient_quota',
+    ]);
+    return allowed.has(candidate) ? candidate : undefined;
   } catch {
     return undefined;
   }
+}
+
+function providerCategory(status: number): BriefProviderErrorCategory {
+  if (status === 401) return 'authentication';
+  if (status === 403) return 'permission';
+  if (status === 413 || status === 422) return 'context-limit';
+  if (status === 400) return 'invalid-request';
+  if (status === 429) return 'rate-limited';
+  if (status >= 500) return 'server';
+  return 'upstream';
 }
 
 function abortControllerCtor(explicit?: any): any | null {
@@ -177,17 +226,30 @@ export class BriefGenerationClient {
   private async request(
     messages: BriefGenerationMessage[],
     maxCompletionTokens: number,
+    signal?: AbortSignal,
   ): Promise<BriefGenerationResult> {
     const endpoint = `${this.baseUrl}/chat/completions`;
     const Controller = this.abortController;
     const controller = Controller ? new Controller() : null;
     if (controller) this.activeControllers.add(controller);
     const timeoutMs = this.config.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+    let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
     const timer = controller ? setTimeout(() => {
       this.timedOutControllers.add(controller);
       controller.abort();
     }, timeoutMs) : null;
+    timeoutTimer = timer;
+    let removeAbortListener: (() => void) | null = null;
     try {
+      if (signal?.aborted) throw new BriefGenerationCancelledError();
+      if (signal && controller) {
+        const abort = () => {
+          this.cancelledControllers.add(controller);
+          try { controller.abort(); } catch { /* request completion handles cleanup */ }
+        };
+        signal.addEventListener('abort', abort, { once: true });
+        removeAbortListener = () => signal.removeEventListener('abort', abort);
+      }
       const request = this.fetchImpl(endpoint, {
         method: 'POST',
         headers: {
@@ -202,17 +264,28 @@ export class BriefGenerationClient {
           stream: false,
         }),
         redirect: 'error',
-        ...(controller ? { signal: controller.signal } : {}),
+        ...(controller ? { signal: controller.signal } : signal ? { signal } : {}),
       });
       const response = controller
         ? await request
         : await Promise.race([
             request,
-            new Promise<never>((_, reject) => setTimeout(
-              () => reject(new Error('Brief generation request timed out.')),
-              timeoutMs,
-            )),
+            new Promise<never>((_, reject) => {
+              timeoutTimer = setTimeout(
+                () => reject(new BriefGenerationRequestError(
+                  'Brief generation request timed out.', undefined, undefined, true, 'timeout',
+                )),
+                timeoutMs,
+              );
+            }),
           ]);
+      if (signal?.aborted) throw new BriefGenerationCancelledError();
+      if (!response || typeof response !== 'object' ||
+          typeof response.ok !== 'boolean' || !Number.isSafeInteger(response.status)) {
+        throw new BriefGenerationRequestError(
+          'Cloud provider returned an invalid HTTP response.', 502, undefined, false, 'upstream',
+        );
+      }
       const body = await response.text().catch(() => '');
       if (!response.ok) {
         const providerCode = safeProviderCode(body);
@@ -224,6 +297,7 @@ export class BriefGenerationClient {
             ? parseBriefRetryAfter(response.headers?.get?.('Retry-After') || null, this.now())
             : undefined,
           response.status === 429 || response.status >= 500,
+          providerCategory(response.status),
         );
       }
       const maxResponseChars = this.config.maxResponseChars
@@ -232,6 +306,9 @@ export class BriefGenerationClient {
         throw new BriefGenerationRequestError(
           'Cloud provider returned an unexpectedly large brief generation response.',
           502,
+          undefined,
+          false,
+          'protocol',
         );
       }
       let json: any;
@@ -241,28 +318,32 @@ export class BriefGenerationClient {
         throw new BriefGenerationRequestError(
           'Cloud provider returned invalid JSON for brief generation.',
           502,
+          undefined,
+          false,
+          'protocol',
         );
       }
       const choice = Array.isArray(json?.choices) && json.choices.length === 1
         ? json.choices[0]
         : null;
-      if (!choice || typeof choice.message !== 'object') {
+      if (!choice || typeof choice !== 'object' || choice === null ||
+          typeof choice.message !== 'object' || choice.message === null) {
         throw new BriefGenerationRequestError(
           'Cloud provider returned an invalid brief generation response.',
-          502,
+          502, undefined, false, 'protocol',
         );
       }
       if (choice.finish_reason === 'length') throw new BriefGenerationTruncatedError();
       if (choice.finish_reason !== 'stop') {
         throw new BriefGenerationRequestError(
           'Cloud provider did not complete the brief generation response.',
-          502,
+          502, undefined, false, 'protocol',
         );
       }
       if (typeof json.model !== 'string' || json.model !== this.config.modelName) {
         throw new BriefGenerationRequestError(
           'Cloud provider returned an unexpected brief generation model.',
-          502,
+          502, undefined, false, 'protocol',
         );
       }
       const content = typeof choice.message.content === 'string'
@@ -271,7 +352,7 @@ export class BriefGenerationClient {
       if (!content) {
         throw new BriefGenerationRequestError(
           'Cloud provider returned an empty brief generation response.',
-          502,
+          502, undefined, false, 'protocol',
         );
       }
       const reasoningContent = typeof choice.message.reasoning_content === 'string'
@@ -299,11 +380,13 @@ export class BriefGenerationClient {
           undefined,
           undefined,
           true,
+          'timeout',
         );
       }
       throw error;
     } finally {
-      if (timer) clearTimeout(timer);
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (removeAbortListener) removeAbortListener();
       if (controller) {
         this.activeControllers.delete(controller);
         this.cancelledControllers.delete(controller);
@@ -317,26 +400,27 @@ export class BriefGenerationClient {
     retries: number,
     maxCompletionTokens: number,
     cancellationGeneration: number,
+    signal?: AbortSignal,
   ): Promise<BriefGenerationResult> {
     for (let attempt = 0; attempt <= retries; attempt++) {
-      if (cancellationGeneration !== this.cancellationGeneration) {
+      if (cancellationGeneration !== this.cancellationGeneration || signal?.aborted) {
         throw new BriefGenerationCancelledError();
       }
       try {
-        return await this.request(messages, maxCompletionTokens);
+        return await this.request(messages, maxCompletionTokens, signal);
       } catch (error: any) {
         if (error instanceof BriefGenerationCancelledError ||
             error instanceof BriefGenerationTruncatedError) throw error;
         const retryable = error instanceof BriefGenerationRequestError
           ? error.retryable
-          : true;
+          : !(signal?.aborted || cancellationGeneration !== this.cancellationGeneration);
         if (!retryable) throw error;
         if (attempt >= retries) break;
         const delay = error instanceof BriefGenerationRequestError
           && error.retryAfterMs !== undefined
           ? error.retryAfterMs
           : RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)];
-        await this.waitForRetryDelay(delay, cancellationGeneration);
+        await this.waitForRetryDelay(delay, cancellationGeneration, signal);
       }
     }
     throw new BriefGenerationUnavailableError();
@@ -345,19 +429,27 @@ export class BriefGenerationClient {
   private async waitForRetryDelay(
     delayMs: number,
     cancellationGeneration: number,
+    signal?: AbortSignal,
   ): Promise<void> {
-    if (cancellationGeneration !== this.cancellationGeneration) {
+    if (cancellationGeneration !== this.cancellationGeneration || signal?.aborted) {
       throw new BriefGenerationCancelledError();
     }
     let wakeForCancellation: () => void = () => {};
     const cancelled = new Promise<void>(resolve => { wakeForCancellation = resolve; });
+    let removeAbortListener: (() => void) | null = null;
+    if (signal) {
+      const abort = () => wakeForCancellation();
+      signal.addEventListener('abort', abort, { once: true });
+      removeAbortListener = () => signal.removeEventListener('abort', abort);
+    }
     this.retryWaiters.add(wakeForCancellation);
     try {
       await Promise.race([this.sleepImpl(delayMs), cancelled]);
     } finally {
       this.retryWaiters.delete(wakeForCancellation);
+      if (removeAbortListener) removeAbortListener();
     }
-    if (cancellationGeneration !== this.cancellationGeneration) {
+    if (cancellationGeneration !== this.cancellationGeneration || signal?.aborted) {
       throw new BriefGenerationCancelledError();
     }
   }
@@ -393,6 +485,7 @@ export class BriefGenerationClient {
       retries,
       maxCompletionTokens,
       this.cancellationGeneration,
+      normalized.signal,
     );
   }
 
