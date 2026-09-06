@@ -10,7 +10,7 @@ zotseek-pref-localServerState = Local Server ({ $state })
 zotseek-pref-cloudSlotReady = Cloud ({ $model })
 zotseek-pref-cloudSlotSetup = Cloud (SETUP REQUIRED)
 zotseek-pref-cloudTitle = Cloud Model
-zotseek-pref-cloudDesc = Configurez un service d'embeddings Cloud avec BYOK. Le contenu indexé et les requêtes sémantiques sont envoyés au fournisseur ; Zotseek-U ne facture rien et ne perçoit aucune part de ces frais. L'indexation et la recherche nécessitent une connexion Internet et consomment le quota API du fournisseur, ce qui peut entraîner des frais ; consultez sa documentation tarifaire pour plus de détails.
+zotseek-pref-cloudDesc = Configurez un service d'embeddings Cloud avec BYOK. Le contenu indexé et les requêtes sémantiques sont envoyés au fournisseur ; ZotSeek-U ne facture rien et ne perçoit aucune part de ces frais. L'indexation et la recherche nécessitent une connexion Internet et consomment le quota API du fournisseur, ce qui peut entraîner des frais ; consultez sa documentation tarifaire pour plus de détails.
 zotseek-pref-cloudProvider = Provider
 zotseek-pref-cloudBaseUrl = Base URL
 zotseek-pref-cloudModel = Model
@@ -69,12 +69,12 @@ zotseek-menu-findRelated = Trouver des documents associés
 
 ## Toolbar
 
-zotseek-toolbar-openZotSeek = Ouvrir Zotseek-U
+zotseek-toolbar-openZotSeek = Ouvrir ZotSeek-U
 zotseek-toolbar-findSimilar = Trouver des documents similaires
 
 ## Preference pane
 
-zotseek-pref-title = Zotseek-U
+zotseek-pref-title = ZotSeek-U
 zotseek-pref-indexStatistics = Statistiques de l’index
 zotseek-pref-papersIndexed = Documents indexés
 zotseek-pref-totalChunks = Segments totaux
@@ -205,9 +205,9 @@ zotseek-pref-maxChunks = Nombre maximal de segments par document
 zotseek-pref-maxChunksDesc = Limite pour les documents longs (1–200)
 zotseek-pref-excludeBooks =
     .label = Exclure les livres de l’indexation
-zotseek-pref-excludeBooksDesc = Les livres ne seront pas indexés. Les index Zotseek-U existants des livres seront supprimés lors de la prochaine vérification de l’index.
+zotseek-pref-excludeBooksDesc = Les livres ne seront pas indexés. Les index ZotSeek-U existants des livres seront supprimés lors de la prochaine vérification de l’index.
 zotseek-pref-excludeTag = Étiquette à exclure
-zotseek-pref-excludeTagDesc = Les éléments portant cette étiquette ne seront pas indexés. Les index Zotseek-U existants des éléments correspondants seront supprimés lors de la prochaine vérification de l’index. Laissez vide pour désactiver.
+zotseek-pref-excludeTagDesc = Les éléments portant cette étiquette ne seront pas indexés. Les index ZotSeek-U existants des éléments correspondants seront supprimés lors de la prochaine vérification de l’index. Laissez vide pour désactiver.
 zotseek-pref-actions = Actions
 zotseek-pref-maintenanceRepair = Maintenance et réparation
 zotseek-pref-updateIndex =

@@ -10,7 +10,7 @@ zotseek-pref-localServerState = Local Server ({ $state })
 zotseek-pref-cloudSlotReady = Cloud ({ $model })
 zotseek-pref-cloudSlotSetup = Cloud (SETUP REQUIRED)
 zotseek-pref-cloudTitle = Cloud Model
-zotseek-pref-cloudDesc = Konfigurieren Sie einen BYOK-Cloud-Embedding-Dienst. Indexinhalte und semantische Suchanfragen werden an den Cloud-Anbieter gesendet; Zotseek-U erhebt keine Gebühren und erhält keinen Anteil daran. Indizierung und Suche benötigen eine Internetverbindung und verbrauchen das API-Kontingent des Anbieters, wodurch Kosten entstehen können; Einzelheiten finden Sie in der Preisdokumentation des Cloud-Anbieters.
+zotseek-pref-cloudDesc = Konfigurieren Sie einen BYOK-Cloud-Embedding-Dienst. Indexinhalte und semantische Suchanfragen werden an den Cloud-Anbieter gesendet; ZotSeek-U erhebt keine Gebühren und erhält keinen Anteil daran. Indizierung und Suche benötigen eine Internetverbindung und verbrauchen das API-Kontingent des Anbieters, wodurch Kosten entstehen können; Einzelheiten finden Sie in der Preisdokumentation des Cloud-Anbieters.
 zotseek-pref-cloudProvider = Provider
 zotseek-pref-cloudBaseUrl = Base URL
 zotseek-pref-cloudModel = Model
@@ -69,12 +69,12 @@ zotseek-menu-findRelated = Verwandte Dokumente finden
 
 ## Toolbar
 
-zotseek-toolbar-openZotSeek = Zotseek-U öffnen
+zotseek-toolbar-openZotSeek = ZotSeek-U öffnen
 zotseek-toolbar-findSimilar = Ähnliche Dokumente finden
 
 ## Preference pane
 
-zotseek-pref-title = Zotseek-U
+zotseek-pref-title = ZotSeek-U
 zotseek-pref-indexStatistics = Indexstatistik
 zotseek-pref-papersIndexed = Indizierte Dokumente
 zotseek-pref-totalChunks = Chunks insgesamt
@@ -205,9 +205,9 @@ zotseek-pref-maxChunks = Maximale Chunks pro Dokument
 zotseek-pref-maxChunksDesc = Limit für lange Dokumente (1–200)
 zotseek-pref-excludeBooks =
     .label = Bücher von der Indizierung ausschließen
-zotseek-pref-excludeBooksDesc = Bücher werden nicht indiziert. Vorhandene Zotseek-U-Indizes für Bücher werden bei der nächsten Indexprüfung entfernt.
+zotseek-pref-excludeBooksDesc = Bücher werden nicht indiziert. Vorhandene ZotSeek-U-Indizes für Bücher werden bei der nächsten Indexprüfung entfernt.
 zotseek-pref-excludeTag = Schlagwort ausschließen
-zotseek-pref-excludeTagDesc = Einträge mit diesem Schlagwort werden nicht indiziert. Vorhandene Zotseek-U-Indizes für passende Einträge werden bei der nächsten Indexprüfung entfernt. Leer lassen, um die Funktion zu deaktivieren.
+zotseek-pref-excludeTagDesc = Einträge mit diesem Schlagwort werden nicht indiziert. Vorhandene ZotSeek-U-Indizes für passende Einträge werden bei der nächsten Indexprüfung entfernt. Leer lassen, um die Funktion zu deaktivieren.
 zotseek-pref-actions = Aktionen
 zotseek-pref-maintenanceRepair = Wartung und Reparatur
 zotseek-pref-updateIndex =

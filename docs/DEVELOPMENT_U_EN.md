@@ -1,6 +1,6 @@
 # ZotSeek-U Development Guide (DEVELOPMENT_U_EN)
 
-> **About this document:** This is the English counterpart of `DEVELOPMENT_U_CN.md`. It records the features, architecture and development workflow that **ZotSeek-CHS** (public brand **ZotSeek-U**) adds on top of upstream [ZotSeek](https://github.com/introfini/ZotSeek), and is the fork's primary development document, maintained with the repository. Documentation baseline: `1.20.558` (2026-09-06). The Chinese version (`DEVELOPMENT_U_CN.md`) is the source of truth; when the two diverge, it wins and this file must be brought back in sync.
+> **About this document:** This is the English counterpart of `DEVELOPMENT_U_CN.md`. It records the features, architecture and development workflow that **ZotSeek-U** adds on top of upstream [ZotSeek](https://github.com/introfini/ZotSeek), and is the fork's primary development document, maintained with the repository. Documentation baseline: `0.1.0` (2026-09-06). The Chinese version (`DEVELOPMENT_U_CN.md`) is the source of truth; when the two diverge, it wins and this file must be brought back in sync.
 >
 > Companion reading: the upstream development journal (pre-fork, single-model Nomic era, frozen for historical reference, no longer maintained) is [DEVELOPMENT.md](DEVELOPMENT.md); runtime details of search, chunking and indexing modes live in [SEARCH_ARCHITECTURE_EN.md](SEARCH_ARCHITECTURE_EN.md); MCP/REST usage is documented in [MCP.md](MCP.md).
 >
@@ -29,7 +29,7 @@
 
 ## 1. Relationship to Upstream
 
-ZotSeek-CHS forked upstream at v1.19.x with the goal of making Zotero infrastructure for the AI era of literature management, focusing on Chinese/multilingual semantic retrieval, embeddings, hybrid search, Metadata + Notes indexing, and a local MCP interface. Upstream v1.20.0 was integrated on 2026-08-24 (Zotero 10 database hooks, multi-collection indexing, worker thread fixes, database reconnection/remount, idle compaction, model asset self-repair); the compatibility range is Zotero 9.0 – 10.0.*.
+ZotSeek-U forked upstream at v1.19.x with the goal of making Zotero infrastructure for the AI era of literature management, focusing on Chinese/multilingual semantic retrieval, embeddings, hybrid search, Metadata + Notes indexing, and a local MCP interface. Upstream v1.20.0 was integrated on 2026-08-24 (Zotero 10 database hooks, multi-collection indexing, worker thread fixes, database reconnection/remount, idle compaction, model asset self-repair); the compatibility range is Zotero 9.0 – 10.0.*.
 
 **Kept from upstream** (largely untouched, only extended):
 
@@ -229,7 +229,7 @@ On top of upstream's `search` / `find_similar` / `index_status` (full usage in [
 
 - Visual and information-architecture cleanup: embedding/token/chunk settings no longer live under the Search area; "max tokens per chunk / max chunks per paper" moved into "Chunking and model input" at the end of the Models group; model-input-policy hints show only "hard limit / recommended value"; spacing across stats, operations and maintenance sections was unified; all copy is synced across the 10 locales.
 - Search settings gained a "default search mode" dropdown (Semantic / Keyword / Hybrid, default `hybrid`, reusing the existing preference key); dropdown width tuned to avoid Chinese truncation.
-- The About section links to this fork's repository, `https://github.com/Einheriar/ZotSeek-CHS`.
+- The About section links to this fork's repository, `https://github.com/Einheriar/ZotSeek-U`.
 - Legacy `alert` prompts such as chunk-strategy-upgrade notices became cancellable `confirm` dialogs (closing triggers no rebuild).
 - Known non-blocking UI issue: multiple bottom-right notification windows can overlap; assessed and accepted as-is.
 

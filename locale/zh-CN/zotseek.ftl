@@ -14,12 +14,12 @@ zotseek-menu-findRelated = 查找相关文献
 
 ## Toolbar
 
-zotseek-toolbar-openZotSeek = 打开 Zotseek-U
+zotseek-toolbar-openZotSeek = 打开 ZotSeek-U
 zotseek-toolbar-findSimilar = 查找相似文献
 
 ## Preference pane
 
-zotseek-pref-title = Zotseek-U
+zotseek-pref-title = ZotSeek-U
 zotseek-pref-indexStatistics = 索引统计
 zotseek-pref-papersIndexed = 已索引文献
 zotseek-pref-totalChunks = 总分块数
@@ -117,7 +117,7 @@ zotseek-pref-localServerState = Local Server（{ $state }）
 zotseek-pref-cloudSlotReady = Cloud（{ $model }）
 zotseek-pref-cloudSlotSetup = Cloud（需要设置）
 zotseek-pref-cloudTitle = Cloud 模型
-zotseek-pref-cloudDesc = 配置 BYOK 云端 Embedding 服务。索引内容和语义查询会发送给云厂商；Zotseek-U 不收费，也不从中分成。索引和查询均需联网并消耗云厂商 API 额度，可能产生费用；具体计费请参考云厂商的费率文档。
+zotseek-pref-cloudDesc = 配置 BYOK 云端 Embedding 服务。索引内容和语义查询会发送给云厂商；ZotSeek-U 不收费，也不从中分成。索引和查询均需联网并消耗云厂商 API 额度，可能产生费用；具体计费请参考云厂商的费率文档。
 zotseek-pref-cloudProvider = 服务商
 zotseek-pref-cloudBaseUrl = Base URL
 zotseek-pref-cloudModel = 模型
@@ -205,9 +205,9 @@ zotseek-pref-maxChunks = 每篇文献最大分块数
 zotseek-pref-maxChunksDesc = 长文档限制（1–200）
 zotseek-pref-excludeBooks =
     .label = 排除书籍
-zotseek-pref-excludeBooksDesc = 书籍将不建立索引；已有的书籍 Zotseek-U 索引会在下次检查索引时移除。
+zotseek-pref-excludeBooksDesc = 书籍将不建立索引；已有的书籍 ZotSeek-U 索引会在下次检查索引时移除。
 zotseek-pref-excludeTag = 排除标签
-zotseek-pref-excludeTagDesc = 带有此标签的条目将不建立索引；匹配条目的现有 Zotseek-U 索引会在下次检查索引时移除。留空以禁用。
+zotseek-pref-excludeTagDesc = 带有此标签的条目将不建立索引；匹配条目的现有 ZotSeek-U 索引会在下次检查索引时移除。留空以禁用。
 zotseek-pref-actions = 操作
 zotseek-pref-maintenanceRepair = 维护与修复
 zotseek-pref-updateIndex =

@@ -1,5 +1,5 @@
 zotseek-menuTools-search =
-    .label = Zotseek-U
+    .label = ZotSeek-U
 
 zotseek-menuCollection-index =
     .label = 檢查並更新目前的分類

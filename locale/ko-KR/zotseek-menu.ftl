@@ -1,5 +1,5 @@
 zotseek-menuTools-search =
-    .label = Zotseek-U
+    .label = ZotSeek-U
 
 zotseek-menuCollection-index =
     .label = 현재 컬렉션 확인 및 업데이트

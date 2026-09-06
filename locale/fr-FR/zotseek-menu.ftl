@@ -1,5 +1,5 @@
 zotseek-menuTools-search =
-    .label = Zotseek-U
+    .label = ZotSeek-U
 
 zotseek-menuCollection-index =
     .label = Vérifier et mettre à jour la collection actuelle

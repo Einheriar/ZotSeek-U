@@ -11,7 +11,7 @@ const updateJsonPath = path.resolve(rootDir, 'update.json');
 
 // GitHub repo info for update URLs
 const GITHUB_OWNER = 'Einheriar';
-const GITHUB_REPO = 'ZotSeek-CHS';
+const GITHUB_REPO = 'ZotSeek-U';
 
 /**
  * Generate update.json from manifest.json version
@@ -85,7 +85,7 @@ async function createXpi(version) {
 }
 
 async function release() {
-  console.log('ZotSeek Release\n');
+  console.log('ZotSeek-U Release\n');
 
   // Step 1: Run bumpp to get new version. Interactive by default; pass an
   // explicit version as the first argument to run unattended, e.g.
@@ -145,7 +145,7 @@ async function release() {
   console.log('  1. Review the changes: git diff');
   console.log('  2. Commit: git add -A && git commit -m "Release v' + version + '"');
   console.log('  3. Tag: git tag v' + version);
-  console.log('  4. Push: git push && git push --tags');
+  console.log('  4. Push: git push origin main && git push origin --tags');
   console.log('  5. Create GitHub release and upload the XPI');
 }
 

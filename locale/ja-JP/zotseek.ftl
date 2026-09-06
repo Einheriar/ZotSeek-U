@@ -8,7 +8,7 @@ zotseek-pref-localServerState = Local Server ({ $state })
 zotseek-pref-cloudSlotReady = Cloud ({ $model })
 zotseek-pref-cloudSlotSetup = Cloud (SETUP REQUIRED)
 zotseek-pref-cloudTitle = Cloud Model
-zotseek-pref-cloudDesc = BYOK のクラウド Embedding サービスを設定します。インデックス対象の内容とセマンティック検索クエリはクラウド事業者に送信されます。Zotseek-U は料金を請求せず、手数料も受け取りません。インデックス作成と検索にはインターネット接続が必要で、事業者の API 利用枠を消費し、料金が発生する場合があります。詳しくはクラウド事業者の料金資料を確認してください。
+zotseek-pref-cloudDesc = BYOK のクラウド Embedding サービスを設定します。インデックス対象の内容とセマンティック検索クエリはクラウド事業者に送信されます。ZotSeek-U は料金を請求せず、手数料も受け取りません。インデックス作成と検索にはインターネット接続が必要で、事業者の API 利用枠を消費し、料金が発生する場合があります。詳しくはクラウド事業者の料金資料を確認してください。
 zotseek-pref-cloudProvider = Provider
 zotseek-pref-cloudBaseUrl = Base URL
 zotseek-pref-cloudModel = Model
@@ -65,11 +65,11 @@ zotseek-menu-removeFromIndex = ZotSeekのインデックスから削除
 zotseek-menu-findRelated = 関連文献を検索
 
 ## Toolbar
-zotseek-toolbar-openZotSeek = Zotseek-Uを開く
+zotseek-toolbar-openZotSeek = ZotSeek-Uを開く
 zotseek-toolbar-findSimilar = 類似文献を検索
 
 ## Preference pane
-zotseek-pref-title = Zotseek-U
+zotseek-pref-title = ZotSeek-U
 zotseek-pref-indexStatistics = インデックス統計
 zotseek-pref-papersIndexed = インデックス済み文献
 zotseek-pref-totalChunks = チャンク数
@@ -200,9 +200,9 @@ zotseek-pref-maxChunks = 文献あたりの最大チャンク数
 zotseek-pref-maxChunksDesc = 長い文書の上限（1～200）
 zotseek-pref-excludeBooks =
     .label = 書籍をインデックスから除外
-zotseek-pref-excludeBooksDesc = 書籍はインデックス化されません。書籍の既存のZotseek-Uインデックスは、次回のインデックス確認時に削除されます。
+zotseek-pref-excludeBooksDesc = 書籍はインデックス化されません。書籍の既存のZotSeek-Uインデックスは、次回のインデックス確認時に削除されます。
 zotseek-pref-excludeTag = 除外タグ
-zotseek-pref-excludeTagDesc = このタグを持つ項目はインデックス化されません。一致する項目の既存Zotseek-Uインデックスは、次回の確認時に削除されます。無効にするには空欄にしてください。
+zotseek-pref-excludeTagDesc = このタグを持つ項目はインデックス化されません。一致する項目の既存ZotSeek-Uインデックスは、次回の確認時に削除されます。無効にするには空欄にしてください。
 zotseek-pref-actions = 操作
 zotseek-pref-maintenanceRepair = メンテナンスと修復
 zotseek-pref-updateIndex =

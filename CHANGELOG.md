@@ -1,8 +1,10 @@
 # Changelog
 
-All notable changes to ZotSeek - Semantic Search for Zotero will be documented in this file.
+All notable changes to ZotSeek-U will be documented in this file.
 
 ## Unreleased
+
+## [0.1.0] - 2026-09-06
 
 ### Added
 - **PDF main-text indexing strategy v1.** Full indexing now selects only a
@@ -15,6 +17,13 @@ All notable changes to ZotSeek - Semantic Search for Zotero will be documented i
   chunk strategy 6.
 
 ### Changed
+- Renamed the public project and Zotero add-on display name to ZotSeek-U.
+- Restarted the independent fork's release numbering at 0.1.0 while retaining
+  the original `zotseek@zotero.org` add-on ID, `zotseek.sqlite` database, and
+  `extensions.zotero.zotseek.*` preference namespace. ZotSeek-U therefore
+  replaces ZotSeek and preserves its local index and settings when installed
+  directly over the existing add-on.
+- Moved the update manifest source from the development branch to `main`.
 - All three indexing modes now share one Metadata Summary contract: title,
   abstracts of at least 50 characters, and trimmed/sorted Zotero tags except
   tags starting with `#`. Abstract mode therefore gains ordinary tag recall;

@@ -10,7 +10,7 @@ zotseek-pref-localServerState = Local Server ({ $state })
 zotseek-pref-cloudSlotReady = Cloud ({ $model })
 zotseek-pref-cloudSlotSetup = Cloud (SETUP REQUIRED)
 zotseek-pref-cloudTitle = Cloud Model
-zotseek-pref-cloudDesc = กำหนดค่าบริการ Cloud Embedding แบบ BYOK เนื้อหาที่จัดทำดัชนีและคำค้นหาเชิงความหมายจะถูกส่งไปยังผู้ให้บริการคลาวด์ โดย Zotseek-U ไม่เรียกเก็บค่าบริการหรือรับส่วนแบ่งค่าบริการ การจัดทำดัชนีและการค้นหาต้องเชื่อมต่ออินเทอร์เน็ตและใช้โควตา API ของผู้ให้บริการ ซึ่งอาจมีค่าใช้จ่าย โปรดดูรายละเอียดจากเอกสารอัตราค่าบริการของผู้ให้บริการคลาวด์
+zotseek-pref-cloudDesc = กำหนดค่าบริการ Cloud Embedding แบบ BYOK เนื้อหาที่จัดทำดัชนีและคำค้นหาเชิงความหมายจะถูกส่งไปยังผู้ให้บริการคลาวด์ โดย ZotSeek-U ไม่เรียกเก็บค่าบริการหรือรับส่วนแบ่งค่าบริการ การจัดทำดัชนีและการค้นหาต้องเชื่อมต่ออินเทอร์เน็ตและใช้โควตา API ของผู้ให้บริการ ซึ่งอาจมีค่าใช้จ่าย โปรดดูรายละเอียดจากเอกสารอัตราค่าบริการของผู้ให้บริการคลาวด์
 zotseek-pref-cloudProvider = Provider
 zotseek-pref-cloudBaseUrl = Base URL
 zotseek-pref-cloudModel = Model
@@ -69,12 +69,12 @@ zotseek-menu-findRelated = ค้นหาเอกสารที่เกี�
 
 ## Toolbar
 
-zotseek-toolbar-openZotSeek = เปิด Zotseek-U
+zotseek-toolbar-openZotSeek = เปิด ZotSeek-U
 zotseek-toolbar-findSimilar = ค้นหาเอกสารที่คล้ายกัน
 
 ## Preference pane
 
-zotseek-pref-title = Zotseek-U
+zotseek-pref-title = ZotSeek-U
 zotseek-pref-indexStatistics = สถิติดัชนี
 zotseek-pref-papersIndexed = จำนวนเอกสารในดัชนี
 zotseek-pref-totalChunks = จำนวนชิ้นข้อมูลทั้งหมด
@@ -205,9 +205,9 @@ zotseek-pref-maxChunks = ชิ้นข้อมูลสูงสุดต่�
 zotseek-pref-maxChunksDesc = จำกัดสำหรับเอกสารยาว (1–200)
 zotseek-pref-excludeBooks =
     .label = ยกเว้นหนังสือจากการจัดทำดัชนี
-zotseek-pref-excludeBooksDesc = จะไม่จัดทำดัชนีหนังสือ ดัชนี Zotseek-U ที่มีอยู่สำหรับหนังสือจะถูกลบในการตรวจสอบดัชนีครั้งถัดไป
+zotseek-pref-excludeBooksDesc = จะไม่จัดทำดัชนีหนังสือ ดัชนี ZotSeek-U ที่มีอยู่สำหรับหนังสือจะถูกลบในการตรวจสอบดัชนีครั้งถัดไป
 zotseek-pref-excludeTag = แท็กที่ยกเว้น
-zotseek-pref-excludeTagDesc = รายการที่มีแท็กนี้จะไม่ถูกจัดทำดัชนี ดัชนี Zotseek-U ที่มีอยู่สำหรับรายการที่ตรงกันจะถูกลบในการตรวจสอบดัชนีครั้งถัดไป เว้นว่างเพื่อปิดใช้งาน
+zotseek-pref-excludeTagDesc = รายการที่มีแท็กนี้จะไม่ถูกจัดทำดัชนี ดัชนี ZotSeek-U ที่มีอยู่สำหรับรายการที่ตรงกันจะถูกลบในการตรวจสอบดัชนีครั้งถัดไป เว้นว่างเพื่อปิดใช้งาน
 zotseek-pref-actions = การดำเนินการ
 zotseek-pref-maintenanceRepair = การบำรุงรักษาและซ่อมแซม
 zotseek-pref-updateIndex =

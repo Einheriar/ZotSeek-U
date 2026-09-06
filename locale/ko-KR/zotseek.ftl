@@ -8,7 +8,7 @@ zotseek-pref-localServerState = Local Server ({ $state })
 zotseek-pref-cloudSlotReady = Cloud ({ $model })
 zotseek-pref-cloudSlotSetup = Cloud (SETUP REQUIRED)
 zotseek-pref-cloudTitle = Cloud Model
-zotseek-pref-cloudDesc = BYOK 클라우드 Embedding 서비스를 구성합니다. 색인 콘텐츠와 의미 검색어가 클라우드 제공업체로 전송되며, Zotseek-U는 요금을 부과하거나 수수료를 받지 않습니다. 색인과 검색 모두 인터넷 연결이 필요하고 제공업체의 API 할당량을 사용하므로 비용이 발생할 수 있습니다. 자세한 요금은 클라우드 제공업체의 요금 문서를 참조하세요.
+zotseek-pref-cloudDesc = BYOK 클라우드 Embedding 서비스를 구성합니다. 색인 콘텐츠와 의미 검색어가 클라우드 제공업체로 전송되며, ZotSeek-U는 요금을 부과하거나 수수료를 받지 않습니다. 색인과 검색 모두 인터넷 연결이 필요하고 제공업체의 API 할당량을 사용하므로 비용이 발생할 수 있습니다. 자세한 요금은 클라우드 제공업체의 요금 문서를 참조하세요.
 zotseek-pref-cloudProvider = Provider
 zotseek-pref-cloudBaseUrl = Base URL
 zotseek-pref-cloudModel = Model
@@ -65,11 +65,11 @@ zotseek-menu-removeFromIndex = ZotSeek 색인에서 제거
 zotseek-menu-findRelated = 관련 문서 찾기
 
 ## Toolbar
-zotseek-toolbar-openZotSeek = Zotseek-U 열기
+zotseek-toolbar-openZotSeek = ZotSeek-U 열기
 zotseek-toolbar-findSimilar = 유사 문서 찾기
 
 ## Preference pane
-zotseek-pref-title = Zotseek-U
+zotseek-pref-title = ZotSeek-U
 zotseek-pref-indexStatistics = 색인 통계
 zotseek-pref-papersIndexed = 색인된 문서
 zotseek-pref-totalChunks = 총 청크 수
@@ -200,9 +200,9 @@ zotseek-pref-maxChunks = 문서당 최대 청크
 zotseek-pref-maxChunksDesc = 긴 문서의 제한 (1~200)
 zotseek-pref-excludeBooks =
     .label = 책을 색인에서 제외
-zotseek-pref-excludeBooksDesc = 책은 색인되지 않습니다. 책의 기존 Zotseek-U 색인은 다음 색인 확인 때 제거됩니다.
+zotseek-pref-excludeBooksDesc = 책은 색인되지 않습니다. 책의 기존 ZotSeek-U 색인은 다음 색인 확인 때 제거됩니다.
 zotseek-pref-excludeTag = 제외할 태그
-zotseek-pref-excludeTagDesc = 이 태그가 있는 항목은 색인되지 않습니다. 일치하는 항목의 기존 Zotseek-U 색인은 다음 확인 때 제거됩니다. 사용하지 않으려면 비워 두세요.
+zotseek-pref-excludeTagDesc = 이 태그가 있는 항목은 색인되지 않습니다. 일치하는 항목의 기존 ZotSeek-U 색인은 다음 확인 때 제거됩니다. 사용하지 않으려면 비워 두세요.
 zotseek-pref-actions = 작업
 zotseek-pref-maintenanceRepair = 유지 관리 및 복구
 zotseek-pref-updateIndex =

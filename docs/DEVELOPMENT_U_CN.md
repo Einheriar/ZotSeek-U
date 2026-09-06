@@ -1,6 +1,6 @@
 # ZotSeek-U 开发文档（DEVELOPMENT_U）
 
-> **本文档定位：** 记录 **ZotSeek-CHS**（公开品牌 **ZotSeek-U**）相对上游 [ZotSeek](https://github.com/introfini/ZotSeek) 的全部新增功能、架构设计与开发流程，是本 fork 的第一手开发文档，随仓库持续维护。文档基准：`1.20.558`（2026-09-06）。
+> **本文档定位：** 记录 **ZotSeek-U** 相对上游 [ZotSeek](https://github.com/introfini/ZotSeek) 的全部新增功能、架构设计与开发流程，是本 fork 的第一手开发文档，随仓库持续维护。文档基准：`0.1.0`（2026-09-06）。
 >
 > 配套阅读：上游原版开发日志（Nomic 单模型时代口径，已冻结存档，不再维护）见 [DEVELOPMENT.md](DEVELOPMENT.md)；搜索、分块与索引模式的运行时行为细节见 [SEARCH_ARCHITECTURE_CN.md](SEARCH_ARCHITECTURE_CN.md)；MCP/REST 接口使用见 [MCP.md](MCP.md)。
 >
@@ -29,7 +29,7 @@
 
 ## 1. 与上游的关系
 
-ZotSeek-CHS 基于 upstream v1.19.x fork，目标是让 Zotero 成为文献管理 AI 时代的基础设施，重点维护中文/多语言语义检索、Embedding、hybrid 混合搜索、Metadata + Notes 索引和本地 MCP 接口。2026-08-24 已整合上游 v1.20.0（Zotero 10 数据库钩子、多合集索引、Worker 线程修复、数据库重连重挂载、空闲压缩、模型资源自修复），兼容范围为 Zotero 9.0 – 10.0.*。
+ZotSeek-U 基于 upstream v1.19.x fork，目标是让 Zotero 成为文献管理 AI 时代的基础设施，重点维护中文/多语言语义检索、Embedding、hybrid 混合搜索、Metadata + Notes 索引和本地 MCP 接口。2026-08-24 已整合上游 v1.20.0（Zotero 10 数据库钩子、多合集索引、Worker 线程修复、数据库重连重挂载、空闲压缩、模型资源自修复），兼容范围为 Zotero 9.0 – 10.0.*。
 
 **保留自上游的能力**（fork 基本未动，仅做扩展）：
 
@@ -229,7 +229,7 @@ UI / MCP / REST 共用同一策略分流（`src/core/search-policy.ts`）。语�
 
 - 设置页视觉与信息层级整理：Embedding / token / chunk 设置不再归属 Search 区域；"每分块最大令牌数 / 每篇文献最大分块数"迁入模型分组末尾的"分块与模型输入"；模型输入策略提示只保留"硬上限 / 推荐值"；统计、操作、维护区间距统一收紧；全部文案同步 10 个语言包。
 - 搜索设置新增"默认搜索模式"下拉（Semantic / Keyword / Hybrid，默认 `hybrid`，复用既有偏好键）；下拉列宽调整避免中文截断。
-- 关于页链接指向本 fork 仓库 `https://github.com/Einheriar/ZotSeek-CHS`。
+- 关于页链接指向本 fork 仓库 `https://github.com/Einheriar/ZotSeek-U`。
 - 分块策略升级提示等旧式 `alert` 改为可关闭的 `confirm`（关闭不触发重建）。
 - 已知非阻断 UI 问题：多个右下角通知窗口可能重叠遮挡，经评估接受现状。
 

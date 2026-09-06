@@ -1,6 +1,6 @@
 # Search Architecture
 
-> **Note (ZotSeek-CHS fork):** This is the English counterpart of the fork's search/chunking architecture documentation. The Chinese version ([SEARCH_ARCHITECTURE_CN.md](SEARCH_ARCHITECTURE_CN.md)) is the source of truth; keep the two in sync when search or indexing behavior changes. ASCII diagrams and code blocks are intentionally identical in both versions.
+> **Note (ZotSeek-U fork):** This is the English counterpart of the fork's search/chunking architecture documentation. The Chinese version ([SEARCH_ARCHITECTURE_CN.md](SEARCH_ARCHITECTURE_CN.md)) is the source of truth; keep the two in sync when search or indexing behavior changes. ASCII diagrams and code blocks are intentionally identical in both versions.
 
 A comprehensive guide to how semantic and hybrid search works in ZotSeek.
 
@@ -43,7 +43,7 @@ ZotSeek's search is built from three layers: **identity navigation** (resolving 
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                 SEARCH ARCHITECTURE OVERVIEW (ZotSeek-CHS)                  │
+│                  SEARCH ARCHITECTURE OVERVIEW (ZotSeek-U)                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │                                 USER QUERY                                  │

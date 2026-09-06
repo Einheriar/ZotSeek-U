@@ -1,6 +1,6 @@
 # 搜索架构（中文版）
 
-> **说明（ZotSeek-CHS fork）：** 本文件是 fork 搜索/分块架构文档的**中文母本**；英文对照版见 [SEARCH_ARCHITECTURE_EN.md](SEARCH_ARCHITECTURE_EN.md)。搜索或索引行为变化时两份必须同步更新。文中的 ASCII 架构图与代码块刻意与英文版保持逐字一致，便于与源码对照。
+> **说明（ZotSeek-U fork）：** 本文件是 fork 搜索/分块架构文档的**中文母本**；英文对照版见 [SEARCH_ARCHITECTURE_EN.md](SEARCH_ARCHITECTURE_EN.md)。搜索或索引行为变化时两份必须同步更新。文中的 ASCII 架构图与代码块刻意与英文版保持逐字一致，便于与源码对照。
 
 本文档完整说明 ZotSeek 的语义检索与 Hybrid 混合搜索是如何工作的。
 
@@ -43,7 +43,7 @@ ZotSeek 的搜索由三层机制组成：**身份导航**（先在 Zotero 元数
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                 SEARCH ARCHITECTURE OVERVIEW (ZotSeek-CHS)                  │
+│                  SEARCH ARCHITECTURE OVERVIEW (ZotSeek-U)                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │                                 USER QUERY                                  │
