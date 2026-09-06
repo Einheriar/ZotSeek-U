@@ -69,7 +69,7 @@ export class ZotSeekDialogVTable {
   // Multi-query state
   private queryCount: number = 1;  // Number of active query fields
   private combineOperator: 'and' | 'or' = 'and';
-  private andFormula: 'min' | 'product' | 'average' = 'min';  // AND combination formula
+  private andFormula: 'min' | 'product' | 'average' = 'product';  // AND combination formula (Plan 59: geometric mean avoids min's hub bias on specialized libraries)
   private maxQueries: number = 4;  // Support up to 4 queries
 
   constructor() {
@@ -188,6 +188,9 @@ export class ZotSeekDialogVTable {
           this.performSearch();
         }
       });
+      // Align the visible selection with the code default; the menulist
+      // would otherwise keep showing its first item.
+      (operatorSelect as any).value = this.combineOperator;
 
       // AND formula dropdown (only relevant when AND is selected)
       const formulaSelect = doc.getElementById('query-and-formula');
@@ -199,6 +202,9 @@ export class ZotSeekDialogVTable {
           this.performSearch();
         }
       });
+      // The product default is not the first menuitem, so the visible
+      // selection must be synced explicitly.
+      (formulaSelect as any).value = this.andFormula;
 
       // Bind input events for all query fields (2, 3, 4)
       for (let i = 2; i <= this.maxQueries; i++) {
@@ -1501,7 +1507,7 @@ export class ZotSeekDialogVTable {
     this.excludeItemId = undefined;  // Reset excluded item
     this.queryCount = 1;  // Reset to single query mode
     this.combineOperator = 'and';  // Reset operator
-    this.andFormula = 'min';  // Reset formula
+    this.andFormula = 'product';  // Reset formula (must match the initial default)
     this.logger.info('Search dialog cleaned up');
   }
 }
