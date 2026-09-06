@@ -1,5 +1,7 @@
 # Search Architecture
 
+> **Note (ZotSeek-CHS fork):** This is the English counterpart of the fork's search/chunking architecture documentation. The Chinese version ([SEARCH_ARCHITECTURE_CN.md](SEARCH_ARCHITECTURE_CN.md)) is the source of truth; keep the two in sync when search or indexing behavior changes. ASCII diagrams and code blocks are intentionally identical in both versions.
+
 A comprehensive guide to how semantic and hybrid search works in ZotSeek.
 
 ---
@@ -8,90 +10,78 @@ A comprehensive guide to how semantic and hybrid search works in ZotSeek.
 
 1. [Overview](#overview)
 2. [Search Modes](#search-modes)
-3. [Hybrid Search with RRF](#hybrid-search-with-rrf)
-4. [Multi-Query Search](#multi-query-search)
-   - [AND/OR Combination](#andor-combination)
-   - [AND Combination Formulas](#and-combination-formulas)
-5. [Semantic Search Pipeline](#semantic-search-pipeline)
-   - [MaxSim Aggregation](#maxsim-aggregation)
-   - [Parent-Child Retrieval Pattern](#parent-child-retrieval-pattern)
-6. [Chunking Strategy](#chunking-strategy)
-   - [Trade-offs: Chunk Size Selection](#trade-offs-chunk-size-selection)
-   - [Version-Aware Defaults](#version-aware-defaults)
-   - [Paragraph-Based Chunking](#paragraph-based-chunking)
+3. [Search Approach](#search-approach)
+4. [Hybrid Search with RRF](#hybrid-search-with-rrf)
+5. [Multi-Query Search](#multi-query-search)
+6. [Semantic Search Pipeline](#semantic-search-pipeline)
+7. [BM25 Pipeline](#bm25-pipeline)
+8. [Chunking Strategy](#chunking-strategy)
+   - [Model-aware maxTokens](#model-aware-maxtokens)
+   - [Structured Child Note Chunking](#structured-child-note-chunking)
+   - [PDF Main-Text Preprocessing](#pdf-main-text-preprocessing)
+   - [Incremental Indexing-Mode Transitions](#incremental-indexing-mode-transitions)
    - [Truncation Detection (Max Chunks per Paper)](#truncation-detection-max-chunks-per-paper)
-   - [Token Estimation](#token-estimation)
-   - [Chunk Overlap](#chunk-overlap)
-7. [Section-Aware Chunking](#section-aware-chunking)
+9. [Section-Aware Chunking](#section-aware-chunking)
    - [References Filtering](#references-filtering)
-8. [Performance Optimizations](#performance-optimizations)
-9. [Embedding Model Registry](#embedding-model-registry)
-   - [Curated Model Set](#curated-model-set)
-   - [Partitioned Search by Model](#partitioned-search-by-model)
-   - [Switching Models](#switching-models)
-   - [Local-Server-Backed Embeddings](#local-server-backed-embeddings)
-   - [Cloud Embeddings](#cloud-embeddings)
-10. [Database Schema](#database-schema)
-    - [Stable Identity (Schema v8)](#stable-identity-schema-v8)
-    - [Per-Model Embeddings (Schema v9)](#per-model-embeddings-schema-v9)
-11. [Query Analysis](#query-analysis)
+10. [Performance Optimizations](#performance-optimizations)
+11. [Embedding Model Registry](#embedding-model-registry)
+    - [Local-Server-Backed Embeddings](#local-server-backed-embeddings)
+    - [Cloud Embeddings](#cloud-embeddings)
+12. [Database Schema](#database-schema)
+    - [Child Note Paths (Schema v11)](#child-note-paths-schema-v11)
+    - [Exact PDF Source (Schema v12)](#exact-pdf-source-schema-v12)
+13. [Query Analysis](#query-analysis)
+14. [Configuration](#configuration)
+15. [Summary](#summary)
+
 
 ---
 
 ## Overview
 
-The plugin offers three search modes, each optimized for different use cases:
+ZotSeek's search is built from three layers: **identity navigation** (resolving DOI, title and author-style queries against Zotero metadata first), **RRF fusion between a semantic side and a keyword branch** (the keyword branch merges T0 BM25 with Zotero quicksearch), and — Full mode only — **source-aware result allocation**. The user-facing search modes (Semantic / Keyword / Hybrid) are different combinations of these layers; the underlying mechanisms and their costs are described in [Search Approach](#search-approach), and the pipeline details in [Semantic Search Pipeline](#semantic-search-pipeline) and [BM25 Pipeline](#bm25-pipeline).
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                        SEARCH ARCHITECTURE OVERVIEW                          │
+│                 SEARCH ARCHITECTURE OVERVIEW (ZotSeek-CHS)                  │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│                              USER QUERY                                      │
-│                                  │                                           │
-│                                  ▼                                           │
-│                       ┌───────────────────┐                                  │
-│                       │   Query Analyzer  │                                  │
-│                       │   (Auto-weights)  │                                  │
-│                       └─────────┬─────────┘                                  │
-│                                 │                                            │
-│              ┌──────────────────┼──────────────────┐                         │
-│              │                  │                  │                         │
-│              ▼                  ▼                  ▼                         │
-│    ┌─────────────────┐ ┌───────────────┐ ┌─────────────────┐                │
-│    │ 🧠 Semantic      │ │ 🔗 Hybrid     │ │ 🔤 Keyword      │                │
-│    │ (Embeddings)    │ │ (RRF Fusion)  │ │ (Zotero Search) │                │
-│    └────────┬────────┘ └───────┬───────┘ └────────┬────────┘                │
-│             │                  │                  │                          │
-│             │         ┌───────┴───────┐          │                          │
-│             │         │               │          │                          │
-│             ▼         ▼               ▼          ▼                          │
-│    ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐             │
-│    │ Cosine     │ │ Semantic   │ │ Keyword    │ │ Title/     │             │
-│    │ Similarity │ │ Results    │ │ Results    │ │ Author/    │             │
-│    └────────────┘ └─────┬──────┘ └─────┬──────┘ │ Year Match │             │
-│                         │              │        └────────────┘             │
-│                         └──────┬───────┘                                    │
-│                                │                                            │
-│                                ▼                                            │
-│                    ┌───────────────────────┐                                │
-│                    │  Reciprocal Rank      │                                │
-│                    │  Fusion (RRF)         │                                │
-│                    │                       │                                │
-│                    │  score = Σ 1/(k+rank) │                                │
-│                    └───────────┬───────────┘                                │
-│                                │                                            │
-│                                ▼                                            │
-│                    ┌───────────────────────┐                                │
-│                    │   RANKED RESULTS      │                                │
-│                    │   with indicators:    │                                │
-│                    │   🔗 Both sources     │                                │
-│                    │   🧠 Semantic only    │                                │
-│                    │   🔤 Keyword only     │                                │
-│                    └───────────────────────┘                                │
-│                                                                              │
+│                                                                             │
+│                                 USER QUERY                                  │
+│                                      │                                      │
+│                                      ▼                                      │
+│          ┌────────────────────────────────────────────────────────┐         │
+│          │IDENTITY NAVIGATION (metadata-only prepass)             │         │
+│          │exact DOI / full title / distinctive title              │         │
+│          │fragment (>=3 Latin words or >=6 CJK chars)             │         │
+│          │author name -> author collection                        │         │
+│          └────────────────────────────────────────────────────────┘         │
+│                                      │  concept query (no identity match)   │
+│                                      ▼                                      │
+│┌────────────────────────────────────────────────────────┐                   │
+││MODE-AWARE CONTENT STRATEGY (search-policy.ts)          │                   │
+│└──────┬───────────────────┬────────────────────┬────────┘                   │
+│                 │                   │                    │                  │
+│             abstract              notes                full                 │
+│          ┌─────────────┐  ┌───────────────────┐ ┌─────────────────┐         │
+│          │semantic-only│  │R1 Notes semantic  │ │Notes + PDF      │         │
+│          │content path │  │+ T0 BM25 lexical  │ │semantic         │         │
+│          │(R1 Summary) │  │RRF fusion (k=60)  │ │specialists      │         │
+│          │             │  │                   │ │Notes -> top 2   │         │
+│          │             │  │                   │ │PDF -> fills tail│         │
+│          └─────────────┘  └───────────────────┘ └─────────────────┘         │
+│                                                                             │
+│T0 BM25: Intl.Segmenter(zh-Hans) natural terms + CJK bigrams;                │
+│BM25 (k1=1.2, b=0.75), zero third-party dependencies                         │
+│                                                                             │
+│User-facing modes: Semantic / Keyword / Hybrid (default)                     │
+│Keyword branch = T0 BM25 over chunk text + Zotero quick                      │
+│search, merged per item. Identity prepass reads Zotero                       │
+│metadata only. Explicit semantic / keyword selection                         │
+│bypasses the default strategy.                                               │
+│                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
+
 
 ---
 
@@ -99,12 +89,13 @@ The plugin offers three search modes, each optimized for different use cases:
 
 ### 🔗 Hybrid (Recommended)
 
-Hybrid is the product-default entry point. It first performs metadata-only
-identity navigation for exact DOI/title, unique distinctive title fragments and
-author collections, then selects a content strategy from the stable indexing
-mode. A Latin title fragment needs at least three words and 12 characters; a
-continuous CJK fragment needs at least six characters. Weaker or ambiguous
-fragments abstain and keep the semantic/content path:
+Hybrid is the product-default entry point and runs in three layers:
+
+1. **Identity navigation**: the query is first resolved against Zotero metadata — exact DOIs, full titles, and unique distinctive title fragments (Latin: at least 3 words and 12 characters; continuous CJK: at least 6 characters) return the paper directly, and an author name returns the author's collection. Candidates are validated through the original Zotero Search gate; weaker or ambiguous fragments abstain and fall through to the content path.
+2. **RRF fusion of semantic and keyword branch**: the semantic side ranks by embeddings and MaxSim; the keyword branch merges T0 BM25 (over locally indexed chunk text) with Zotero quicksearch (metadata + heuristic re-ranking) per item. The two ranked lists are fused with RRF (`k=60`).
+3. **Source-aware allocation (Full mode only)**: the Notes specialist owns the top two head slots; PDF semantic results fill the tail after deduplication.
+
+The content strategy selected by indexing mode:
 
 | Indexing mode | Default content strategy |
 |---------------|--------------------------|
@@ -112,12 +103,7 @@ fragments abstain and keep the semantic/content path:
 | `notes` | R1 Metadata + Notes semantic and T0 BM25, RRF (`k=60`) |
 | `full` | first two papers from the Notes H1 specialist, then PDF semantic results |
 
-The Full result allocation is source-aware: it de-duplicates papers, lets PDF
-fill the tail, and falls back to remaining Notes results only when PDF cannot
-fill the requested result count. For `topK=10` this is the finalized product `2+8`
-contract. Other result counts keep at most two Notes head slots. Passage mode
-uses the same positional rule but has not received the paper-level Plan 37
-paired validation.
+The Full result allocation is source-aware: it de-duplicates papers, lets PDF fill the tail, and falls back to remaining Notes results only when PDF cannot fill the requested result count. For `topK=10` this is the finalized product `2+8` contract. Other result counts keep at most two Notes head slots. Passage mode uses the same positional rule but has not received the paper-level Plan 37 paired validation.
 
 | Query Type | Pure Semantic | Pure Keyword | Hybrid |
 |------------|---------------|--------------|--------|
@@ -128,7 +114,7 @@ paired validation.
 
 ### 🧠 Semantic Only
 
-Uses AI embeddings to find conceptually related papers, even with different wording.
+Explicitly selecting semantic mode **bypasses the default strategy**: no keyword branch, no source allocation; identity navigation still runs first (this is the default content path of `abstract` mode).
 
 **Best for:**
 - Conceptual queries: "how does automation affect human decision making"
@@ -141,16 +127,54 @@ Uses AI embeddings to find conceptually related papers, even with different word
 
 ### 🔤 Keyword Only
 
-Uses Zotero's built-in quick search on titles, authors, years, tags.
+Explicitly selecting keyword mode also bypasses the default strategy and runs the keyword branch alone: **T0 BM25** (over locally indexed chunk text, covering exact terms inside Notes/PDF bodies) and **Zotero quicksearch** (metadata retrieval + heuristic re-ranking) merged into one ranking.
 
 **Best for:**
 - Author searches: "Smith 2023"
 - Exact terms: "PRISMA 2020"
 - Tag-based filtering
+- Exact phrases from note or PDF body text
 
 **Limitations:**
 - No semantic understanding
 - Won't find synonyms or related concepts
+
+
+---
+
+## Search Approach
+
+Search modes are the user-facing entry points; this chapter describes the machinery underneath them — what original ZotSeek provided, why the fork added BM25, and what the addition costs.
+
+### The original design: semantic + keyword search
+
+**Semantic search** maps queries and chunks into embedding vectors, ranks by cosine similarity, and aggregates to paper granularity with MaxSim (details in [Semantic Search Pipeline](#semantic-search-pipeline)). It excels at conceptual matches and reworded hits, but does not understand authors or years and is unreliable on exact terms.
+
+**Keyword search** uses Zotero's built-in quick search (`quicksearch-everything` or `quicksearch-titleCreatorYear`) over titles, creators, years and tags. Quick search does not rank by relevance, so the plugin re-ranks heuristically: title-term matches up to +0.3, +0.15 when every query term appears in the title, +0.15 for a year match, +0.10 for an author surname match, capped at 1.0 (scoring details in [Query Analysis](#query-analysis)). It is strong on identity queries and exact terms, with no semantic generalization.
+
+Original Hybrid was the RRF fusion of these two lists. Its gap: quick search does not index note or PDF body text; hitting exact body terms outside metadata required a `LOWER(chunk_text) LIKE` containment scan over stored chunks — a path that degrades linearly with Full-mode corpus size. On a real 150-paper Full corpus (8,873 chunks, ~9M characters) the keyword branch took 5.71 s while semantic took 1.81 s.
+
+### The addition: the T0 BM25 lexical channel
+
+The fork replaced the LIKE containment scan with classic **BM25** ranking: an inverted index over locally indexed chunk text, scored by term frequency and inverse document frequency. Tokenization uses the **zero-dependency** T0 contract — `Intl.Segmenter('zh-Hans')` natural words plus CJK bigrams as dual channels (implementation in [BM25 Pipeline](#bm25-pipeline)).
+
+It solves two problems:
+
+- **Exact body-term hits**: original terms inside Notes/PDF (drug names, abbreviations, method names) are now guaranteed by the inverted index instead of depending on embedding similarity;
+- **Controllable scale**: BM25 walks postings only for terms the query actually hits — far better scaling than per-chunk `LIKE` full-text scans.
+
+quick search was **not removed**: it continues to cover the metadata side, and its hits merge with BM25 per item into the "keyword branch" that RRF fuses against semantic. Hybrid today is therefore a blend of three mechanisms — semantic embeddings + Zotero metadata keywords + body-text BM25 — preceded by identity navigation.
+
+### Costs
+
+BM25 is not free; the costs land in three places:
+
+- **Database capacity**: BM25's corpus is the faithful per-chunk `chunk_text` stored in the database, and that text must be kept complete in `zotseek.sqlite` — it cannot be trimmed for space. On the measured 150-paper Full corpus (8,894 chunks, ~9.03M characters) `chunk_text` accounts for 8.3 MiB of the 44 MiB database (vector payloads account for 31.3 MiB).
+- **In-process memory**: the inverted index (term table + postings) stays resident after construction — roughly 66,532 terms and 967,798 postings at that corpus size. The cache is dropped when Zotero exits and is not persisted.
+- **Cold-build latency**: the first lexical query after startup or invalidation rebuilds in about 4.4–6.5 s (measured in Plan 40B); concurrent queries join the same build, and during sustained indexing the safe-degradation policy temporarily omits lexical evidence (see [Performance Optimizations](#performance-optimizations)).
+
+Once the cache is warm the BM25 branch adds very little per query; modes whose corpus excludes Notes/PDF bodies (`abstract`) are smaller and build faster.
+
 
 ---
 
@@ -183,7 +207,7 @@ RRF is a technique for combining ranked lists from different search systems with
     │ │ 3  │ Trust calibration for automated systems  │ 82%     │    │
     │ └────┴──────────────────────────────────────────┴─────────┘    │
     │                                                                 │
-    │ KEYWORD SEARCH (by relevance):                                  │
+    │ KEYWORD BRANCH (BM25 + quicksearch):                            │
     │ ┌────┬──────────────────────────────────────────┬─────────┐    │
     │ │Rank│ Paper                                    │ Score   │    │
     │ ├────┼──────────────────────────────────────────┼─────────┤    │
@@ -220,6 +244,56 @@ RRF is a technique for combining ranked lists from different search systems with
     └─────────────────────────────────────────────────────────────────┘
 ```
 
+> The "KEYWORD BRANCH" on the right of the diagram is not plain metadata search: it merges hits from **T0 BM25** (over locally indexed chunk text) and **Zotero quicksearch** (metadata + heuristic re-ranking) per item; the merge rules are in [Query Analysis](#query-analysis).
+
+### The three-layer default pipeline
+
+The full Hybrid default pipeline is shown below. Note that Layer 3 exists only in `full` mode; in `notes` mode the Layer 2 result is returned directly, and in `abstract` mode only the semantic side runs after identity navigation.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                   HYBRID DEFAULT PIPELINE (three layers)                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│                                 USER QUERY                                  │
+│                                      │                                      │
+│                                      ▼                                      │
+│    ┌────────────────────────────────────────────────────────────────────┐   │
+│    │LAYER 1 - IDENTITY NAVIGATION (metadata prepass)                    │   │
+│    │exact DOI / full title / distinctive title fragment                 │   │
+│    │(Latin >= 3 words & 12 chars, CJK >= 6 chars)                       │   │
+│    │author name -> author collection; candidates                        │   │
+│    │validated through the original Zotero Search gate                   │   │
+│    └────────────────────────────────────────────────────────────────────┘   │
+│                                      │  content query (no identity match)   │
+│                                      ▼                                      │
+│    │LAYER 2 - RRF FUSION (k=60)                                         │   │
+│    │                                                                    │   │
+│    │  ┌────────────────────┐          ┌──────────────────────────┐      │   │
+│    │  │semantic list       │          │keyword branch            │      │   │
+│    │  │embeddings +        │          │T0 BM25 over chunk        │      │   │
+│    │  │MaxSim per paper    │          │text + Zotero             │      │   │
+│    │  │                    │          │quicksearch, merged       │      │   │
+│    │  │                    │          │per item                  │      │   │
+│    │  └────────────────────┘          └──────────────────────────┘      │   │
+│    │                                                                    │   │
+│    │fused by Reciprocal Rank Fusion (k=60)                              │   │
+│    └─────────────────────────────────┬──────────────────────────────────┘   │
+│                                      │                                      │
+│                                      ▼                                      │
+│    ┌────────────────────────────────────────────────────────────────────┐   │
+│    │LAYER 3 - FULL MODE ONLY: SOURCE ALLOCATION                         │   │
+│    │Notes specialist owns the top-2 head slots;                         │   │
+│    │PDF semantic results fill the tail (2+8 at topK=10)                 │   │
+│    └────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│notes mode    = Layer 2 result directly (R1 semantic + T0 BM25)              │
+│abstract mode = identity navigation + semantic-only content                  │
+│explicit semantic / keyword selection bypasses Layer 2 fusion                │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
 ### Why RRF?
 
 | Property | Benefit |
@@ -229,13 +303,71 @@ RRF is a technique for combining ranked lists from different search systems with
 | **Robust** | Top results from ANY source get boosted |
 | **Production-proven** | Used by Elasticsearch, Vespa, Pinecone |
 
+Fusion weight has a single source: when automatic weight adjustment is on, query analysis tunes the semantic/lexical share inside the Notes H1 specialist (see [Query Analysis](#query-analysis)); when off, both sides are 50/50. RRF consumes ranks only — the raw BM25 score is already normalized to [0, 1] inside the keyword branch.
+
 ### Result Indicators
 
 | Icon | Meaning | Interpretation |
 |------|---------|----------------|
 | 🔗 | Found by BOTH | High confidence - matches semantically AND by keywords |
 | 🧠 | Semantic only | Conceptually related but may use different terminology |
-| 🔤 | Keyword only | Exact match but not indexed for semantic search |
+| 🔤 | Keyword only | Exact match but semantic retrieval did not cover it |
+
+### Source-aware allocation (Full mode)
+
+`full` mode adds one allocation step after RRF (`fullSourceAwareSearch()`):
+
+1. The Notes specialist (RRF of R1 semantic + T0 BM25) and the PDF semantic specialist produce independent rankings; the two semantic specialists share one query embedding, one vector-cache filter and one dot-product traversal.
+2. Notes results own the first `FULL_NOTES_HEAD_SLOTS = 2` head slots.
+3. PDF semantic results fill the remaining slots after stable-identity deduplication (`2+8` at `topK=10`).
+4. When PDF is short, remaining Notes results backfill.
+
+This contract comes from the Plan 37/40 offline and runtime validation; passage mode follows the same positional rule but has not received paper-level paired validation.
+
+
+### Offline Benchmark: Four Index Modes x Five Search Methods
+
+The six figures come from the Plan 58 unified offline matrix: the frozen `10_Hyperscanning`
+150-paper corpus, the MN-50 / FT-50 question sets, `multilingual-e5-base`, T0 BM25
+(k1=1.2 / b=0.75) and RRF k=60. The primary run and an independent replay are byte-identical,
+11 historical bindings match at six decimals; full numbers live in `plan/REPORT-58`. All
+clusters within one figure share the same question set, so cross-cluster differences directly
+reflect the coverage limits of index content; the metadata side of `keyword-legacy` is an
+offline approximation.
+
+**MN-50 questions (notes/abstract track):**
+
+![Recall@10 - MN-50 Questions](images/plan58-mn-recall-at10.png)
+
+![MRR@10 - MN-50 Questions](images/plan58-mn-mrr-at10.png)
+
+All-metrics panel (3 production index modes x 3 current methods, all 7 metrics at a glance; the PDF-only research track is not a production index mode and is omitted here):
+
+![All Metrics - MN-50 Questions](images/plan58-mn-all-metrics.png)
+
+**FT-50 questions (PDF detail track):**
+
+![Recall@10 - FT-50 Questions](images/plan58-ft-recall-at10.png)
+
+![MRR@10 - FT-50 Questions](images/plan58-ft-mrr-at10.png)
+
+All-metrics panel (FT track):
+
+![All Metrics - FT-50 Questions](images/plan58-ft-all-metrics.png)
+
+Conclusions readable directly from the figures:
+
+- On the Metadata + Notes mode the current Hybrid reaches R@10 0.87 / MRR 0.817, the best of
+  this track; BM25 alone already hits 0.87 — the T0 lexical upgrade is the main gain behind the
+  current Hybrid versus the legacy Hybrid (MRR 0.549).
+- On the abstract mode lexical evidence is too weak: the current Hybrid front rank (R@1 0.06)
+  drops below pure semantic (0.22) — the numeric reason production defaults the `abstract` mode
+  to semantic-only.
+- Only clusters containing PDF text achieve high recall on FT questions: the PDF-only cluster
+  reaches R@10 0.73 while Metadata + Notes stays at 0.41-0.44; Full mode under the production
+  `FIXED-NOTES-2-8` contract from the previous section reaches FT R@10 0.78 / MRR 0.499.
+- The legacy keyword path (quicksearch proxy + K0) nearly fails on Chinese content questions
+  (R@10 <= 0.18), which is the direct motivation for replacing it with T0 BM25.
 
 ---
 
@@ -253,7 +385,7 @@ ZotSeek supports combining up to 4 search queries with AND/OR logic to find pape
 │  │ Query 1: "machine learning"                                           │ │
 │  │ Query 2: "healthcare"                                                 │ │
 │  │ Query 3: "ethics"                                                     │ │
-│  │ Operator: AND (Minimum formula)                                       │ │
+│  │ Operator: AND (Product formula)                                       │ │
 │  └───────────────────────────────────────────────────────────────────────┘ │
 │                               │                                           │
 │                               ▼                                           │
@@ -272,18 +404,18 @@ ZotSeek supports combining up to 4 search queries with AND/OR logic to find pape
 │  └───────────────────────────────────────────────────────────────────────┘ │
 │                               │                                           │
 │                               ▼                                           │
-│  SCORE COMBINATION (AND with Minimum formula):                             │
+│  SCORE COMBINATION (AND with Product formula):                             │
 │  ┌───────────────────────────────────────────────────────────────────────┐ │
-│  │ Paper A: min(0.85, 0.72, 0.68) = 0.68                                 │ │
+│  │ Paper A: (0.85×0.72×0.68)^(1/3) = 0.746                               │ │
 │  │ Paper B: EXCLUDED (doesn't match all queries)                         │ │
-│  │ Paper C: min(0.78, 0.81, 0.75) = 0.75  ← HIGHEST                      │ │
+│  │ Paper C: (0.78×0.81×0.75)^(1/3) = 0.779  ← HIGHEST                    │ │
 │  └───────────────────────────────────────────────────────────────────────┘ │
 │                               │                                           │
 │                               ▼                                           │
 │  FINAL RANKING:                                                            │
 │  ┌───────────────────────────────────────────────────────────────────────┐ │
-│  │ 1. Paper C: 75% (78|81|75)  ← combined score (per-query scores)       │ │
-│  │ 2. Paper A: 68% (85|72|68)                                            │ │
+│  │ 1. Paper C: 78% (78|81|75)  ← combined score (per-query scores)       │ │
+│  │ 2. Paper A: 75% (85|72|68)                                            │ │
 │  └───────────────────────────────────────────────────────────────────────┘ │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -298,7 +430,7 @@ ZotSeek supports combining up to 4 search queries with AND/OR logic to find pape
 
 **AND Mode:**
 - Only papers appearing in ALL query results are included
-- Combined score determined by the selected formula (see below)
+- Combined score determined by the selected formula (default: Product / geometric mean; see below)
 - Best for finding papers at the intersection of multiple topics
 
 **OR Mode:**
@@ -308,7 +440,13 @@ ZotSeek supports combining up to 4 search queries with AND/OR logic to find pape
 
 ### AND Combination Formulas
 
-When using AND mode, three formulas are available for combining scores:
+When using AND mode, three formulas are available for combining scores; the default is **Product (geometric mean)**:
+
+The default follows the Plan 59 offline reproduction probe: on shared-gold pairs Product/average hit
+Top10 6/6 (the achievable ceiling) while min reached only 4/6. min takes the weakest sub-score, which
+compresses combined scores into a narrow band where uniformly-decent survey papers can outrank the
+actual target in a specialized library. Product balances both sides while still penalizing a weak
+side more than average does. Minimum remains available for the strictest intersection.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -318,7 +456,7 @@ When using AND mode, three formulas are available for combining scores:
 │  Example: Paper scores for 3 queries = [0.85, 0.72, 0.68]                   │
 │                                                                             │
 │  ┌───────────────────────────────────────────────────────────────────────┐ │
-│  │ MINIMUM (default)                                                     │ │
+│  │ MINIMUM (strictest)                                                   │ │
 │  │ Formula: min(scores)                                                  │ │
 │  │ Result:  min(0.85, 0.72, 0.68) = 0.68                                 │ │
 │  │                                                                       │ │
@@ -328,7 +466,7 @@ When using AND mode, three formulas are available for combining scores:
 │  └───────────────────────────────────────────────────────────────────────┘ │
 │                                                                             │
 │  ┌───────────────────────────────────────────────────────────────────────┐ │
-│  │ PRODUCT (geometric mean)                                              │ │
+│  │ PRODUCT (default)                                                     │ │
 │  │ Formula: (∏ scores)^(1/n) = nth root of product                       │ │
 │  │ Result:  (0.85 × 0.72 × 0.68)^(1/3) = 0.746                           │ │
 │  │                                                                       │ │
@@ -382,7 +520,7 @@ result.semanticScore = 0.68;              // Combined score
 The Match column shows combined score plus per-query breakdown:
 
 ```
-73% (85|72|68)
+75% (85|72|68)
  │    └──┴──┴── Individual query scores (Q1|Q2|Q3)
  └───────────── Combined score using selected formula
 ```
@@ -396,29 +534,34 @@ This helps users understand which queries matched strongly and which were weaker
 ### Embedding Generation
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                     EMBEDDING PIPELINE                               │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  INPUT TEXT                           EMBEDDING VECTOR               │
-│  ┌─────────────────────────┐         ┌─────────────────────┐        │
-│  │ "Machine learning for   │         │ [0.023, -0.045,     │        │
-│  │  medical diagnosis      │   →     │  0.012, 0.089,      │        │
-│  │  using deep neural      │         │  -0.034, 0.056,     │        │
-│  │  networks..."           │         │  ... 768 values]    │        │
-│  └─────────────────────────┘         └─────────────────────┘        │
-│                                                                      │
-│  MODEL: nomic-embed-text-v1.5                                       │
-│  ├── Context: 8192 tokens                                           │
-│  ├── Dimensions: 768                                                │
-│  ├── Size: 131MB (quantized)                                        │
-│  └── Quality: Outperforms OpenAI text-embedding-3-small             │
-│                                                                      │
-│  INSTRUCTION PREFIXES (improve retrieval quality):                   │
-│  ├── Documents: "search_document: <text>"                           │
-│  └── Queries:   "search_query: <text>"                              │
-│                                                                      │
-└─────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────┐
+│                  EMBEDDING PIPELINE (model-aware)                  │
+├────────────────────────────────────────────────────────────────────┤
+│                                                                    │
+│  INPUT TEXT (exact-token counted)      EMBEDDING VECTOR            │
+│  ┌─────────────────────────┐           ┌─────────────────────┐     │
+│  │ "Machine learning for   │           │ [0.023, -0.045,     │     │
+│  │  medical diagnosis ..." │   --->    │  0.012, ... 768 or  │     │
+│  │                         │           │  1024 values]       │     │
+│  └─────────────────────────┘           └─────────────────────┘     │
+│                                                                    │
+│  MODEL REGISTRY (model-registry.ts / model-input-config.ts)        │
+│  ┌──────────────────────────────────────────────────────────┐      │
+│  │ multilingual-e5-base    768   512       bundled default  │      │
+│  │ nomic-embed-text-v1.5   768   8192      optional download│      │
+│  │ bge-m3                  1024  8192      optional download│      │
+│  └──────────────────────────────────────────────────────────┘      │
+│                                                                    │
+│  INSTRUCTION PREFIXES (registry-driven, model-aware):              │
+│  ├── E5:      "query: " / "passage: "                              │
+│  ├── Nomic:   "search_query: " / "search_document: "               │
+│  └── BGE-M3:  none                                                 │
+│                                                                    │
+│  TOKEN COUNTING:                                                   │
+│  ├── E5 / BGE-M3: exact local tokenizer (prefix + special tokens)  │
+│  └── Nomic / server / cloud: conservative word estimator           │
+│                                                                    │
+└────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Cosine Similarity
@@ -559,18 +702,59 @@ const key = returnAllChunks
 
 ---
 
+## BM25 Pipeline
+
+This chapter parallels [Semantic Search Pipeline](#semantic-search-pipeline) and describes the T0 BM25 implementation inside the keyword branch (`src/core/lexical-search.ts` plus the lexical cache in `vector-store-sqlite.ts`). The faithful `chunk_text` produced by chunking is BM25's corpus.
+
+### Tokenization: the T0 contract
+
+- **Normalization**: NFC normalization + language-agnostic lowercasing (`toLocaleLowerCase('und')`).
+- **Natural-word channel**: `Intl.Segmenter('zh-Hans', { granularity: 'word' })`, keeping only `isWordLike` segments that contain letters/digits. Zotero 9+ ships this API; runtimes without a Segmenter fall back to deterministic `\p{L}\p{N}` regex splitting, leaving the CJK channel unchanged.
+- **CJK bigram channel**: adjacent character pairs over continuous Han/Hiragana/Katakana/Hangul runs. Chinese has no whitespace word boundaries, so bigrams guarantee that any two-character combination can be hit; the natural-word channel keeps whole words exact.
+- When both channels produce the same term, the **maximum TF** wins.
+- Frozen contract IDs: `intl-segmenter-zh-hans-cjk-bigram-v1` (tokenizer) and `chunk-bm25-k1-1.2-b-0.75-v1` (BM25 parameters), keeping index-side and query-side behavior consistent across versions.
+
+Why not jieba/pkuseg or other third-party tokenizers: the Plan 24B/24C ablations showed jieba-wasm (T2) had the best retrieval metrics, but ~4.03 MB of WASM, ~67 MB steady-state memory and first-init costs were not worth it; the zero-dependency T0 was the best overall choice and is frozen as the production contract. The library-wide keyword dictionary patch (`library-term-patch-v1`) is likewise frozen as disabled.
+
+### Inverted index and scoring
+
+- **Document unit** is a single chunk (`itemPk:chunkIndex`); document length = total term count; `postings` maps term → (document → TF).
+- Scoring is standard BM25:
+
+```
+score(D, Q) = Σ IDF(t) · tf(t,D) · (k1 + 1) / ( tf(t,D) + k1 · (1 − b + b · |D| / avgLen) )
+IDF(t)      = ln( 1 + (N − df + 0.5) / (df + 0.5) )              k1 = 1.2, b = 0.75
+```
+
+- **Source isolation reaches the statistics layer**: `N`, `df` and the average document length are recomputed within the set of documents the current query is allowed to see (the Notes specialist restricts to metadata/note sources, the PDF specialist to PDF sources) — not computed corpus-wide and filtered afterwards. Each specialist sees a self-consistent corpus statistics set.
+- **Paper-granularity exit**: only the BM25-best chunk of each paper enters the ranking (deterministic tie-break: score first, then libraryKey/itemKey), so a single paper cannot flood the list with fragments.
+- **Score normalization**: raw BM25 scores are unbounded; before output they are normalized by the query's best hit to [0, 1] — order-preserving, and it lets BM25 compete directly with quicksearch heuristic scores (also 0–1) in the merge and in the UI.
+- The default returns the top 50 matches (`limit`).
+
+### Cache and lifecycle
+
+- The index is **in-process and non-persistent**: built once per active-model partition, dropped when Zotero exits, rebuilt on the next query.
+- It shares one mutation generation with the vector cache but keeps its own keyed single-flight: concurrent cold queries join one build; publishing re-checks generation, active model and store lifecycle; a stale build is discarded and retried at most once.
+- While indexing writes are ongoing, the safe-degradation policy temporarily omits index-side lexical evidence rather than serving known-stale mixed results (see [Performance Optimizations](#performance-optimizations)).
+- **Model partitions**: chunks from the active model are preferred; papers not yet rebuilt for the active model fall back to a deterministically chosen older partition so lexical retrieval survives migration without mixing two copies of the same paper.
+- Build diagnostics log only sizes (chunk count, characters/bytes, unique terms, postings, elapsed time) — never corpus text or queries.
+
+Build cost and memory overhead are in [Search Approach](#search-approach); the merge rules with quicksearch hits are in [Query Analysis](#query-analysis).
+
+
+---
+
 ## Chunking Strategy
 
 ### Trade-offs: Chunk Size Selection
 
 Embedding time scales **O(n²)** with sequence length due to transformer attention. Chunk size directly impacts both indexing speed and search quality:
 
-| Chunk Size | Speed | Precision | Recall | Best For |
-|------------|-------|-----------|--------|----------|
-| **500-800 tokens** | Very fast (~0.3-0.5s/chunk) | High | Lower | Finding specific claims, methods, passages |
-| **2000 tokens** | Moderate (~3s/chunk) | Balanced | Balanced | Long-context model default |
-| **4000+ tokens** | Slow (~10s+/chunk) | Lower | Higher | Finding papers about broad topics |
-| **7000 tokens** | Very slow (~45s/chunk) | Low | High | Not recommended |
+| Chunk Size | Applies To | Speed (CPU/WASM) | Precision | Recall | Best For |
+|------------|-----------|------------------|-----------|--------|----------|
+| **420 tokens** | multilingual-e5-base (512 hard limit) | Very fast (~0.4s/chunk) | High | Lower | Specific claims, methods, passages |
+| **2000 tokens** | Nomic v1.5, BGE-M3 (8192 hard limit) | Moderate (~0.9s/chunk) | Balanced | Balanced | Long-context local models |
+| **up to 4000 tokens** | Cloud model profiles (ratio-capped) | Provider-bound | Lower | Higher | Broad topics, long-context Cloud |
 
 **Precision vs Recall:**
 - **Smaller chunks** = more precise matches to specific passages, but may miss broader context
@@ -802,6 +986,12 @@ Overlap is common in RAG systems (e.g., LangChain defaults to ~200 token overlap
 
 ## Section-Aware Chunking
 
+> In Full mode, the PDF text entering this stage has already been preprocessed
+> by the `zotseek-pdf-main-text-indexing-v1` pipeline (main-attachment
+> selection, PDFWorker direct extraction, References v2, page-furniture
+> filtering and same-page packing); see
+> [PDF Main-Text Preprocessing](#pdf-main-text-preprocessing).
+
 ### Academic Paper Structure
 
 Unlike generic chunkers that split at arbitrary character boundaries, our chunker respects academic paper structure:
@@ -872,6 +1062,7 @@ Unlike generic chunkers that split at arbitrary character boundaries, our chunke
 | `methods` | Intro, Background, Methods | "Methods" | How did they do it? |
 | `findings` | Results, Discussion, Conclusions | "Results" | What did they find? |
 | `content` | Fallback (no sections detected) | "Content" | Generic content |
+| `note` | Child Note body (structured heading-aware or plain paragraphs) | "Note" | What do the researcher's own notes say? |
 
 ### Fallback Behavior
 
@@ -885,7 +1076,7 @@ When a PDF doesn't have recognizable section headers (e.g., book chapters, repor
 |---------------|----------------|---------------------|
 | Standard academic paper | summary + methods + findings | Abstract, Methods, Results |
 | Book chapter / Report | summary + content chunks | Abstract, Content, Content... |
-| Abstract-only mode | summary only | Abstract |
+| Abstract mode (`abstract`) | summary only | Abstract |
 | No PDF, no abstract | title only | Abstract |
 
 The search still works perfectly with `content` chunks - you just won't know which *part* of the document matched.
@@ -941,17 +1132,15 @@ region is found, the text remains visible.
 
 See [Chunking Strategy](#chunking-strategy) for detailed trade-offs. Summary:
 
-| Chunk Size | Time per Chunk | Notes |
-|------------|----------------|-------|
-| 7000 tokens | ~45 seconds | Too slow for practical use |
-| 2000 tokens | ~3 seconds | **Default** |
-| 800 tokens | ~0.5 seconds | Higher precision, finds specific passages |
-| 500 tokens | ~0.3 seconds | Fastest, highest precision |
+| Recommendation | Applies To | Time per Chunk (CPU/WASM) |
+|----------------|-----------|---------------------------|
+| 420 tokens | multilingual-e5-base (default) | ~0.4s |
+| 2000 tokens | Nomic v1.5 / BGE-M3 | ~0.9s |
 
 **Default settings:**
-- `maxTokens`: 2000 — tuned for Firefox 140+ WASM
-- `maxChunksPerPaper`: 100 — covers most full papers
-- Paragraph-aware splitting (never splits mid-paragraph)
+- `maxTokens`: model-aware — 420 for E5, 2000 for Nomic/BGE-M3, clamped by each model's hard limit
+- `maxChunksPerPaper`: 100 — shared by Summary, Notes and PDF sources in Full mode
+- Paragraph-aware splitting (never splits mid-paragraph); PDF chunks additionally pack adjacent short paragraphs on the same physical page
 
 ---
 
@@ -1162,13 +1351,12 @@ Items indexed with the previous model retain their embeddings. Switching back to
 
 All read paths that gate or drive indexing work are model-aware via `item_models`:
 
-- **`isIndexedByIdentity(libraryKey, itemKey, modelId)`** — used by auto-index, manual "Index Library," and the "Index remaining" button. An item counts as covered only when a row exists in `item_models` for the active `model_id`. The result is that "Index Library" backfills items not yet covered by the active model, rather than skipping everything that was ever indexed.
+- **`isIndexedByIdentity(libraryKey, itemKey, modelId)`** — used by auto-index and manual "Index Library." An item counts as covered only when a row exists in `item_models` for the active `model_id`. The result is that "Index Library" backfills items not yet covered by the active model, rather than skipping everything that was ever indexed.
 - **`getItemChunksByIdentity(libraryKey, itemKey, modelId)`** and **`getChunkByPk(itemPk, chunkIndex, modelId)`** — used by `find_similar` / "Find Related Documents." They filter `chunks` by `model_id`, so the source item's embedding and all candidate embeddings come from the same model's vector space. Switching the active model changes which partition similarity is computed in.
 
-Three model-aware triggers can re-index the library, all preserving embeddings from other models:
+Two model-aware triggers can re-index the library, both preserving embeddings from other models:
 1. The prompt shown immediately after switching to a new model.
-2. The **Index remaining N** button on the coverage line in Settings (shows count of items lacking coverage for the active model).
-3. The toolbar / right-click **Index Library** action.
+2. The toolbar / right-click **Index Library** action.
 
 ### Local-Server-Backed Embeddings
 
@@ -1283,15 +1471,9 @@ Schema v12 adds nullable `chunks.pdf_attachment_key`. New Full-mode PDF chunks s
 
 ## Query Analysis
 
-When automatic weight adjustment is enabled, query analysis tunes only the
-semantic/lexical share inside the Notes H1 specialist. It does not change the
-Full 2+N source allocation, and Abstract content search remains semantic after
-metadata identity navigation:
+Automatic weight adjustment (`hybridSearch.autoAdjustWeights`, on by default) tunes only the **semantic/lexical share inside the Notes H1 specialist**: year, author and acronym patterns boost the lexical side, while question forms and long natural sentences boost the semantic side. It never changes Full mode's 2+N source allocation, and `abstract` mode remains semantic after identity navigation.
 
-The metadata identity prepass emits timing diagnostics for Zotero Search,
-bulk `Zotero.Items.getAsync()` loading, candidate filtering, classification and
-final result preparation, together with candidate counts and the match kind.
-These diagnostics do not include the query, creator list, DOI or document text.
+The metadata identity prepass emits timing diagnostics for Zotero Search, bulk `Zotero.Items.getAsync()` loading, candidate filtering, classification and final result preparation, together with candidate counts and the match kind. These diagnostics do not include the query, creator list, DOI or document text.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -1330,30 +1512,13 @@ These diagnostics do not include the query, creator list, DOI or document text.
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-### Keyword Scoring
+### Keyword-branch scoring
 
-Stored faithful chunk text is ranked by the frozen T0 contract:
+The keyword branch merges two hit sources into one ranking that then enters RRF:
 
-- `Intl.Segmenter('zh-Hans', { granularity: 'word' })` natural terms;
-- shared CJK bigrams;
-- maximum TF when natural and bigram channels produce the same term;
-- BM25 `k1=1.2`, `b=0.75`, with no library-term patch.
+**1) T0 BM25 ranking.** Query and documents use the same T0 tokenization (natural words + CJK bigrams); scoring and source-isolation rules are in [BM25 Pipeline](#bm25-pipeline). Only the best chunk per paper enters the ranking, normalized by the query's best hit to [0, 1].
 
-The first lexical query builds a process-local in-memory cache. For each paper,
-chunks from the active model are preferred; if that paper has not yet been
-rebuilt for the active model, one deterministic fallback model partition keeps
-lexical retrieval available during migration without mixing two copies of the
-same paper. Index mutations, clearing, model changes and database reattachment
-invalidate the cache or prevent an obsolete build from publishing. Same-key
-concurrent cold queries join one build; an invalidated build retries once and
-then safely omits index-side lexical evidence until a later stable query.
-Semantic vectors are not decoded while building it. Build diagnostics report
-model, chunk count, faithful-text character/UTF-8 byte counts, unique terms,
-postings and elapsed time without logging corpus text.
-Source-restricted specialists calculate corpus statistics after restricting to
-their Metadata/Notes or PDF source set.
-
-Zotero quick search remains the metadata fallback. Its local score uses:
+**2) Zotero quicksearch heuristic scoring.** Quick search does not rank by relevance, so the plugin re-ranks by match quality:
 
 ```
 Base score: 0.50 (any match)
@@ -1366,6 +1531,15 @@ Bonuses:
 
 Maximum: 1.00 (100%)
 ```
+
+**3) Per-item merge.** Hits from both sources merge into one score map keyed by `itemId`, keeping the higher score — the normalized BM25 score and the quicksearch heuristic score (both 0–1) compete directly. Special rules:
+
+- Note hits returned by quicksearch map back to their parent item and are re-scored against clean note text: a full-phrase containment scores 1.0 directly, partial term hits score `0.65 + 0.3 × (matched terms / query terms)`; if quicksearch only matched content that the index-side filters out (such as the "basic information" or References sections), the hit is dropped.
+- In explicit keyword mode, quicksearch uses `quicksearch-titleCreatorYear` (when restricted to metadata sources) or `quicksearch-everything`.
+- Book exclusion, library and collection constraints apply to both sources equally.
+
+The merged ranking keeps the top `keywordTopK` entries and enters RRF.
+
 
 ---
 
@@ -1388,43 +1562,22 @@ Maximum: 1.00 (100%)
 | `maxTokens` | model-aware | Recommended body tokens, clamped by the model policy |
 | `maxChunksPerPaper` | `100` | Max chunks per paper |
 
-### Chunk Size Trade-offs (Empirical Analysis)
+### Chunk Size Trade-offs (Historical Note)
 
-A retrieval evaluation comparing maxTokens=512 vs maxTokens=2000 was conducted using 486 citation-pair queries across 646 papers. Citation pairs (A cites B) served as ground truth: when searching with paper A's abstract, cited paper B should appear in the top results.
+Upstream once compared maxTokens=512 vs 2000 with citation pairs (A cites B as ground truth) over 646 papers and 486 queries: retrieval quality differences were negligible (<1% on every metric) and indexing speed was close — most papers hit the `maxChunksPerPaper` ceiling, so the effective bottleneck is the per-paper quota, not chunk granularity. That evaluation used the upstream framework since removed from the repository; the numbers are kept as historical reference only. This fork's retrieval-quality scores come from the `hyperscanning-benchmark` 50-question system and the `heuristic/eval` end-to-end measurements.
 
-**Quality results (no meaningful difference):**
-
-| Metric | 512 tokens | 2000 tokens | Delta |
-|--------|-----------|-------------|-------|
-| MRR | 0.2514 | 0.2550 | -0.4% |
-| Recall@10 | 0.3014 | 0.3095 | -0.8% |
-| NDCG@10 | 0.2177 | 0.2236 | -0.6% |
-
-**Indexing speed in Zotero (WASM, 50 papers):**
-
-| | 512 tokens | 2000 tokens |
-|--|-----------|-------------|
-| Chunks/paper | 99.0 | 93.9 |
-| Total time | 22.1 min | 23.9 min |
-| Per item | 26.5s | 28.7s |
-
-Both strategies produce similar chunk counts because most papers hit the `maxChunksPerPaper` ceiling. The per-chunk embedding time is lower for 512 tokens (~0.4s vs ~0.9s in WASM), but the higher chunk count negates the advantage.
-
-**Conclusion:** `maxTokens` has negligible impact on both quality and speed in practice. The effective bottleneck is `maxChunksPerPaper`, not chunk granularity.
-
-Full eval framework: `eval/` directory. Raw results: `eval/data/eval-results.json`.
 
 ---
 
 ## Summary
 
-ZotSeek combines:
+ZotSeek's search combines three mechanisms:
 
-1. **Semantic Understanding** - AI embeddings capture meaning, not just keywords
-2. **Keyword Precision** - Zotero's search finds exact author/year/term matches
-3. **Intelligent Fusion** - RRF combines both without score normalization
-4. **Section Awareness** - Chunks respect academic paper structure
-5. **Performance** - Optimized chunking and caching for fast searches
+1. **Identity navigation** — exact DOI / title / author queries resolve directly from Zotero metadata, validated through the original Zotero Search gate
+2. **Semantic understanding** — AI embeddings capture meaning, with R1 breadcrumbs adding document structure
+3. **Lexical precision** — T0 BM25 (Intl.Segmenter + CJK bigrams) ranks exact terms in Notes and PDF text
+4. **Keyword branch** — BM25 and Zotero quicksearch heuristic scores merge per item, covering both exact body hits and metadata retrieval
+5. **Intelligent fusion and source allocation** — RRF fuses the semantic and keyword branches; Full mode allocates results source-aware (Notes top-2 + PDF tail)
+6. **Performance** — narrow-projection vector cache, keyed single-flight builds and a bounded identity snapshot keep hot queries fast
 
-This hybrid approach gives you the best of both worlds: finding conceptually related papers while still being able to search for specific authors, years, and technical terms.
-
+The combination finds conceptually related papers, resolves identity queries exactly, and guarantees that original terms in notes and body text remain retrievable.

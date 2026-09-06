@@ -83,6 +83,16 @@ For `index_status`, `ready` is `true` when the index contains papers and the sel
   "year": 2017,
   "score": 0.016,
   "source": "both",
+  "metadata": {
+    "itemType": "journalArticle",
+    "title": "Attention Is All You Need",
+    "creators": [{ "creatorType": "author", "firstName": "Ashish", "lastName": "Vaswani" }],
+    "date": "2017-06-12",
+    "year": 2017,
+    "publicationTitle": "Advances in Neural Information Processing Systems",
+    "DOI": "10.48550/arXiv.1706.03762",
+    "abstractNote": "The dominant sequence transduction models are based on..."
+  },
   "matchedChunk": {
     "snippet": "The Transformer relies entirely on self-attention to compute representations...",
     "page": 3,
@@ -101,6 +111,7 @@ For `index_status`, `ready` is `true` when the index contains papers and the sel
 Notes on the shape:
 
 - `source` (`"both"` | `"semantic"` | `"keyword"`) is present on `search` results only — it reports which engine found the item.
+- `metadata` (present when the item resolves locally) is a normalized bibliographic snapshot read from the live Zotero item — `itemType`, typed `creators` (including institutional `name`), `date`/`year`, `publicationTitle`/`bookTitle`/`proceedingsTitle`, `volume`/`issue`/`pages`, `publisher`/`place`, `DOI`/`ISBN`/`ISSN`, `url`, and `abstractNote`. The `filter` parameters operate on these fields. It is omitted for items that can no longer be resolved locally.
 - `libraryKey` is `"user"` or `"group:<groupID>"`, or `null` for items that can no longer be resolved locally (e.g. indexed on another machine and not present in this library); a `null` `libraryKey` also means no `links` are emitted.
 - `authors` is a formatted string for `search` results and an array of strings for `find_similar` results.
 - `matchedChunk` is `null` when no excerpt or page is available; `page`, `textSource`, `sectionPaths`, and `pdfAttachmentKey` may be absent within it. `pdfAttachmentKey` is present on newly indexed Full-mode PDF chunks and identifies the exact attachment that produced the hit; copy it into `get_item.pdf_attachment_key`. Old Full indexes remain searchable but return no exact PDF key until refreshed.
@@ -109,7 +120,7 @@ Notes on the shape:
 
 ### `get_item` result and PDF behavior
 
-`get_item` always returns stable identity, normalized bibliographic metadata (including abstract), tags, collections, related-item identities, attachments, and deep links. `include_notes:true` adds all Child Notes sorted by `noteKey`; every Note contains complete visible `text`, live `sections` (`path`, `pathLevels`, `paragraphs`), and deduplicated `sectionPaths`. Read-side Notes do not apply ZotSeek's indexing exclusions for Basic Information or References.
+`get_item` always returns stable identity, normalized bibliographic metadata (including abstract), tags, collections, related-item identities, attachments, and deep links. Each `attachments` entry carries `key`, `contentType`, `isPDF`, `filename`, `isIndexedPdfSource` (true for the exact PDF attachment a new Full-mode index was built from), and — for PDF attachments — direct `openPdf`/`openPdfHttp` deep links. `include_notes:true` adds all Child Notes sorted by `noteKey`; every Note contains complete visible `text`, live `sections` (`path`, `pathLevels`, `paragraphs`), and deduplicated `sectionPaths`. Read-side Notes do not apply ZotSeek's indexing exclusions for Basic Information or References.
 
 PDF reading never reruns the main-PDF classifier. A supplied `pdf_attachment_key` must be a PDF child of the requested parent in the same library. Without it, ZotSeek uses the exact source persisted by a new Full index; if no exact source is available, `pdf.status` is `unresolved` and the caller can choose a key from `attachments`. `pages` accepts one physical page or one continuous range such as `3-5`; `full` is explicit and can return a very large response for books or theses.
 
@@ -201,4 +212,4 @@ curl 'http://localhost:23119/zotseek/search?q=transformer+attention&topK=2&mode=
 ## See also
 
 - [API.md](API.md) — the in-Zotero JavaScript API (`Zotero.ZotSeek.api`) for other Zotero plugins running inside Zotero.
-- [SEARCH_ARCHITECTURE.md](SEARCH_ARCHITECTURE.md) — how hybrid search, RRF fusion, and chunking work.
+- [SEARCH_ARCHITECTURE_EN.md](SEARCH_ARCHITECTURE_EN.md) — how hybrid search, RRF fusion, and chunking work (Chinese version: [SEARCH_ARCHITECTURE_CN.md](SEARCH_ARCHITECTURE_CN.md)).

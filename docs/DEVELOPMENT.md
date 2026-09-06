@@ -1,21 +1,18 @@
 # ZotSeek Plugin - Development Guide
 
-> **📝 Disclaimer:** This is a development journal documenting lessons learned while building ZotSeek. It contains hard-won insights about Zotero plugin development, ChromeWorker + Transformers.js integration, and SQLite quirks. Some information may be version-specific. Use as a reference, not a step-by-step tutorial.
+> **📌 Note (ZotSeek-CHS fork):** This file is the **upstream ZotSeek development journal**, restored to its original upstream state (as of the v1.20 integration) and kept frozen as historical reference. It describes the pre-fork, single-model (Nomic) era and is **not** maintained anymore. For this fork's current features, architecture and designs, see [DEVELOPMENT_U_CN.md](DEVELOPMENT_U_CN.md) (Chinese, source of truth) and [DEVELOPMENT_U_EN.md](DEVELOPMENT_U_EN.md) (English counterpart); current search/chunking behavior lives in [SEARCH_ARCHITECTURE_CN.md](SEARCH_ARCHITECTURE_CN.md) (Chinese) / [SEARCH_ARCHITECTURE_EN.md](SEARCH_ARCHITECTURE_EN.md) and MCP/REST usage in [MCP.md](MCP.md).
+>
+> **📌 说明（ZotSeek-CHS fork）：** 本文件是上游 ZotSeek 的开发日志，已按 v1.20 整合时的上游原版恢复并冻结存档，仅作历史参考。文中的单模型（Nomic）时代口径不代表本 fork 现状。本 fork 的现状设计与新功能见 [DEVELOPMENT_U_CN.md](DEVELOPMENT_U_CN.md)（中文母本）与 [DEVELOPMENT_U_EN.md](DEVELOPMENT_U_EN.md)（英文对照）。
+
+> **📝 Disclaimer:** This is a development journal documenting lessons learned while building ZotSeek. It contains hard-won insights about Zotero 8 plugin development, ChromeWorker + Transformers.js integration, and SQLite quirks. Some information may be version-specific. Use as a reference, not a step-by-step tutorial.
 >
 > **Contributions welcome!** If you find errors or have improvements, please open an issue or PR.
->
-> **Current ZotSeek-CHS configuration:** The fork requires Zotero 9.0 and
-> supports Zotero 9 and 10. Its bundled default model is
-> `multilingual-e5-base` (768 dimensions, 512-token context) with `query:` and
-> `passage:` prefixes. Historical sections about Zotero 8 and the former
-> `nomic-embed-text-v1.5` default are retained as development history and do
-> not describe the current release configuration.
 
 ---
 
-A guide for building Zotero 9+ plugins with TypeScript, featuring lessons learned from running **Transformers.js v3** with local AI embeddings.
+A guide for building Zotero 8+ plugins with TypeScript, featuring lessons learned from running **Transformers.js v3** with local AI embeddings.
 
-**Current Achievement:** This fork runs **multilingual-e5-base** (512-token context, 768 dimensions) locally in Zotero via ChromeWorker, with model-aware prefixes and exact multilingual chunking for summaries, notes, PDFs and queries. See [ChromeWorker + Transformers.js Solution](#chromeworker--transformersjs-solution).
+**Key Achievement:** This plugin runs **nomic-embed-text-v1.5** (8K tokens, 768 dims) in Zotero via ChromeWorker - see [ChromeWorker + Transformers.js Solution](#chromeworker--transformersjs-solution).
 
 ---
 
@@ -49,14 +46,14 @@ node --version  # Should output v18.x.x or higher
 # npm (comes with Node.js)
 npm --version
 
-# Zotero 9 or newer installed
+# Zotero 8 or newer installed
 # Download from: https://www.zotero.org/download/
 ```
 
 ### Recommended Tools
 
 - **VS Code** or **Cursor** - IDE with TypeScript support
-- **Zotero 9+** - The supported target platform (currently based on Firefox 140 ESR)
+- **Zotero 8+** - The target platform (based on Firefox 140 ESR)
 - **Git** - Version control
 
 ---
@@ -81,9 +78,9 @@ Zotero plugins are **bootstrapped extensions** that run inside Zotero's JavaScri
 | **Root URI** | The base path to your plugin's files at runtime |
 | **Zotero Pane** | The main Zotero window where items are displayed |
 
-### Zotero 9+ Runtime
+### Zotero 8+ Runtime
 
-| Feature | Zotero 9+ |
+| Feature | Zotero 8+ |
 |---------|-----------|
 | Firefox Base | 140 ESR |
 | Modules | ESM (.mjs) |
@@ -92,20 +89,20 @@ Zotero plugins are **bootstrapped extensions** that run inside Zotero's JavaScri
 
 ### Version Compatibility
 
-ZotSeek-CHS targets Zotero 9 and 10:
+ZotSeek targets Zotero 8 and newer:
 
 ```json
 {
   "applications": {
     "zotero": {
-      "strict_min_version": "9.0",
+      "strict_min_version": "7.999",
       "strict_max_version": "10.0.*"
     }
   }
 }
 ```
 
-> ⚠️ The current fork targets **Zotero 9 and Zotero 10**. Zotero 8 notes later in this journal are retained only as historical API context.
+> ⚠️ This guide targets **Zotero 8, 9 and 10**. Earlier Zotero versions use a different structure and are no longer supported.
 
 ---
 
@@ -133,7 +130,7 @@ npm install @huggingface/transformers
 |---------|---------|
 | `typescript` | TypeScript compiler for type checking |
 | `esbuild` | Fast bundler that compiles TS → JS |
-| `@huggingface/transformers` | Run selectable local embedding models via ChromeWorker |
+| `@huggingface/transformers` | Run ML models via ChromeWorker (v3 with 8K context models) |
 
 > **Note:** We use `@huggingface/transformers` v3.8.1+ (not the older `@xenova/transformers` v2). Version 3.7+ includes critical fixes for ChromeWorker compatibility via the `wasmPaths` configuration.
 
@@ -190,7 +187,7 @@ Create `manifest.json`:
     "zotero": {
       "id": "zotseek@zotero.org",
       "update_url": "https://example.com/update.json",
-      "strict_min_version": "9.0",
+      "strict_min_version": "7.999",
       "strict_max_version": "10.0.*"
     }
   }
@@ -329,19 +326,9 @@ zotseek/
 │   ├── icons/                # Plugin icons
 │   └── overlay.xhtml         # UI overlays
 │
-├── locale/                   # Localization (10 registered locales)
-│   ├── en-US/                # Canonical message structure
-│   ├── zh-CN/                # Simplified Chinese
-│   ├── zh-TW/                # Traditional Chinese (Taiwan)
-│   ├── ja-JP/                # Japanese
-│   ├── ko-KR/                # Korean
-│   ├── de/                   # German
-│   ├── fr-FR/                # French
-│   ├── es-ES/                # Spanish
-│   ├── ru-RU/                # Russian
-│   └── th-TH/                # Thai
-│   # Each locale contains zotseek.ftl, zotseek-menu.ftl,
-│   # zotseek.dtd, and searchDialog.dtd
+├── locale/                   # Localization
+│   └── en-US/
+│       └── zotseek.dtd
 │
 ├── skin/                     # Styles
 │   └── default/
@@ -356,30 +343,6 @@ zotseek/
 ├── package.json
 └── tsconfig.json
 ```
-
-### Localization architecture
-
-ZotSeek follows Zotero's application locale and does not store a separate
-language preference. `bootstrap.js` registers each supported locale. Zotero's
-locale negotiation then selects the matching resources, with `en-US` as the
-canonical resource and intended final fallback. Verify the exact fallback path
-in Zotero whenever registration or application compatibility changes.
-
-The UI has three localization paths:
-
-1. XHTML elements use `data-l10n-id` and `zotseek.ftl`. English text or label
-   attributes on the same element are startup fallbacks and must not be used by
-   application logic.
-2. TypeScript-created prompts, menus, status text, and progress windows call
-   `getString()` from `src/utils/locale.ts`.
-3. The legacy overlay and dialog resources use `zotseek.dtd` and
-   `searchDialog.dtd`.
-
-When adding or changing a message, update every locale while preserving Fluent
-variables and attributes. Run `npm run check:locales`; it verifies the required
-files, message/entity keys, attributes, variables, and `bootstrap.js`
-registrations. `npm run build` runs the same validation before copying locale
-resources into `build/`.
 
 ### Data Flow
 
@@ -463,7 +426,7 @@ interface PaperEmbedding {
   itemKey: string;          // Zotero item key
   libraryId: number;
   title: string;
-  embedding: number[];      // Dimension depends on model; bundled E5 uses 768
+  embedding: number[];      // 768-dimensional vector (nomic-embed-v1.5)
   modelId: string;          // Which model generated this
   contentHash: string;      // Detect content changes
 }
@@ -528,146 +491,21 @@ class EmbeddingPipeline {
       type: 'embed',
       data: { text }
     });
-    return result.embedding;  // Dimension is defined by the active model
+    return result.embedding;  // 384-dimensional vector
   }
 }
 ```
 
 Key concepts:
 - **ChromeWorker** - Runs Transformers.js v3 in separate thread with privileged access
-- **Feature extraction** - Converts text to vectors whose dimensions are defined by the active model; bundled E5 uses 768
-- **Model-aware context** - `model-input-config.ts` records hard input facts and ZotSeek recommendations; `model-input-policy.ts` resolves the active limit
-- **Exact multilingual counting** - E5 and BGE-M3 use their local tokenizer for summaries, notes, PDFs and queries; Nomic retains the English estimator
-- **Instruction prefixes** - The model registry applies each model's prefixes; E5 uses `passage:` for documents and `query:` for queries
-- **Quantized model** - The bundled multilingual E5 model is approximately 282MB including tokenizer files
+- **Feature extraction** - Converts text to 768-dimensional vectors (nomic-embed-text-v1.5)
+- **8192 token context** - 16x larger than bge-small (512 tokens), enabling full-document embeddings
+- **Instruction prefixes** - Uses `search_document:` for indexing, `search_query:` for queries
+- **Quantized model** - Smaller, faster (~131MB quantized)
 - **Mean pooling** - Averages token embeddings with normalization
-- **Worker isolation** - Model inference runs outside the main Zotero thread
+- **Matryoshka embeddings** - 768 dims can be truncated to 256/128 with minimal quality loss
+- **~200-300ms per embedding** - Fast enough for interactive use
 - **wasmPaths configuration** - Critical for v3 to work in ChromeWorker (bypasses dynamic import)
-
-#### Local model discovery and installation
-
-The Settings model picker always lists the three curated local models. The
-bundled E5 entry is labelled **Built-in**; Nomic and BGE-M3 are labelled
-**Installed** when their primary ONNX file is present under
-`<Zotero profile>/zotseek-models/<hfPath>/`, otherwise they are labelled
-**Download required** with their approximate size.
-
-Selecting a missing model opens a three-button prompt:
-
-- **Automatic download (recommended)** downloads the allowlisted files from
-  `huggingface.co` into the profile-side model directory. Files use a `.part`
-  temporary name and are moved into place only after each download completes.
-  The active model is not changed until the complete download succeeds.
-- **Manual download** shows the official Hugging Face page, the exact registry
-  file list, and the target installation location. It does not download files
-  or change the active model.
-- **Cancel**, Escape, and the title-bar close button leave the current model
-  unchanged.
-
-After a successful installation, ZotSeek switches to the selected model and
-handles coverage/indexing as a separate confirmation. Existing embeddings for
-other models remain in their own `model_id` partitions.
-
-#### Local Server model configuration
-
-Advanced users configure local OpenAI-compatible embedding services in
-`<Zotero profile>/zotseek-server-models.json`. The plugin creates the template
-on first startup. Schema v2 contains one `model` field. A configured model must
-declare an explicit `server:` id, loopback `baseUrl`, server model name,
-dimensions, maximum input tokens, recommended chunk tokens, and
-query/document prefixes; `apiKey` is optional and the UI label is derived.
-
-`src/core/server-model-config.ts` classifies the slot as `none`, `unknown` or
-`ready` and copies only a ready model to `zotseek.serverModels` as a one-entry
-runtime cache. The menu persists the `server-slot` selection sentinel, while
-storage and embedding use only the ready model's real `server:` id. Do not add
-GUI-only defaults, infer missing model facts or fall back to a local model when
-Local Server is incomplete. Explicit embedding actions show a localized summary and
-offer **Open file location**; the Settings path has the same action. Only that
-explicit button reveals the JSON in the OS file manager, while Close, Escape
-and the title-bar close path are inert. Raw validator details remain available
-to logs and MCP/REST callers rather than being spliced into localized UI text.
-Startup/background work skips incomplete Local Server work without a modal. Runtime
-initialization checks both `GET /v1/models` and the embedding dimensions.
-Template edits require a Zotero restart.
-
-#### Cloud model configuration
-
-Cloud is separate from Local Server. Its stable selection value is `cloud-slot`
-while the vector-space ID is derived from provider, model name and dimensions.
-Plan 56 turned the Cloud slot into a provider/model catalog with four approved
-providers: `alibaba-bailian`, `openai`, `google-gemini-api`, and the
-`custom-openai-compatible` escape hatch. Built-in model facts come from the
-registered catalog — Bailian `qwen3.7-text-embedding` (1024d, 128000-token
-input), OpenAI `text-embedding-3-small`/`text-embedding-3-large` (1536d/3072d,
-8192-token input, fixed 2000-token recommendation), and Google
-`gemini-embedding-001` (768d, 2048-token input, recommendation 1740) — and a
-stored value that does not match the catalog marks the slot unconfigured
-instead of silently substituting another model. Bailian keeps its editable
-provider-specific query/index parameters, maximum input tokens and batch size
-(advanced section, with a restore-defaults action); OpenAI and Gemini show
-those parameters read-only. Custom starts without invented model facts and
-requires the user to supply its model contract. Recommended chunk tokens are
-derived from each model's chunk profile and cannot be edited independently.
-
-Bailian override writes use `zotseek.cloud.{maxInputTokens,queryRole,documentRole,batchSize}.alibaba-bailian`.
-Legacy unscoped values remain readable, except the exact Gemini profile tuple
-left by the old cross-provider UI save bug, which falls back to Bailian defaults.
-Explicit blank parameters and other legacy custom values are preserved.
-
-Built-in request URLs are fixed. Bailian selects one of two official regional
-endpoints via the machine-valued `zotseek.cloud.bailianRegion` pref (`cn` or
-`intl`, default `cn`; a legacy `zotseek.cloud.baseUrl` pref migrates to the
-region selection). OpenAI and Gemini endpoints are hardcoded in their adapters.
-Only the Custom (OpenAI-compatible) provider accepts a user Base URL (HTTPS,
-no credentials/query/fragment, joined with `/embeddings`), a free model name,
-and dimensions. It reuses the OpenAI request format but never sends the
-`dimensions` parameter; the configured dimension only validates responses.
-The Custom provider stores its fields under `zotseek.cloud.custom.*`.
-
-Cloud API roles and manual text prefixes are separate contracts. The Bailian
-adapter fixes the parameter name as `text_type`; a non-empty configured value
-is sent in `parameters`, while an empty value omits it. The OpenAI adapter
-(and the Custom provider) sends query and document text identically with no
-roles and no prefixes. The Gemini adapter uses `batchEmbedContents` with
-`x-goog-api-key` and places `taskType` (`RETRIEVAL_QUERY`/`RETRIEVAL_DOCUMENT`)
-and `outputDimensionality` directly on each `requests[]` entry, matching the
-Google JS SDK wire format. A 2026-09-05 real probe returned 3072 dimensions
-with nested `embedContentConfig`, versus the requested 768 with direct fields.
-The adapter contract is `gemini-embedcontent-v2`. Cloud text is never modified with an E5-style
-prefix. Changing a provider's model, dimensions or roles clears that
-provider's connection verification; the document role, per-provider adapter
-version and output contract are also part of the index policy fingerprint.
-The shared transport (`cloud-embedding-client.ts`) owns profile-driven batching
-(20 for Bailian, 10 for OpenAI/Gemini, and a conservative initial 1 for Custom),
-timeouts, cancellation, bounded 429/5xx retries and vector validation;
-provider differences live in `dashscope-embedding-adapter.ts`,
-`openai-embedding-adapter.ts` and `gemini-embedding-adapter.ts`, selected by
-the factory in `cloud-embedding-adapter.ts`.
-
-`cloud-model-config.ts` owns non-secret preferences, the provider/model
-catalog, and per-provider connection/consent state (legacy global prefs remain
-a read-only Bailian fallback). `cloud-credential-store.ts` uses Zotero Login
-Manager plus the public `Zotero.OSKeyStore` wrapper when available, one
-encrypted entry per provider (login username = provider id). Zotero 9.0
-instead loads its bundled Mozilla `OSKeyStore.sys.mjs` and stores only
-version-tagged ciphertext; never add an API-key preference or plaintext
-fallback. The explicit connection probe sends one fixed document string and
-one fixed query string in separate calls, validating both role paths and
-dimensions. Do not log request bodies, query text, authorization headers,
-provider error messages or credentials.
-
-Literature brief generation deliberately supports only Bailian: switching the
-embedding provider away from Bailian prompts for confirmation before saving
-and clears `zotseek.cloud.brief.connectionVerified`; the brief model settings
-are kept. Selection requires the current provider's versioned privacy/BYOK/cost
-consent, a securely stored key and a successful fixed-text probe. Cloud
-startup maintenance additionally requires `zotseek.cloud.autoIndex`; it
-defaults to false even when global automatic maintenance is enabled. Full
-Cloud rebuilds use forced reconciliation instead of clearing the store.
-`replaceItemModelChunks()` publishes one paper atomically only after every
-chunk succeeds, preserving old complete coverage and every other model
-partition across failure or cancellation.
 
 ### 4. Search Engine (`src/core/search-engine.ts`)
 
@@ -768,7 +606,7 @@ Opt-in MCP and REST endpoints registered on Zotero's built-in HTTP server (`Zote
 - `mcp-endpoint.ts` — stateless JSON-RPC 2.0 (MCP Streamable HTTP) endpoint exposing `search`, `find_similar`, `index_status` tools.
 - `rest-endpoints.ts` — plain `GET` endpoints for curl/scripts.
 
-Endpoint contracts and security notes live in [MCP.md](MCP.md). A 27-scenario self-test suite covers the protocol layer (`src/dev/suites/mcp-server.ts`, run via `Zotero.ZotSeek._selfTest.runSelfTest('mcp-server')` with the `devMode` pref enabled).
+Endpoint contracts and security notes live in [MCP.md](MCP.md). A 16-scenario self-test suite covers the protocol layer (`src/dev/suites/mcp-server.ts`, run via `Zotero.ZotSeek._selfTest.runSelfTest('mcp-server')` with the `devMode` pref enabled).
 
 ---
 
@@ -856,10 +694,8 @@ import './helpers/zotero-stub';                        // must come first
 import { isAllowedOrigin } from '../src/server/http-tools';
 ```
 
-Currently covered: `chunker.ts`, model registry/input config/input policy,
-Worker input preparation, `collection-items.ts`, and the `isAllowedOrigin` guard
-from `http-tools.ts`. Transformers.js is external to the Node test bundle because
-real tokenizer/ONNX loading belongs to Zotero runtime self-tests. Deliberately *not* covered:
+Currently covered: `chunker.ts`, `model-registry.ts`, `collection-items.ts`, and
+the `isAllowedOrigin` guard from `http-tools.ts`. Deliberately *not* covered:
 `search-engine.ts` and `hybrid-search.ts`, which need real embeddings and real
 Zotero items. Mocking those would produce tests that always pass and say nothing
 about retrieval quality; that is the eval framework's job.
@@ -1032,37 +868,19 @@ For this semantic search plugin with ChromeWorker + Transformers.js, the custom 
 
 ## Testing in Zotero
 
-### Method 0: `npm run dev:install` (recommended one-time setup)
-
-Normal local development and Zotero runtime acceptance do **not** require an
-XPI. Use the extension proxy once, then rebuild `build/` and restart Zotero for
-each iteration. Build or install an XPI only when testing packaging or preparing
-a distribution/release.
+### Method 0: `npm run dev:install` (does Method 1 for you)
 
 ```bash
 npm run build
 # quit Zotero first: it can remove proxy files it did not create
 npm run dev:install
-npm run dev:status
+open -a Zotero --args -purgecaches -jsconsole
 ```
 
 `dev:install` locates the profile via `profiles.ini`, deletes any installed XPI
 with the same plugin ID, clears the extension caches, and writes the proxy file
 pointing at `build/`. Override the profile with the `ZOTERO_PROFILE` environment
 variable if you keep more than one.
-
-On PowerShell, explicitly targeting a Windows profile looks like this:
-
-```powershell
-$env:ZOTERO_PROFILE = "$env:APPDATA\Zotero\Zotero\Profiles\XXXXXXXX.default"
-npm run dev:install
-npm run dev:status
-& 'C:\Program Files\Zotero\zotero.exe' -purgecaches -ZoteroDebugText -jsconsole
-```
-
-On the first proxy startup, Zotero may retain a disabled state for the newly
-recognized unpacked add-on. If ZotSeek does not start, open **Tools → Plugins**
-and enable ZotSeek once. Do not change unrelated plugin states.
 
 ```bash
 npm run dev:status   # which one would Zotero load, and why
@@ -1120,7 +938,7 @@ Flags explained:
 - `-ZoteroDebugText` - Enable debug output
 - `-jsconsole` - Open the JavaScript console
 
-### Method 2: Build XPI for Distribution (not normal local development)
+### Method 2: Build XPI for Distribution
 
 Create an XPI (ZIP) file for sharing:
 
@@ -1139,17 +957,9 @@ Install in Zotero: Tools → Add-ons → Install Add-on From File
 
 1. **Make changes** to TypeScript files in `src/`
 
-2. **Build and restart** the plugin. Once Method 0 has installed the proxy,
-   do not run `dev:install` again during the normal edit loop:
+2. **Build and restart** the plugin:
    ```bash
-   # macOS
    npm run build && osascript -e 'quit app "Zotero"' 2>/dev/null; sleep 2 && open -a Zotero --args -purgecaches -jsconsole
-   ```
-
-   ```powershell
-   # Windows: quit Zotero completely before starting this command
-   npm run build
-   & 'C:\Program Files\Zotero\zotero.exe' -purgecaches -ZoteroDebugText -jsconsole
    ```
 
 3. **Check console** for errors (Help → Debug Output Logging → View Output)
@@ -1157,10 +967,6 @@ Install in Zotero: Tools → Add-ons → Install Add-on From File
 4. **Test** your changes
 
 5. **Repeat**
-
-`npm run watch` can rebuild continuously, but Zotero still needs a full restart
-to load the updated bundle. The current `npm run start:zotero` script is macOS-
-only; use the PowerShell command above on Windows.
 
 ### Quick Reload Script (Recommended)
 
@@ -1568,12 +1374,6 @@ We run Transformers.js in a **ChromeWorker** - a special Firefox/Zotero worker w
 
 #### Architecture
 
-> **Historical implementation snapshot:** The worker architecture, code,
-> trade-offs and measurements below document the original hard-coded nomic integration. The current worker is
-> model-agnostic: `EmbeddingPipeline` resolves the active model through
-> `model-registry.ts` and passes its model path, pooling, normalization and
-> prefixes to the worker. The current bundled default is multilingual E5.
-
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │                        MAIN THREAD                                │
@@ -1604,13 +1404,6 @@ We run Transformers.js in a **ChromeWorker** - a special Firefox/Zotero worker w
 ```
 
 #### Worker Implementation (`src/worker/embedding-worker.ts`)
-
-> The following Nomic-specific listing is retained as development history. The
-> current Worker receives model ID, prefixes, pooling and Q8 dtype through its
-> init message. It preserves the full source string and relies on the
-> Transformers.js tokenizer's `model_max_length`; the 8000-character value is
-> now an upstream lossless chunk split threshold. Do not copy the constants or
-> manual truncation in this historical listing back into current code.
 
 ```typescript
 /**
@@ -2456,9 +2249,8 @@ Create a `prefs.js` file in your plugin root with default values:
 ```javascript
 // prefs.js
 pref("extensions.zotero.zotseek.topK", 20);
-pref("extensions.zotero.zotseek.autoIndex", false);
-// Omit maxTokens to use the active model's recommendation. A stored number is
-// treated as a user override and clamped to the current model's hard limit.
+pref("extensions.zotero.zotseek.autoIndex", true);
+pref("extensions.zotero.zotseek.maxTokens", 7000);  // For nomic-embed-v1.5 (8K token context)
 ```
 
 These defaults are automatically loaded when the plugin is installed/enabled.
@@ -2992,10 +2784,9 @@ Key learnings:
 - **Instruction prefixes** - Use `search_document:` for indexing, `search_query:` for queries
 - **Bundle worker separately** - Transformers.js v3 (~850KB) in worker only
 
-#### Historical: Bundling Models for Offline Use (December 2025)
+#### Bundling Models for Offline Use (Updated December 2025)
 
-This section records the former nomic-default implementation. ZotSeek-CHS now
-bundles multilingual E5 and keeps nomic as an optional downloadable model.
+To avoid network downloads and enable instant offline model loading, we bundle the embedding model directly with the plugin.
 
 ##### Model Evolution: MiniLM → BGE-small → jina-v2-small → nomic-embed-v1.5
 
@@ -3397,11 +3188,6 @@ for (const chunk of allChunks) {
 
 #### Configuration
 
-> **Historical configuration:** Current modes are `abstract`, `notes`, and
-> `full`. The current bundled E5 defaults use a 450-token chunk ceiling and a
-> per-paper limit of 100 chunks; see the repository's `prefs.js` for the source
-> of truth.
-
 ```javascript
 // prefs.js - Updated for nomic-embed-text-v1.5 (8K token context)
 pref("extensions.zotero.zotseek.indexingMode", "fulltext");  // "abstract" | "fulltext" | "hybrid"
@@ -3670,8 +3456,7 @@ Comprehensive plugin development documentation by windingwind:
 
 ### Model Information
 
-- [multilingual-e5-base](https://huggingface.co/intfloat/multilingual-e5-base) - **Current bundled default** (512-token context, 768 dimensions, multilingual, `query:`/`passage:` prefixes)
-- [nomic-embed-text-v1.5](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5) - Optional downloadable model and former bundled default (8K tokens, 768 dimensions)
+- [nomic-embed-text-v1.5](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5) - **Current model** (8K tokens, 768 dims, instruction-aware)
 - [jina-embeddings-v2-small-en](https://huggingface.co/jinaai/jina-embeddings-v2-small-en) - Previous model (8K tokens, 512 dims)
 - [bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5) - Legacy model (512 tokens, 384 dims)
 - [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) - Legacy model (256 tokens, 384 dims)
@@ -3828,7 +3613,7 @@ The Save Results as Collection feature has no automated tests. The project has n
 
 8. **Regression: Add to existing collection.** Right-click → **Add to Collection** → pick an existing collection. Still works (the shared `addItemsToCollection` helper is reused by both the existing flow and the new flow).
 
-If any test fails, check these known runtime pitfalls first:
+If any test fails, check `CLAUDE.md` pitfalls first:
 - XPI override hiding your proxy-file build
 - SpiderMonkey bytecode cache not clearing on plugin reload
 - Fluent attribute form (`data-l10n-id` targets need `.attr = value`, not plain text)
