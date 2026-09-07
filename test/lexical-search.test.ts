@@ -15,6 +15,43 @@ function doc(
 }
 
 describe('Plan 24C T0 production lexical search', () => {
+  test('recovers Latin occurrences in merged Hangul segments without losing TF', (t) => {
+    // Model the Gecko boundary; native Node normally separates these scripts.
+    t.mock.method((Intl as any).Segmenter.prototype, 'segment', (text: string) =>
+      text.split(/(\s+)/u).map(segment => ({ segment, isWordLike: /[\p{L}\p{N}]/u.test(segment) })));
+    for (const text of ['EEG로 EEG로', 'EEG EEG로']) {
+      assert.equal(tokenizeT0(text).get('eeg'), 2);
+      assert.ok(tokenizeT0(text).has('eeg로'), 'preserve the original segment');
+    }
+    const index = new T0BM25Index([doc(1, 'KOREAN01', 0, 'EEG로', 'note')]);
+    assert.equal(index.search('EEG')[0]?.itemKey, 'KOREAN01');
+    for (const [text, query] of [['EEG로', 'EE'], ['EEG로', 'EG'], ['fMRI로', 'MRI'], ['EEG2로', 'EEG'], ['EEG2로', '2']]) {
+      assert.equal(new T0BM25Index([doc(1, 'KOREAN01', 0, text, 'note')]).search(query).length, 0);
+    }
+    assert.equal(tokenizeT0('한EEG로').get('eeg'), 1);
+    assert.equal(tokenizeT0('EEG2로').get('eeg2'), 1);
+    assert.equal(tokenizeT0('café로').get('café'), 1);
+  });
+
+  test('does not duplicate Latin terms when the runtime already separates them', (t) => {
+    t.mock.method((Intl as any).Segmenter.prototype, 'segment', () => [
+      { segment: 'eeg', isWordLike: true }, { segment: '로', isWordLike: true },
+      { segment: ' ', isWordLike: false }, { segment: 'eeg', isWordLike: true },
+    ]);
+    assert.equal(tokenizeT0('EEG로 EEG').get('eeg'), 2);
+  });
+
+  test('retains false-word-like Thai words without relaxing other scripts or marks', (t) => {
+    t.mock.method((Intl as any).Segmenter.prototype, 'segment', (segment: string) =>
+      [{ segment, isWordLike: false }]);
+    assert.equal(tokenizeT0('ค้นหา').get('ค้นหา'), 1);
+    const index = new T0BM25Index([doc(1, 'THAI0001', 0, 'ค้นหา', 'note')]);
+    assert.equal(index.search('ค้นหา')[0]?.itemKey, 'THAI0001');
+    for (const text of ['english', '123', '!!!', '🧠', '\u0301', '\u0E48', 'ค้นหาenglish']) {
+      assert.equal(tokenizeT0(text).size, 0, text);
+    }
+  });
+
   test('combines Intl natural terms with CJK bigrams using max TF', () => {
     const terms = tokenizeT0('研究研究 Hybrid Search');
     assert.ok((terms.get('研究') ?? 0) >= 1);

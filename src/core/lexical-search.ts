@@ -1,6 +1,6 @@
 import type { TextSourceType } from './vector-store-sqlite';
 
-export const T0_LEXICAL_CONTRACT_ID = 'intl-segmenter-zh-hans-cjk-bigram-v1';
+export const T0_LEXICAL_CONTRACT_ID = 'intl-segmenter-zh-hans-cjk-bigram-v2';
 export const T0_BM25_CONTRACT_ID = 'chunk-bm25-k1-1.2-b-0.75-v1';
 
 const CJK_RUN = /(?:\p{Script=Han}|\p{Script=Hiragana}|\p{Script=Katakana}|\p{Script=Hangul})+/gu;
@@ -64,11 +64,22 @@ export function normalizeLexicalText(value: string): string {
 
 function naturalTerms(normalized: string): Map<string, number> {
   const terms = new Map<string, number>();
+  const hasHangul = /\p{Script=Hangul}/u.test(normalized);
   const segmenter = getZhHansWordSegmenter();
   if (segmenter) {
     for (const part of segmenter.segment(normalized)) {
       const term = String(part.segment ?? '').trim();
-      if (part.isWordLike && term && /[\p{L}\p{N}]/u.test(term)) increment(terms, term);
+      // Gecko can keep EEG로 as one segment. Add only missing Latin occurrences;
+      // already separated tokens retain their original TF without duplication.
+      if (hasHangul && /(?:[\p{Script=Latin}\p{N}]\p{Script=Hangul}|\p{Script=Hangul}[\p{Script=Latin}\p{N}])/u.test(term)) {
+        for (const latin of term.matchAll(/\p{Script=Latin}[\p{Script=Latin}\p{M}\p{N}]*/gu)) {
+          increment(terms, latin[0]);
+        }
+      }
+      // Some Gecko Thai words have isWordLike=false. Keep this exception scoped:
+      // relaxing the flag globally changes unrelated CJK rankings.
+      if ((part.isWordLike || /^[\p{Script=Thai}\p{M}]+$/u.test(term)) &&
+          term && /[\p{L}\p{N}]/u.test(term)) increment(terms, term);
     }
     return terms;
   }

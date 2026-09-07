@@ -117,6 +117,8 @@ fork 在上游"语义检索 + Zotero quick search RRF 融合"的基础上重构�
 
 上游的启发式关键词重排被替换为零第三方依赖的 BM25（`src/core/lexical-search.ts`）：`Intl.Segmenter('zh-Hans')` 自然词 + CJK bigram 双通道，`k1=1.2 / b=0.75`，自然词与 bigram 取最大 TF，RRF `k=60` 融合。它替代了旧的 `LOWER(chunk_text) LIKE` 包含式扫描，使 Notes/PDF 正文的精确词项命中随语料规模可控。分词器选型经四分词器消融后冻结为零依赖方案（jieba-wasm 等未进生产）；全库关键词词典 patch 冻结为不启用。
 
+Plan 60 兼容修补将词法契约更新为 v2：对实际合并的韩英片段补充英文词项并正确累计词频，限定保留被 Gecko 错标为非 word-like 的泰文片段；其他脚本继续原过滤规则。无需全局取消 isWordLike 或自动语言识别。升级后重启即可在首次搜索自动重建内存 BM25 缓存，复用已存文本和 semantic 向量，不需要用户手动重建索引。
+
 ### 6.3 三模式默认搜索策略
 
 | 索引模式 | 默认策略 |

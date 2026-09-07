@@ -117,6 +117,8 @@ Queries first pass an identity layer over read-only Zotero metadata: exact DOIs,
 
 Upstream's heuristic keyword re-ranking was replaced by a zero-dependency BM25 (`src/core/lexical-search.ts`): `Intl.Segmenter('zh-Hans')` natural words plus CJK bigrams as dual channels, `k1=1.2 / b=0.75`, max TF between natural word and bigram, RRF fusion with `k=60`. It replaces the old `LOWER(chunk_text) LIKE` containment scan, making exact term hits in Notes/PDF bodies scale with corpus size. After a four-tokenizer ablation the production choice was frozen as the zero-dependency option (jieba-wasm etc. never shipped); the library-wide keyword dictionary patch is frozen as disabled.
 
+Plan 60 compatibility fixes advance the lexical contract to v2: recover Latin terms from runtime-merged Korean/Latin segments with correct occurrence counts, and retain Thai-only segments that Gecko marks as non-word-like. Other scripts retain their existing filter. No global isWordLike relaxation or language detection is introduced. After an upgrade and restart, the first search rebuilds only the in-memory BM25 cache from stored text; semantic vectors are reused and no manual reindex is required.
+
 ### 6.3 Per-mode default search strategies
 
 | Indexing mode | Default strategy |

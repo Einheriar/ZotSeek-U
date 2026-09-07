@@ -709,12 +709,15 @@ This chapter parallels [Semantic Search Pipeline](#semantic-search-pipeline) and
 ### Tokenization: the T0 contract
 
 - **Normalization**: NFC normalization + language-agnostic lowercasing (`toLocaleLowerCase('und')`).
-- **Natural-word channel**: `Intl.Segmenter('zh-Hans', { granularity: 'word' })`, keeping only `isWordLike` segments that contain letters/digits. Zotero 9+ ships this API; runtimes without a Segmenter fall back to deterministic `\p{L}\p{N}` regex splitting, leaving the CJK channel unchanged.
+- **Natural-word channel**: `Intl.Segmenter('zh-Hans', { granularity: 'word' })`, keeping `isWordLike` segments containing letters/digits, with a scoped exception for false-word-like segments composed only of Thai-script characters/combining marks and containing a letter to work around Gecko annotations. Zotero 9+ ships this API; runtimes without a Segmenter fall back to deterministic `\p{L}\p{N}` regex splitting, leaving the CJK channel unchanged.
+- **Korean/Latin boundary compensation**: when a runtime segment joins Latin text and Hangul (such as `EEG로`), preserve it and add its Latin-initial terms. Count actual occurrences without duplicating already separated Latin tokens. Text without Hangul skips boundary checks. This does not provide general particle removal, arbitrary substring matching, or stemming.
 - **CJK bigram channel**: adjacent character pairs over continuous Han/Hiragana/Katakana/Hangul runs. Chinese has no whitespace word boundaries, so bigrams guarantee that any two-character combination can be hit; the natural-word channel keeps whole words exact.
 - When both channels produce the same term, the **maximum TF** wins.
-- Frozen contract IDs: `intl-segmenter-zh-hans-cjk-bigram-v1` (tokenizer) and `chunk-bm25-k1-1.2-b-0.75-v1` (BM25 parameters), keeping index-side and query-side behavior consistent across versions.
+- Frozen contract IDs: `intl-segmenter-zh-hans-cjk-bigram-v2` (tokenizer) and `chunk-bm25-k1-1.2-b-0.75-v1` (BM25 parameters), identifying application rules shared by indexing and querying; underlying runtime segmentation can still differ.
 
 Why not jieba/pkuseg or other third-party tokenizers: the Plan 24B/24C ablations showed jieba-wasm (T2) had the best retrieval metrics, but ~4.03 MB of WASM, ~67 MB steady-state memory and first-init costs were not worth it; the zero-dependency T0 was the best overall choice and is frozen as the production contract. The library-wide keyword dictionary patch (`library-term-patch-v1`) is likewise frozen as disabled.
+
+Upgrading only this lexical rule requires no embedding recomputation, text extraction, or manual document reindex. After a full Zotero restart, the first lexical search builds the in-memory BM25 cache automatically from stored `chunk_text`; existing semantic vectors are reused. This compatibility rule changes neither the database schema nor chunk freshness policy.
 
 ### Inverted index and scoring
 

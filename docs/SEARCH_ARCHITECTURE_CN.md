@@ -702,12 +702,15 @@ const key = returnAllChunks
 ### 分词：T0 契约
 
 - **归一化**：NFC 规范化 + 语言无关小写（`toLocaleLowerCase('und')`）。
-- **自然词通道**：`Intl.Segmenter('zh-Hans', { granularity: 'word' })`，只保留 `isWordLike` 且含字母/数字的词项。Zotero 9+ 内置该 API；无 Segmenter 的运行时回退到确定性的 `\p{L}\p{N}` 正则切词，CJK 通道不受影响。
+- **自然词通道**：`Intl.Segmenter('zh-Hans', { granularity: 'word' })`，保留 `isWordLike` 且含字母/数字的词项；针对 Gecko 的错误标记，允许仅含泰文脚本字符/组合标记且含字母的非 word-like 片段。Zotero 9+ 内置该 API；无 Segmenter 的运行时回退到确定性的 `\p{L}\p{N}` 正则切词，CJK 通道不受影响。
+- **韩英边界补偿**：若实际分段把英文与 Hangul 合并（如 `EEG로`），保留原分段并补出其中的拉丁字母起始词项；按实际出现次数累计，不重复补已独立分出的英文。仅含英文的文本跳过边界检查。不提供通用助词剥离、任意子串或词形还原。
 - **CJK bigram 通道**：对连续的 Han/Hiragana/Katakana/Hangul 字串取相邻二元组。中文没有空格分词，bigram 保证任意两字组合都能命中；自然词通道保证完整词的精确性。
 - 两通道产生的同一词项取**最大 TF**。
-- 冻结契约 ID：`intl-segmenter-zh-hans-cjk-bigram-v1`（分词器）与 `chunk-bm25-k1-1.2-b-0.75-v1`（BM25 参数），保证索引与查询两侧、以及跨版本的行为一致。
+- 冻结契约 ID：`intl-segmenter-zh-hans-cjk-bigram-v2`（分词器）与 `chunk-bm25-k1-1.2-b-0.75-v1`（BM25 参数），标识应用层规则，索引与查询使用同一实现；不同运行时的原始切分仍可能不同。
 
 为什么不用 jieba/pkuseg 等第三方分词器：Plan 24B/24C 消融显示 jieba-wasm（T2）检索指标最优，但约 4.03 MB WASM、约 67 MB 稳态内存与首次初始化成本不划算；零依赖的 T0 综合最优并已冻结为生产契约。全库关键词词典 patch（`library-term-patch-v1`）同样冻结为不启用。
+
+仅升级该词法规则无需重新生成 Embedding、提取文本或手动重建文献索引。完全重启 Zotero 后，首次词法搜索从已存 `chunk_text` 自动建立内存 BM25 缓存；既有 semantic 向量继续复用。此兼容规则不改变数据库 schema 或 chunk 新鲜度策略。
 
 ### 倒排索引与打分
 
