@@ -2873,8 +2873,12 @@ export class VectorStoreSQLite {
     }
   }
 
-  private async buildLexicalCache(modelId: string, generation: number): Promise<T0BM25Index> {
-    const startedAt = Date.now();
+  /**
+   * The FROM/WHERE shared by the lexical corpus reader and by the persisted
+   * snapshot fingerprint. Exposed so the snapshot module hashes exactly the
+   * rows that buildLexicalCache would index, with no drift between the two.
+   */
+  public lexicalCorpusQuery(modelId: string): { fromWhere: string; params: any[] } {
     const params = [modelId, modelId];
     const fromWhere = `
       FROM ${DB_NAME}.chunks c
@@ -2897,6 +2901,12 @@ export class VectorStoreSQLite {
         )
       ORDER BY c.item_pk, c.chunk_index
     `;
+    return { fromWhere, params };
+  }
+
+  private async buildLexicalCache(modelId: string, generation: number): Promise<T0BM25Index> {
+    const startedAt = Date.now();
+    const { fromWhere, params } = this.lexicalCorpusQuery(modelId);
     const [pks, libraryKeys, itemKeys, chunkIndexes, chunkTexts, sectionPaths, pdfAttachmentKeys, textSources] = await Promise.all([
       Zotero.DB.columnQueryAsync(`SELECT c.item_pk ${fromWhere}`, params),
       Zotero.DB.columnQueryAsync(`SELECT i.library_key ${fromWhere}`, params),
