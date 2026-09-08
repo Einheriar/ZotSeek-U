@@ -1,5 +1,5 @@
 /**
- * Dev-only Plan 11B capture of Zotero's current PDFWorker page text.
+ * Dev-only manifest-driven capture of Zotero's current PDFWorker page text.
  *
  * The exporter writes private full text to a caller-selected new directory.
  * It never writes Zotero items, ZotSeek SQLite rows, embeddings, or prefs.
@@ -260,7 +260,7 @@ async function captureAttachment(
 }
 
 /**
- * Capture every PDF attachment belonging to the frozen corpus parents.
+ * Capture every PDF attachment declared by a frozen corpus manifest.
  * Refuses to reuse an existing output directory so a prior run cannot be
  * silently mixed with a different Zotero/PDFWorker version.
  */
@@ -294,14 +294,14 @@ export async function exportPdfWorkerCollection(
   ) {
     throw new Error('Unsupported or invalid Plan 11B corpus manifest');
   }
-  if (manifest.parents.length !== 150) {
-    throw new Error(`Expected the frozen 150-parent corpus, got ${manifest.parents.length}`);
+  if (manifest.parents.length === 0) {
+    throw new Error('Corpus manifest must contain at least one parent');
   }
   if (manifest.parents.some(parent => parent.libraryKey !== 'user')) {
-    throw new Error('The first Plan 11B exporter currently supports only the user-library corpus');
+    throw new Error('The PDFWorker exporter currently supports only the user-library corpus');
   }
-  if (manifest.attachments.length !== 154) {
-    throw new Error(`Expected the frozen 154-attachment inventory, got ${manifest.attachments.length}`);
+  if (manifest.attachments.length === 0) {
+    throw new Error('Corpus manifest must contain at least one PDF attachment');
   }
 
   const attachmentsDir = PathUtils.join(outputDir, 'attachments');
@@ -371,9 +371,9 @@ export async function exportPdfWorkerCollection(
       });
     }
 
-    if ((parentIndex + 1) % 10 === 0 || parentIndex + 1 === manifest.parents.length) {
+    if ((parentIndex + 1) % 25 === 0 || parentIndex + 1 === manifest.parents.length) {
       Zotero.debug(
-        `[ZotSeek Plan11B] PDFWorker capture ${parentIndex + 1}/${manifest.parents.length} parents, ` +
+        `[ZotSeek Benchmark] PDFWorker capture ${parentIndex + 1}/${manifest.parents.length} parents, ` +
         `${attachmentCount} PDF attachments`,
       );
     }
@@ -405,7 +405,7 @@ export async function exportPdfWorkerCollection(
   };
   await writeJSON(PathUtils.join(outputDir, 'capture-manifest.json'), summary);
   Zotero.debug(
-    `[ZotSeek Plan11B] PDFWorker capture completed: ${attachmentCount} attachments → ${outputDir}`,
+    `[ZotSeek Benchmark] PDFWorker capture completed: ${attachmentCount} attachments → ${outputDir}`,
   );
   return summary;
 }

@@ -42,3 +42,6 @@ eval/
 
 # Unit-test build output
 .test-build/
+
+# Local Zotero/benchmark runtime artifacts
+output/
