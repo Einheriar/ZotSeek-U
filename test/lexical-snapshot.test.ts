@@ -54,6 +54,20 @@ test('JSON snapshot round trip, mismatch, corruption, cancellation and failed re
       persistLexicalSnapshot({ ...identity, revision: '9' }, index, () => true),
     ]);
     assert.ok(await loadLexicalSnapshot({ ...identity, revision: '9' }));
+    const many = new T0BM25Index(Array.from({ length: 180 }, (_, i) => ({ ...documents[0],
+      itemPk: i + 1, itemKey: String(i), chunkText: documents[0].chunkText + '\n"quoted" shared ' + i })));
+    await persistLexicalSnapshot(identity, many, () => true);
+    const segmented = await loadLexicalSnapshot(identity);
+    assert.ok(segmented);
+    assert.deepEqual(segmented.stats, many.stats);
+    assert.deepEqual(segmented.search('shared'), many.search('shared').map(h => ({ ...h, itemId: undefined })));
+    const saved = await fs.readFile(file, 'utf8');
+    const write = io.writeUTF8;
+    let publishing = true;
+    io.writeUTF8 = async (p, s) => { const bytes = await write(p, s); publishing = false; return bytes; };
+    await persistLexicalSnapshot({ ...identity, revision: '10' }, index, () => publishing);
+    assert.equal(await fs.readFile(file, 'utf8'), saved, 'closing during I/O cannot publish a completed temp file');
+    io.writeUTF8 = write;
     const invalid = index.serialize() as any;
     invalid.postingOffsets[1] = 0xffffffff;
     assert.throws(() => validateLexicalSnapshot(invalid));

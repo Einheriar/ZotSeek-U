@@ -117,6 +117,38 @@ function installIdentityAwareStub(modelId = 'multilingual-e5-base') {
 }
 
 describe('Plan 40B cache publication and single-flight', () => {
+  test('retains session text until explicit maintenance, sharing refresh with waiting searches', async () => {
+    const zotero = installIdentityAwareStub();
+    let rows = [lexicalRow('OLD00001', 'old evidence')];
+    let reads = 0;
+    let revision = '0';
+    let gate: Deferred | undefined;
+    const started = deferred();
+    zotero.DB = { columnQueryAsync: async (sql: string) => {
+      if (/SELECT c\.item_pk\s/i.test(sql)) { reads++; if (gate) started.resolve(); }
+      if (gate) await gate.promise;
+      return lexicalColumn(sql, rows);
+    } };
+    const store = makeStore();
+    (store as any).readLexicalIdentity = async (modelId: string) => ({ databaseId: 'a'.repeat(32), revision, modelId });
+    await store.prepareLexicalIndex();
+    rows = [lexicalRow('NEW00002', 'new evidence')];
+    revision = '1';
+    (store as any).invalidateCache(true);
+    assert.equal((await store.searchText('old')).length, 1);
+    assert.equal((await store.searchText('new')).length, 0);
+    gate = deferred();
+    const refresh = store.prepareLexicalIndex();
+    assert.equal(store.prepareLexicalIndex(), refresh);
+    await started.promise;
+    const waiting = store.searchText('new');
+    gate.resolve();
+    await refresh;
+    assert.deepEqual((await waiting).map(h => h.itemKey), ['NEW00002']);
+    assert.equal((await store.searchText('old')).length, 0);
+    assert.equal(reads, 2);
+  });
+
   test('builds a normalized active-model projection without loading full-text fields', async () => {
     const zotero = installIdentityAwareStub('multilingual-e5-base');
     const rows = [{

@@ -476,6 +476,32 @@ export class T0BM25Index {
     };
   }
 
+  /** Bounded JSON records avoid copying/stringifying the entire postings table. */
+  *snapshotRecords(): Generator<Record<string, unknown>> {
+    yield { metadata: { k1: this.k1, b: this.b, documentCount: this.documentCountInternal,
+      postingCount: this.postingCountInternal, totalTextChars: this.totalTextChars,
+      totalTextBytes: this.totalTextBytes } };
+    const columns: Record<string, ArrayLike<unknown>> = {
+      itemPk: this.itemPkCol, chunkIndex: this.chunkIndexCol, length: this.lengthCol,
+      sourceCode: this.sourceCodeCol, libraryCode: this.libraryCodeCol,
+      chunkText: this.chunkTextCol, itemKey: this.itemKeyCol,
+      itemId: new Array(this.documentCountInternal).fill(null),
+      legacyDocumentId: this.legacyDocumentId, sectionPaths: this.sectionPathsCol,
+      pdfAttachmentKey: this.pdfAttachmentKeyCol, terms: [...this.termIndex.keys()],
+      postingOffsets: this.postingOffsets, postingDoc: this.postingDoc, postingTf: this.postingTf,
+      libraryStrings: this.libraryStrings, sourceStrings: this.sourceStrings,
+    };
+    for (const [key, column] of Object.entries(columns)) {
+      const size = ArrayBuffer.isView(column) ? 16384 : 128;
+      // Include empty columns so a truncated/missing column cannot look valid.
+      for (let offset = 0; offset < Math.max(1, column.length); offset += size) {
+        const values = [];
+        for (let i = offset; i < Math.min(offset + size, column.length); i++) values.push(column[i]);
+        yield { key, offset, values };
+      }
+    }
+  }
+
   /**
    * Rebuild an index from serialize() output. This is a trusted fast path:
    * the caller must already have validated the snapshot's fingerprint against
@@ -490,11 +516,12 @@ export class T0BM25Index {
     index.postingCountInternal = data.postingCount;
     index.totalTextChars = data.totalTextChars;
     index.totalTextBytes = data.totalTextBytes;
-    index.itemPkCol = Uint32Array.from(data.itemPk);
-    index.chunkIndexCol = Uint32Array.from(data.chunkIndex);
-    index.lengthCol = Uint32Array.from(data.length);
-    index.sourceCodeCol = Int32Array.from(data.sourceCode);
-    index.libraryCodeCol = Int32Array.from(data.libraryCode);
+    // The disk decoder transfers owned typed columns, avoiding a second full copy.
+    index.itemPkCol = data.itemPk instanceof Uint32Array ? data.itemPk : Uint32Array.from(data.itemPk);
+    index.chunkIndexCol = data.chunkIndex instanceof Uint32Array ? data.chunkIndex : Uint32Array.from(data.chunkIndex);
+    index.lengthCol = data.length instanceof Uint32Array ? data.length : Uint32Array.from(data.length);
+    index.sourceCodeCol = data.sourceCode instanceof Int32Array ? data.sourceCode : Int32Array.from(data.sourceCode);
+    index.libraryCodeCol = data.libraryCode instanceof Int32Array ? data.libraryCode : Int32Array.from(data.libraryCode);
     index.chunkTextCol = data.chunkText;
     index.itemKeyCol = data.itemKey;
     index.itemIdCol = data.itemId;
@@ -502,9 +529,9 @@ export class T0BM25Index {
     index.sectionPathsCol = data.sectionPaths;
     index.pdfAttachmentKeyCol = data.pdfAttachmentKey;
     index.termIndex = new Map((data.terms as string[]).map((term, i) => [term, i]));
-    index.postingOffsets = Uint32Array.from(data.postingOffsets);
-    index.postingDoc = Uint32Array.from(data.postingDoc);
-    index.postingTf = Float64Array.from(data.postingTf);
+    index.postingOffsets = data.postingOffsets instanceof Uint32Array ? data.postingOffsets : Uint32Array.from(data.postingOffsets);
+    index.postingDoc = data.postingDoc instanceof Uint32Array ? data.postingDoc : Uint32Array.from(data.postingDoc);
+    index.postingTf = data.postingTf instanceof Float64Array ? data.postingTf : Float64Array.from(data.postingTf);
     index.libraryStrings = data.libraryStrings;
     index.sourceStrings = data.sourceStrings;
     index.sourceCodeByName = new Map(

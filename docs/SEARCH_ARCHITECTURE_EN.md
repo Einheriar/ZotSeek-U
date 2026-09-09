@@ -175,7 +175,7 @@ BM25 is not free; the costs land in three places:
 
 - **Database capacity**: BM25's corpus is the faithful per-chunk `chunk_text` stored in the database, and that text must be kept complete in `zotseek.sqlite` — it cannot be trimmed for space. On the measured 150-paper Full corpus (8,894 chunks, ~9.03M characters) `chunk_text` accounts for 8.3 MiB of the 44 MiB database (vector payloads account for 31.3 MiB).
 - **In-process memory**: the CSR index remains resident when ready and is released on exit; the disk snapshot survives. Persistence primarily saves rebuilding work, not steady-state memory.
-- **Cold-build latency**: historical Plan 40B measurements of 4.4–6.5 seconds covered 150 papers, not large libraries. Plan 62 prepares after startup maintenance and skips tokenization on a snapshot hit. JSON parsing/serialization still have synchronous phases and must be measured separately.
+- **Cold-build latency**: historical Plan 40B results for 150 papers do not extrapolate to large libraries. Plan 62 prepares after startup maintenance and avoids tokenization on a snapshot hit. Format 3 uses one JSON file with bounded records; codecs and validation check for yielding approximately every 8 ms. Individual records, string joining, file I/O, hashing and final dictionary restoration still have synchronous costs, so frame time is not guaranteed. An isolated 58,105-chunk hit took about 6.85 s with a 0.52 s maximum event-loop gap; cold preparation is substantially longer and process peak memory needs separate measurement.
 
 Once the cache is warm the BM25 branch adds very little per query; modes whose corpus excludes Notes/PDF bodies (`abstract`) are smaller and build faster.
 
