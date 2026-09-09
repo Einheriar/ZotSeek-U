@@ -29,6 +29,16 @@ function snapshotPath(): string {
   return PathUtils.join(Zotero.DataDirectory.dir, 'zotseek-lexical-snapshot.json');
 }
 
+/** Count the saved file, even if stale; temporary replacement files are excluded. */
+export async function getLexicalSnapshotSize(): Promise<number> {
+  try {
+    return (await IOUtils.stat(snapshotPath())).size;
+  } catch (error) {
+    logger.debug('BM25 snapshot size unavailable: ' + error);
+    return 0;
+  }
+}
+
 async function digest(text: string): Promise<string> {
   const hash = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join('');

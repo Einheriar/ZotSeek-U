@@ -8,6 +8,8 @@
 
 ## Plan 62: BM25 snapshots (in progress)
 
+Preferences Storage Used sums the file sizes of `zotseek.sqlite` and the saved BM25 JSON snapshot, reread on Refresh Statistics. A missing snapshot contributes zero; stale or corrupt files still count their actual bytes. Temporary replacement files, SQLite journals, model files and Zotero attachments are excluded. The raw JS API / MCP `storageUsedBytes` retains its database-file meaning.
+
 2026-09-09: Independent JSON snapshots, transactional corpus revisions, cooperative construction, end-of-startup preparation and the existing manual action are implemented. Ordinary writes retain session BM25; clear, model deletion, close and reattach invalidate memory. Snapshots match database identity, revision, model and algorithm contracts and verify SHA-256; software versions alone do not invalidate them. Searches wait for shared preparation without dual versions. Missing items return item_not_found, localized in all ten UI locales, without links or live metadata in MCP/REST. Format 3 retains one JSON file with bounded codec/validation records and restores numeric columns directly as typed arrays. All 468 Node tests pass. Isolated Zotero 9.0.6 verifies cold startup, reuse, session-stale content, explicit refresh and revision invalidation. For 58,105 chunks, the snapshot is about 198 MB; the final hit took 6.85 seconds with a 0.52-second maximum event-loop gap, versus 3.94 seconds and a 3.27-second gap for whole-object JSON. Responsiveness trades off total time; no stall-free or fixed-time guarantee is made. Main-window button and missing-item presentation still await manual acceptance.
 
 ## Table of Contents

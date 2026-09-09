@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import { tmpdir } from 'node:os';
 import { installZoteroStub } from './helpers/zotero-stub';
 import { T0BM25Index } from '../src/core/lexical-search';
-import { loadLexicalSnapshot, persistLexicalSnapshot, validateLexicalSnapshot } from '../src/core/lexical-snapshot';
+import { getLexicalSnapshotSize, loadLexicalSnapshot, persistLexicalSnapshot, validateLexicalSnapshot } from '../src/core/lexical-snapshot';
 
 const identity = { databaseId: 'a'.repeat(32), revision: '7', modelId: 'test-model' };
 const documents = [{ itemPk: 1, libraryKey: 'user', itemKey: 'ABCDEFGH', itemId: 91,
@@ -25,10 +25,12 @@ test('JSON snapshot round trip, mismatch, corruption, cancellation and failed re
   };
   (globalThis as any).IOUtils = io;
   try {
+    assert.equal(await getLexicalSnapshotSize(), 0, 'no saved snapshot uses no disk space');
     const index = new T0BM25Index(documents);
     await persistLexicalSnapshot(identity, index, () => true);
     const file = path.join(dir, 'zotseek-lexical-snapshot.json');
     const original = await fs.readFile(file, 'utf8');
+    assert.equal(await getLexicalSnapshotSize(), Buffer.byteLength(original));
     assert.equal(JSON.parse(original).header.revision, '7', 'file remains valid JSON');
     const restored = await loadLexicalSnapshot(identity);
     assert.ok(restored);
@@ -40,6 +42,7 @@ test('JSON snapshot round trip, mismatch, corruption, cancellation and failed re
     await fs.writeFile(file, original.replace('支持', '反对'));
     assert.equal(await loadLexicalSnapshot(identity), null, 'equal-length content corruption is detected');
     await fs.writeFile(file, original.slice(0, -20));
+    assert.equal(await getLexicalSnapshotSize(), Buffer.byteLength(original.slice(0, -20)), 'count actual bytes even for an invalid snapshot');
     assert.equal(await loadLexicalSnapshot(identity), null, 'truncation is a cache miss');
     await fs.writeFile(file, original);
     await persistLexicalSnapshot({ ...identity, revision: '8' }, index, () => false);

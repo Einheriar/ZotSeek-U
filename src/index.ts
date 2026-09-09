@@ -13,6 +13,7 @@ declare const Services: any;  // Zotero 8 global Services object
 
 // Import core modules
 import { PaperEmbedding, getVectorStore, IVectorStore } from './core/storage-factory';
+import { getLexicalSnapshotSize } from './core/lexical-snapshot';
 import { embeddingPipeline, EmbeddingProgress } from './core/embedding-pipeline';
 import { searchEngine, SearchResult } from './core/search-engine';
 import { textExtractor, ExtractedText, ExtractedChunks } from './core/text-extractor';
@@ -1500,16 +1501,17 @@ class ZotSeekPlugin {
         this.logger.debug(`Could not get last index duration from metadata: ${e}`);
       }
 
-      // Format storage size
+      // Preferences show both saved index files; the raw API keeps its database-only contract.
+      const storageBytes = stats.storageUsedBytes + await getLexicalSnapshotSize();
       let storageSize: string;
-      if (stats.storageUsedBytes < 1024) {
-        storageSize = `${stats.storageUsedBytes} B`;
-      } else if (stats.storageUsedBytes < 1024 * 1024) {
-        storageSize = `${(stats.storageUsedBytes / 1024).toFixed(1)} KB`;
-      } else if (stats.storageUsedBytes < 1024 * 1024 * 1024) {
-        storageSize = `${(stats.storageUsedBytes / (1024 * 1024)).toFixed(1)} MB`;
+      if (storageBytes < 1024) {
+        storageSize = `${storageBytes} B`;
+      } else if (storageBytes < 1024 * 1024) {
+        storageSize = `${(storageBytes / 1024).toFixed(1)} KB`;
+      } else if (storageBytes < 1024 * 1024 * 1024) {
+        storageSize = `${(storageBytes / (1024 * 1024)).toFixed(1)} MB`;
       } else {
-        storageSize = `${(stats.storageUsedBytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+        storageSize = `${(storageBytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
       }
 
       // Format last indexed date
