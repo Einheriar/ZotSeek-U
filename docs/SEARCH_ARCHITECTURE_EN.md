@@ -8,7 +8,7 @@ A comprehensive guide to how semantic and hybrid search works in ZotSeek.
 
 ## Plan 62 implementation status (2026-09-09)
 
-This branch is replacing the immediate lexical invalidation contract described under Plan 40B below: ordinary chunk writes advance the durable revision but may retain a ready BM25 index for the session; vector caches still invalidate immediately. Initial preparation tries an independent JSON snapshot before rebuilding on a miss. Model changes, clear, reattach and close retain hard invalidation. Revision changes commit atomically with writes; JSON integrity checks do not scan corpus text. Tokenization and scoring order remain unchanged, while construction yields cooperatively. Startup/manual scheduling and missing-item errors are subsequent steps; runtime acceptance is pending.
+Plan 62 prepares BM25 after startup maintenance and through Check and update index. Searches wait for shared preparation. Matching snapshots load; misses release old memory before rebuilding, without dual versions. Ordinary additions, edits and deletions may retain session-stale content. Missing items return item_not_found, localized at the UI boundary. Vector and identity caches still invalidate immediately.
 
 ## Table of Contents
 
@@ -174,8 +174,8 @@ quick search was **not removed**: it continues to cover the metadata side, and i
 BM25 is not free; the costs land in three places:
 
 - **Database capacity**: BM25's corpus is the faithful per-chunk `chunk_text` stored in the database, and that text must be kept complete in `zotseek.sqlite` — it cannot be trimmed for space. On the measured 150-paper Full corpus (8,894 chunks, ~9.03M characters) `chunk_text` accounts for 8.3 MiB of the 44 MiB database (vector payloads account for 31.3 MiB).
-- **In-process memory**: the inverted index (term table + postings) stays resident after construction — roughly 66,532 terms and 967,798 postings at that corpus size. The cache is dropped when Zotero exits and is not persisted.
-- **Cold-build latency**: the first lexical query after startup or invalidation rebuilds in about 4.4–6.5 s (measured in Plan 40B); concurrent queries join the same build, and during sustained indexing the safe-degradation policy temporarily omits lexical evidence (see [Performance Optimizations](#performance-optimizations)).
+- **In-process memory**: the CSR index remains resident when ready and is released on exit; the disk snapshot survives. Persistence primarily saves rebuilding work, not steady-state memory.
+- **Cold-build latency**: historical Plan 40B measurements of 4.4–6.5 seconds covered 150 papers, not large libraries. Plan 62 prepares after startup maintenance and skips tokenization on a snapshot hit. JSON parsing/serialization still have synchronous phases and must be measured separately.
 
 Once the cache is warm the BM25 branch adds very little per query; modes whose corpus excludes Notes/PDF bodies (`abstract`) are smaller and build faster.
 
@@ -721,7 +721,7 @@ This chapter parallels [Semantic Search Pipeline](#semantic-search-pipeline) and
 
 Why not jieba/pkuseg or other third-party tokenizers: the Plan 24B/24C ablations showed jieba-wasm (T2) had the best retrieval metrics, but ~4.03 MB of WASM, ~67 MB steady-state memory and first-init costs were not worth it; the zero-dependency T0 was the best overall choice and is frozen as the production contract. The library-wide keyword dictionary patch (`library-term-patch-v1`) is likewise frozen as disabled.
 
-Upgrading only this lexical rule requires no embedding recomputation, text extraction, or manual document reindex. After a full Zotero restart, the first lexical search builds the in-memory BM25 cache automatically from stored `chunk_text`; existing semantic vectors are reused. This compatibility rule changes neither the database schema nor chunk freshness policy.
+Upgrading lexical rules requires no new embeddings or extraction. Startup rejects a mismatched algorithm contract and rebuilds BM25 from stored chunk_text. A software version change alone does not invalidate snapshots.
 
 ### Inverted index and scoring
 
@@ -740,9 +740,9 @@ IDF(t)      = ln( 1 + (N − df + 0.5) / (df + 0.5) )              k1 = 1.2, b =
 
 ### Cache and lifecycle
 
-- The index is **in-process and non-persistent**: built once per active-model partition, dropped when Zotero exits, rebuilt on the next query.
-- It shares one mutation generation with the vector cache but keeps its own keyed single-flight: concurrent cold queries join one build; publishing re-checks generation, active model and store lifecycle; a stale build is discarded and retried at most once.
-- While indexing writes are ongoing, the safe-degradation policy temporarily omits index-side lexical evidence rather than serving known-stale mixed results (see [Performance Optimizations](#performance-optimizations)).
+- BM25 uses an in-memory CSR index and an independent JSON snapshot; startup/manual maintenance refreshes it, not ordinary session writes.
+- In-flight builds retain generation/model/lifecycle guards and keyed single-flight. Durable revisions commit in chunk-writing transactions; closing and reconnecting do not increment them.
+- Searches wait during preparation and construction yields cooperatively. Ready BM25 may retain session-stale content; clear, model and lifecycle changes reject incompatible versions.
 - **Model partitions**: chunks from the active model are preferred; papers not yet rebuilt for the active model fall back to a deterministically chosen older partition so lexical retrieval survives migration without mixing two copies of the same paper.
 - Build diagnostics log only sizes (chunk count, characters/bytes, unique terms, postings, elapsed time) — never corpus text or queries.
 
@@ -1248,16 +1248,7 @@ See [Chunking Strategy](#chunking-strategy) for detailed trade-offs. Summary:
 
 ### Embedding Cache
 
-Search uses three process-local, non-persistent caches. The semantic cache holds
-pre-normalized vectors for all stored model partitions plus lightweight source
-and location metadata; it deliberately excludes `chunk_text`. Since Plan 43,
-the vector cache reads only the active model and only this narrow projection
-from SQLite, decodes stored vectors directly to `Float32Array`, and normalizes
-them in place. The public `getAll()` bulk contract remains complete and
-cross-model. The T0 lexical cache holds one in-memory BM25 index for the
-active-model/fallback corpus. Both caches are lost when Zotero exits, so the
-first corresponding query after startup or invalidation rebuilds them from
-`zotseek.sqlite`.
+Search uses vector, lexical and metadata-identity memory caches; only lexical has a disk snapshot. Vectors read a narrow active-model projection without chunk_text, decode to Float32Array and normalize in place; public getAll() remains complete and cross-model. BM25 prepares one active-model/fallback CSR index from a matching snapshot or rebuilds it.
 
 The third cache is the Plan 44 metadata identity snapshot used by the Hybrid
 prepass. It retains at most one library/collection scope and contains only
@@ -1267,22 +1258,9 @@ embeddings. Its estimated logical payload is capped at 32 MiB; an oversized,
 failed, stale, or destroyed build is discarded and the query uses the legacy
 Zotero Search path.
 
-Both caches share a monotonically increasing mutation generation but use
-independent keyed single-flight builds. Concurrent cold semantic queries for the
-same generation share one vector read, while concurrent lexical queries for the
-same model and generation share one corpus read and tokenization pass. Library
-and source restrictions are applied when searching the shared base index; they
-do not create full per-library or per-source cache copies.
+Vector and lexical in-flight builds retain separate keyed single-flight and generation/model/lifecycle guards. Ordinary writes invalidate vectors but retain ready BM25 until startup/manual maintenance detects a revision change. Library/source restrictions share the base index.
 
-A build publishes only if its generation, active model where applicable, and
-store lifecycle are still current when it completes. A successful index write,
-clear, model deletion, database reattachment, compaction, or store close first
-invalidates publication eligibility. If a build becomes stale it is discarded
-and retried once. Continued indexing can therefore temporarily omit index-side
-BM25 evidence; a repeatedly invalidated vector build preserves its error
-semantics and is converted to an empty semantic branch by the Hybrid layer. No
-known-stale or potentially mixed cache is returned. The next query after writes
-settle rebuilds normally, without requiring a restart or index clear.
+Normal chunk writes increment the revision in their transaction; initialization creates a database identity. Snapshots match identity, revision, model, contracts and format, and verify SHA-256 and structural bounds without scanning corpus text. Builds wait for writers and recheck versions, retrying stale work at most once. Saves use a single-writer queue and same-directory temporary replacement; failure affects future reuse. External writes by older code that does not register revisions are outside this contract; explicitly refresh/remove snapshots after such restores or cross-version experiments.
 
 Identical query embeddings also use an in-flight-only single-flight keyed by
 the runtime model and exact query text. The promise is removed after success or

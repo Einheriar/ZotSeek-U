@@ -275,7 +275,8 @@ describe('HybridSearchEngine product dispatch', () => {
       indexingMode: 'notes',
     });
     assert.deepEqual(calls, [[20, 21, 99]]);
-    assert.deepEqual(results.map((result: any) => result.itemId), [20, 21]);
+    assert.deepEqual(results.map((result: any) => result.itemId), [20, 21, undefined]);
+    assert.equal(results[2].itemStatus, 'item_not_found');
 
     const metadataResults = [
       { itemId: 21, itemKey: '', libraryKey: undefined, title: '', creators: '', year: 0 },

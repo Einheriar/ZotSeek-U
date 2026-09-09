@@ -627,3 +627,4 @@ zotseek-brief-wizard-canceling = Canceling generation…
 zotseek-brief-wizard-failed = Generation failed. No prompt files were activated.
 zotseek-brief-wizard-open-failed = Unable to open the prompt file location.
 zotseek-brief-wizard-init-failed = Unable to start the literature brief prompt wizard.
+zotseek-search-itemNotFound = Item not found

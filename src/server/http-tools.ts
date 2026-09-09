@@ -84,6 +84,7 @@ export interface ToolResultItem {
   itemKey: string;
   libraryKey: string | null; // 'user' | 'group:<id>' | null when unresolvable
   title: string;
+  itemStatus?: 'item_not_found';
   authors?: string[] | string;
   year?: number;
   score: number;
@@ -353,6 +354,12 @@ async function buildLinks(
 
 async function mapHybridResult(r: HybridSearchResult): Promise<ToolResultItem> {
   const libraryKey = r.libraryKey || libraryKeyForItemId(r.itemId);
+  if (r.itemStatus === 'item_not_found') {
+    return {
+      itemKey: r.itemKey, libraryKey, title: 'Item not found', itemStatus: 'item_not_found',
+      score: round3(r.rrfScore), source: r.source, matchedChunk: chunkOf(r),
+    };
+  }
   const metadata = buildBibliographicMetadata(getLocalItem(r.itemId));
   return {
     itemKey: r.itemKey,

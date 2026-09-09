@@ -627,3 +627,4 @@ zotseek-brief-wizard-canceling = Отмена создания…
 zotseek-brief-wizard-failed = Ошибка создания. Файлы промптов не активированы.
 zotseek-brief-wizard-open-failed = Не удалось открыть расположение файлов промптов.
 zotseek-brief-wizard-init-failed = Не удалось запустить мастер промптов литературного обзора.
+zotseek-search-itemNotFound = Элемент не найден

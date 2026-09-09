@@ -609,3 +609,4 @@ zotseek-brief-wizard-canceling = 생성을 취소하는 중…
 zotseek-brief-wizard-failed = 생성에 실패했습니다. 프롬프트 파일을 활성화하지 않았습니다.
 zotseek-brief-wizard-open-failed = 프롬프트 파일 위치를 열 수 없습니다.
 zotseek-brief-wizard-init-failed = 문헌 브리프 프롬프트 마법사를 시작할 수 없습니다.
+zotseek-search-itemNotFound = 항목이 존재하지 않습니다

@@ -609,3 +609,4 @@ zotseek-brief-wizard-canceling = 生成をキャンセルしています…
 zotseek-brief-wizard-failed = 生成に失敗しました。プロンプトファイルは有効化されていません。
 zotseek-brief-wizard-open-failed = プロンプトファイルの場所を開けません。
 zotseek-brief-wizard-init-failed = 文献ブリーフプロンプトウィザードを開始できません。
+zotseek-search-itemNotFound = アイテムが存在しません

@@ -278,7 +278,9 @@ export class SearchResultsTable {
     }
 
     // Mark orphan results (item not present in current Zotero library)
-    if (localId === undefined) {
+    if ((result as HybridSearchResult).itemStatus === 'item_not_found') {
+      title = getString('search-itemNotFound');
+    } else if (localId === undefined) {
       title = `[Not synced] ${title}`;
     }
     

@@ -53,6 +53,8 @@ export interface IVectorStore {
     libraryId?: number;
     textSources?: import('./vector-store-sqlite').TextSourceType[];
   }): Promise<import('./vector-store-sqlite').IndexedTextMatch[]>;
+  prepareLexicalIndex(): Promise<void>;
+  deferLexicalPreparation(until: Promise<unknown>): void;
 
   // Model-scoped helpers
   getItemsMissingModel(modelId: string): Promise<Array<{ libraryKey: string; itemKey: string }>>;

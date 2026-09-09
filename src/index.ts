@@ -582,15 +582,15 @@ class ZotSeekPlugin {
       this.logger.debug(`checkAndOfferResume failed: ${e?.message || e}`);
     }
 
+    let skipStartupReconciliation = true;
     try {
       const strategyWritable = await this.ensureChunkStrategyWritable(true);
-      if (!resumePromptHandled && strategyWritable && this.ensureOperationalModel(false)) {
-        autoIndexManager.start();
-      }
+      skipStartupReconciliation = resumePromptHandled || !strategyWritable || !this.ensureOperationalModel(false);
     } catch (e: any) {
       this.logger.warn(`Could not verify chunk strategy version: ${e?.message || e}`);
       autoIndexManager.setChunkStrategyBlocked(true);
     }
+    autoIndexManager.start({ skipReconciliation: skipStartupReconciliation });
 
     // Dev-only self-test harness (gated by extensions.zotseek.devMode pref)
     try {
@@ -1219,14 +1219,16 @@ class ZotSeekPlugin {
 
   /** Run the same one-shot reconciliation used after startup. */
   public async checkForIndexUpdates(): Promise<import('./core/auto-index-manager').StartupCheckResult> {
+    await this.ensureStoreReady();
     if (!this.ensureOperationalModel(true)) {
+      await this.vectorStore?.prepareLexicalIndex();
       return {
         checked: 0, indexedNew: 0, rebuilt: 0, notesUpdated: 0,
         baselined: 0, removed: 0, unchanged: 0, outdated: 0, failed: 0, skipped: true, paused: false,
       };
     }
-    await this.ensureStoreReady();
     if (!await this.ensureChunkStrategyWritable(true)) {
+      await this.vectorStore?.prepareLexicalIndex();
       return {
         checked: 0, indexedNew: 0, rebuilt: 0, notesUpdated: 0,
         baselined: 0, removed: 0, unchanged: 0, outdated: 0, failed: 0, skipped: true, paused: false,
@@ -2156,6 +2158,8 @@ class ZotSeekPlugin {
         noteIndexCallback: candidates => this.indexNoteChangesSilent(candidates),
         forceFull,
       });
+      // The existing explicit update action includes refreshing its keyword index.
+      await this.vectorStore?.prepareLexicalIndex();
       if (recoverableScope && shouldClearBulkIndexScope(result)) {
         try {
           const rawPending = getZotero()?.Prefs.get(BULK_INDEX_PENDING_PREF, true) as string | undefined;

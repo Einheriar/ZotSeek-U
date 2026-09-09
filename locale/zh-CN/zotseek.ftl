@@ -627,3 +627,4 @@ zotseek-brief-wizard-canceling = 正在取消生成……
 zotseek-brief-wizard-failed = 生成失败，未启用任何提示词文件。
 zotseek-brief-wizard-open-failed = 无法打开提示词文件位置。
 zotseek-brief-wizard-init-failed = 无法启动文献简报提示词引导。
+zotseek-search-itemNotFound = 条目不存在

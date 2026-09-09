@@ -627,3 +627,4 @@ zotseek-brief-wizard-canceling = กำลังยกเลิกการส�
 zotseek-brief-wizard-failed = สร้างไม่สำเร็จ ไม่มีการเปิดใช้ไฟล์พรอมต์
 zotseek-brief-wizard-open-failed = เปิดตำแหน่งไฟล์พรอมต์ไม่สำเร็จ
 zotseek-brief-wizard-init-failed = เริ่มตัวช่วยสร้างพรอมต์บทสรุปวรรณกรรมไม่สำเร็จ
+zotseek-search-itemNotFound = ไม่พบรายการ

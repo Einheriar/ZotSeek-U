@@ -38,7 +38,9 @@ import { DEFAULT_INDEXING_MODE } from '../utils/indexing-mode';
 declare const Zotero: any;
 
 export interface HybridSearchResult {
-  itemId: number;
+  itemId?: number;
+  /** Stable machine status; presentation is localized only at the UI boundary. */
+  itemStatus?: 'item_not_found';
   itemKey: string;
   libraryKey?: string;
   title: string;
@@ -144,7 +146,8 @@ export interface QueryAnalysis {
 }
 
 interface KeywordSearchHit {
-  itemId: number;
+  itemId?: number;
+  itemStatus?: 'item_not_found';
   libraryKey?: string;
   itemKey?: string;
   score: number;
@@ -180,7 +183,7 @@ interface IdentityNavigationCandidate {
 }
 
 function stableRankingKey(result: {
-  itemId: number;
+  itemId?: number;
   libraryKey?: string;
   itemKey?: string;
 }): string {
@@ -204,8 +207,8 @@ interface ItemBatchEntry {
  * normal reads therefore avoid an N-round-trip loop without turning a batch
  * failure into a result-wide failure.
  */
-async function getItemsBatch(ids: number[]): Promise<Map<number, ItemBatchEntry>> {
-  const uniqueIds = [...new Set(ids.filter(id => Number.isFinite(id)))];
+async function getItemsBatch(ids: Array<number | undefined>): Promise<Map<number, ItemBatchEntry>> {
+  const uniqueIds = [...new Set(ids.filter((id): id is number => id !== undefined && Number.isFinite(id)))];
   const entries = new Map<number, ItemBatchEntry>();
   uniqueIds.forEach(id => entries.set(id, { item: null, failed: false }));
   if (uniqueIds.length === 0) return entries;
@@ -740,6 +743,7 @@ export class HybridSearchEngine {
       semanticScore: null,
       keywordScore: r.score,
       rrfScore: r.score, // Use raw score for keyword-only
+      ...(r.itemStatus ? { itemStatus: r.itemStatus } : {}),
       semanticRank: null,
       keywordRank: index + 1,
       source: 'keyword' as const,
@@ -907,7 +911,7 @@ export class HybridSearchEngine {
       const queryYear = queryYearMatch ? queryYearMatch[0] : null;
 
       // Score each result based on match quality
-      const scoredResults = new Map<number, KeywordSearchHit>();
+      const scoredResults = new Map<string, KeywordSearchHit>();
 
       const quicksearchItemIds = itemIds.slice(0, opts.keywordTopK * 2); // Get more to allow reranking
       const matchedItems = await getItemsBatch(quicksearchItemIds);
@@ -1018,11 +1022,11 @@ export class HybridSearchEngine {
             textSource: isNoteMatch ? 'note' : undefined,
             chunkText: isNoteMatch ? boundedTextSnippet(noteText, query) : undefined,
           };
-          const previous = scoredResults.get(hit.itemId);
+          const previous = scoredResults.get(stableRankingKey(hit));
           // Indexed text is already a bounded production chunk and may carry
           // section paths, so it wins ties over the quicksearch fallback.
           if (!previous || hit.score >= previous.score) {
-            scoredResults.set(hit.itemId, hit);
+            scoredResults.set(stableRankingKey(hit), hit);
           }
         } catch (e) {
           this.logger.debug(`Could not score keyword result ${itemId}: ${e}`);
@@ -1038,11 +1042,20 @@ export class HybridSearchEngine {
           .filter((itemId): itemId is number => itemId !== undefined),
       );
       for (const match of indexedMatches) {
-        if (match.itemId === undefined) continue;
         try {
-          const entry = indexedItems.get(match.itemId);
-          if (!entry || entry.failed) continue;
-          const item = entry.item;
+          const entry = match.itemId === undefined ? undefined : indexedItems.get(match.itemId);
+          if (entry?.failed) continue;
+          const item = entry?.item;
+          const liveIdentity = identityFromItem(item);
+          if (!item || item.deleted || (item.key && item.key !== match.itemKey) ||
+              (liveIdentity && liveIdentity.libraryKey !== match.libraryKey)) {
+            // Preserve the stale hit as an explicit error, never as a local-ID
+            // alias for a different paper. No real-time deletion index is needed.
+            scoredResults.set(stableRankingKey(match), {
+              ...match, itemId: undefined, itemStatus: 'item_not_found',
+            });
+            continue;
+          }
           if (!item?.isRegularItem?.()) continue;
           if (excludeBooks && item.itemType === 'book') continue;
 
@@ -1061,9 +1074,9 @@ export class HybridSearchEngine {
             sectionPaths: match.sectionPaths,
             pdfAttachmentKey: match.pdfAttachmentKey,
           };
-          const previous = scoredResults.get(hit.itemId);
+          const previous = scoredResults.get(stableRankingKey(hit));
           if (!previous || hit.score > previous.score) {
-            scoredResults.set(hit.itemId, hit);
+            scoredResults.set(stableRankingKey(hit), hit);
           }
         } catch (error) {
           this.logger.debug(`Could not merge indexed text result ${match.itemId}: ${error}`);
@@ -1182,6 +1195,7 @@ export class HybridSearchEngine {
         semanticRank: semantic?.rank ?? null,
         keywordRank: keyword?.rank ?? null,
         source,
+        ...(keyword?.itemStatus ? { itemStatus: keyword.itemStatus, itemId: undefined } : {}),
         textSource: semantic?.textSource ?? keyword?.textSource,
         chunkIndex: semantic?.chunkIndex,
         chunkText: semantic?.chunkText ?? keyword?.chunkText,
@@ -1207,9 +1221,17 @@ export class HybridSearchEngine {
     const itemsById = await getItemsBatch(results.map(result => result.itemId));
     for (const result of results) {
       try {
-        const entry = itemsById.get(result.itemId);
+        if (result.itemStatus === 'item_not_found') continue;
+        const entry = result.itemId === undefined ? undefined : itemsById.get(result.itemId);
         if (entry?.failed) throw new Error(`Failed to resolve item ${result.itemId}`);
         const item = entry?.item;
+        const identity = identityFromItem(item);
+        if (!item || item.deleted || (result.itemKey && item.key && result.itemKey !== item.key) ||
+            (result.libraryKey && identity && result.libraryKey !== identity.libraryKey)) {
+          result.itemStatus = 'item_not_found';
+          result.itemId = undefined;
+          continue;
+        }
         if (item) {
           result.itemKey = item.key;
           result.libraryKey = identityFromItem(item)?.libraryKey ?? result.libraryKey;

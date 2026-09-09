@@ -4,9 +4,12 @@ import { installZoteroStub } from './helpers/zotero-stub';
 import { VectorStoreSQLite, type PaperEmbedding } from '../src/core/vector-store-sqlite';
 
 // Exercise transaction rollback in real SQLite, not an in-memory revision mock.
-const { DatabaseSync } = require('node:sqlite');
+let DatabaseSync: any;
+try { ({ DatabaseSync } = require('node:sqlite')); } catch { /* Node 18/20 have no built-in SQLite. */ }
 
-test('all normal corpus writes revise atomically; lifecycle and failed writes do not', async () => {
+test('all normal corpus writes revise atomically; lifecycle and failed writes do not', {
+  skip: !DatabaseSync && 'Real SQLite transaction checks require Node 22.13+; no extra package is installed',
+}, async () => {
   const db = new DatabaseSync(':memory:');
   db.exec("ATTACH DATABASE ':memory:' AS zotseek");
   const z = installZoteroStub({ 'zotseek.embeddingModel': 'multilingual-e5-base' });

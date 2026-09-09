@@ -627,3 +627,4 @@ zotseek-brief-wizard-canceling = Cancelando la generación…
 zotseek-brief-wizard-failed = Error de generación. No se activaron archivos de prompts.
 zotseek-brief-wizard-open-failed = No se pudo abrir la ubicación de los archivos de prompts.
 zotseek-brief-wizard-init-failed = No se pudo iniciar el asistente de prompts de resúmenes bibliográficos.
+zotseek-search-itemNotFound = El elemento no existe

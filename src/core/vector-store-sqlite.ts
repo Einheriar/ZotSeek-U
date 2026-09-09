@@ -195,6 +195,8 @@ export class VectorStoreSQLite {
   private lexicalStartup: Promise<unknown> | null = null;
   private lexicalIdentity: LexicalSnapshotIdentity | null = null;
   private closed = false;
+  private corpusWrites = 0;
+  private corpusWriteBarrier: Promise<void> = Promise.resolve();
   private cacheWarningAt = new Map<'vector' | 'lexical', number>();
 
   constructor() {
@@ -1681,11 +1683,24 @@ export class VectorStoreSQLite {
 
   /** The revision commits or rolls back with the chunks, never after them. */
   private async mutateLexicalCorpus(write: () => Promise<void>): Promise<void> {
-    await Zotero.DB.executeTransaction(async () => {
-      await write();
-      await Zotero.DB.queryAsync(`UPDATE ${DB_NAME}.metadata
-        SET value = CAST(value AS INTEGER) + 1 WHERE key = 'bm25_corpus_revision'`);
-    });
+    this.corpusWrites++;
+    const task = (async () => {
+      try {
+        await Zotero.DB.executeTransaction(async () => {
+          await write();
+          await Zotero.DB.queryAsync(`UPDATE ${DB_NAME}.metadata
+            SET value = CAST(value AS INTEGER) + 1 WHERE key = 'bm25_corpus_revision'`);
+        });
+      } finally { this.corpusWrites--; }
+    })();
+    this.corpusWriteBarrier = Promise.all([this.corpusWriteBarrier, task]).then(() => {}, () => {});
+    await task;
+  }
+
+  private async waitForCorpusWrites(): Promise<void> {
+    // Zotero shares a connection with writers. Do not inspect an uncommitted
+    // revision, or publish while that connection contains partial chunk writes.
+    while (this.corpusWrites > 0) await this.corpusWriteBarrier;
   }
 
   /**
@@ -2916,6 +2931,7 @@ export class VectorStoreSQLite {
     const task = (async () => {
       if (this.closed) return;
       await this.ensureInit();
+      await this.waitForCorpusWrites();
       const current = await this.readLexicalIdentity(getActiveModelId());
       if (this.lexicalCache && this.lexicalIdentity &&
           sameLexicalIdentity(current, this.lexicalIdentity)) return;
@@ -2994,11 +3010,13 @@ export class VectorStoreSQLite {
 
   private async buildLexicalCache(modelId: string, generation: number): Promise<T0BM25Index> {
     const startedAt = Date.now();
+    await this.waitForCorpusWrites();
     const identity = await this.readLexicalIdentity(modelId);
     const canPublish = () => this.initialized && !this.closed &&
-      this.cacheGeneration === generation && getActiveModelId() === modelId;
+      this.corpusWrites === 0 && this.cacheGeneration === generation && getActiveModelId() === modelId;
     const restored = await loadLexicalSnapshot(identity);
     if (restored) {
+      await this.waitForCorpusWrites();
       const latest = await this.readLexicalIdentity(modelId);
       if (!sameLexicalIdentity(identity, latest)) throw new Error('BM25 snapshot changed during loading');
       if (canPublish()) this.lexicalIdentity = identity;
@@ -3036,6 +3054,7 @@ export class VectorStoreSQLite {
       };
     });
     const index = await T0BM25Index.buildAsync(documents, () => this.initialized && !this.closed);
+    await this.waitForCorpusWrites();
     const latest = await this.readLexicalIdentity(modelId);
     if (!sameLexicalIdentity(identity, latest) && canPublish()) {
       // Also reject database writes that did not pass through in-memory invalidation.

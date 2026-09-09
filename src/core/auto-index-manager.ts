@@ -136,6 +136,9 @@ export class AutoIndexManager {
   private checking = false;
   private chunkStrategyBlocked = false;
   private startupTimer: any = null;
+  private releaseStartup: (() => void) | null = null;
+  private maintenanceRun: Promise<StartupCheckResult> | null = null;
+  private maintenanceIncludesSemantic = false;
   private generation = 0;
 
   private fullIndexCallback: IndexCallback | null = null;
@@ -192,6 +195,7 @@ export class AutoIndexManager {
         clearTimeout(this.startupTimer);
         this.startupTimer = null;
       }
+      this.finishStartup();
     }
   }
 
@@ -209,16 +213,58 @@ export class AutoIndexManager {
   }
 
   /** Schedule exactly one reconciliation pass after Zotero's UI has settled. */
-  public start(): void {
-    if (this.running || !this.isEnabled() || this.chunkStrategyBlocked) return;
+  public start(options: { skipReconciliation?: boolean } = {}): void {
+    if (this.running) return;
     this.running = true;
     const generation = ++this.generation;
+    const ready = new Promise<void>(resolve => { this.releaseStartup = resolve; });
+    this.vectorStore?.deferLexicalPreparation?.(ready);
     this.startupTimer = setTimeout(() => {
       this.startupTimer = null;
-      if (!this.running || generation !== this.generation) return;
-      void this.runCheck(true);
+      if (!this.running || generation !== this.generation) {
+        this.finishStartup();
+        return;
+      }
+      // Local BM25 preparation is independent of cloud consent and auto embedding.
+      void this.runMaintenance(true, !options.skipReconciliation && this.isEnabled() &&
+        !this.chunkStrategyBlocked).catch(error => {
+          this.logger.warn(`Startup search preparation failed: ${error}`);
+        }).finally(() => this.finishStartup());
     }, STARTUP_DELAY_MS);
-    this.logger.info('Startup index check scheduled; no realtime observers registered');
+    this.logger.info('Startup index maintenance scheduled; BM25 prepares last, no realtime observers');
+  }
+
+  private finishStartup(): void {
+    this.releaseStartup?.();
+    this.releaseStartup = null;
+  }
+
+  private runMaintenance(prompt: boolean, includeSemantic: boolean): Promise<StartupCheckResult> {
+    if (this.maintenanceRun) {
+      const existing = this.maintenanceRun;
+      // An explicit request arriving during a local-only startup still gets its
+      // semantic pass, after that startup task has released the shared builder.
+      if (includeSemantic && !this.maintenanceIncludesSemantic) {
+        return existing.then(() => this.runMaintenance(prompt, true));
+      }
+      return existing;
+    }
+    const generation = this.generation;
+    this.maintenanceIncludesSemantic = includeSemantic;
+    const task = (async () => {
+      try {
+        return includeSemantic ? await this.runCheck(prompt) : this.emptyResult(true);
+      } finally {
+        if (this.running && this.generation === generation) {
+          await this.vectorStore?.prepareLexicalIndex?.();
+        }
+      }
+    })();
+    this.maintenanceRun = task;
+    void task.finally(() => {
+      if (this.maintenanceRun === task) this.maintenanceRun = null;
+    }).catch(() => {});
+    return task;
   }
 
   public stop(): void {
@@ -228,15 +274,14 @@ export class AutoIndexManager {
       clearTimeout(this.startupTimer);
       this.startupTimer = null;
     }
+    this.finishStartup();
     this.logger.info('Startup index check stopped');
   }
 
   public reload(): void {
-    if (this.isEnabled()) {
-      if (!this.running) this.start();
-    } else {
-      this.stop();
-    }
+    // The timer checks embedding permissions when it runs. Turning embedding
+    // off must not cancel the independent local BM25 preparation.
+    if (!this.running) this.start();
   }
 
   /** Manual entry point; runs the same one-shot reconciliation immediately. */
@@ -246,7 +291,11 @@ export class AutoIndexManager {
       this.startupTimer = null;
     }
     this.running = true;
-    return this.runCheck(options.promptForConfigChanges === true);
+    try {
+      return await this.runMaintenance(options.promptForConfigChanges === true, true);
+    } finally {
+      this.finishStartup();
+    }
   }
 
   private emptyResult(skipped = false): StartupCheckResult {

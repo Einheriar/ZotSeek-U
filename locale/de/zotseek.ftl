@@ -627,3 +627,4 @@ zotseek-brief-wizard-canceling = Erstellung wird abgebrochen…
 zotseek-brief-wizard-failed = Erstellung fehlgeschlagen. Keine Prompt-Dateien wurden aktiviert.
 zotseek-brief-wizard-open-failed = Speicherort der Prompt-Dateien konnte nicht geöffnet werden.
 zotseek-brief-wizard-init-failed = Assistent für Prompt-Anpassung konnte nicht gestartet werden.
+zotseek-search-itemNotFound = Eintrag nicht gefunden

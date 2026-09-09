@@ -1091,18 +1091,34 @@ export class ZotSeekDialogVTable {
     // Don't update status with selection - the table highlight is enough
   }
 
+  private resolveResultItem(result: SearchResult | HybridSearchResult): number | undefined {
+    if ((result as HybridSearchResult).itemStatus === 'item_not_found') return undefined;
+    try {
+      const Z = getZotero();
+      let id = result.itemId;
+      if (result.libraryKey && result.itemKey) {
+        const libraryID = result.libraryKey === 'user' ? Z.Libraries.userLibraryID
+          : Z.Groups.get(Number(result.libraryKey.slice('group:'.length)))?.libraryID;
+        id = libraryID === undefined ? undefined : Z.Items.getIDFromLibraryAndKey(libraryID, result.itemKey);
+      }
+      const item = id === undefined ? undefined : Z.Items.get(id);
+      if (!item || item.deleted || (result.itemKey && result.itemKey !== item.key)) return undefined;
+      return id;
+    } catch { return undefined; }
+  }
+
   /**
    * Handle double-click / Enter on row
    */
   private onActivate(index: number): void {
     const result = this.resultsTable?.getResultAt(index);
     if (result) {
-      const localId = result.itemId;
+      const localId = this.resolveResultItem(result);
       if (localId === undefined) {
         const orphanKey = (result as SearchResult).itemKey ?? '?';
         const orphanLib = (result as SearchResult).libraryKey ?? '?';
         this.logger.warn(`Cannot open orphan result (${orphanLib}, ${orphanKey})`);
-        this.setStatus('Item is not in your local Zotero library');
+        this.setStatus(getString('search-itemNotFound'));
         return;
       }
       // Get page number (exact from Find Pages, or estimated from index)
@@ -1127,12 +1143,12 @@ export class ZotSeekDialogVTable {
     if (results.length === 1) {
       // Single selection: open with page navigation
       const result = results[0];
-      const localId = result.itemId;
+      const localId = this.resolveResultItem(result);
       if (localId === undefined) {
         const orphanKey = (result as SearchResult).itemKey ?? '?';
         const orphanLib = (result as SearchResult).libraryKey ?? '?';
         this.logger.warn(`Cannot open orphan result (${orphanLib}, ${orphanKey})`);
-        this.setStatus('Item is not in your local Zotero library');
+        this.setStatus(getString('search-itemNotFound'));
         return;
       }
       const exactPage = this.resultsTable?.getExactPage(localId);
@@ -1142,7 +1158,7 @@ export class ZotSeekDialogVTable {
     } else {
       // Multiple selection: select all in Zotero library (skip orphans)
       const itemIds = results
-        .map(r => r.itemId)
+        .map(r => this.resolveResultItem(r))
         .filter((id): id is number => id !== undefined);
       // Deduplicate in case same paper appears multiple times (different chunks)
       const uniqueIds = [...new Set(itemIds)];
@@ -1201,7 +1217,7 @@ export class ZotSeekDialogVTable {
     const itemIds = [
       ...new Set(
         results
-          .map(r => r!.itemId)
+          .map(r => this.resolveResultItem(r!))
           .filter((id): id is number => id !== undefined)
       ),
     ];

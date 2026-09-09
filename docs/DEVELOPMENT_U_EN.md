@@ -8,7 +8,7 @@
 
 ## Plan 62: BM25 snapshots (in progress)
 
-2026-09-09: JSON snapshot foundations, transactional corpus revisions and cooperative construction are implemented. Chunk-writing transactions increment the revision; ordinary writes retain the session BM25 index, while clear/model deletion/close/reattach invalidate memory. Snapshots match database identity, revision, model and algorithm contracts and verify SHA-256. Corruption or IO failure falls back to rebuilding without affecting the database. Startup/manual scheduling, missing-item presentation and Zotero runtime acceptance remain in progress. A software version change alone does not invalidate snapshots.
+2026-09-09: Independent JSON snapshots, transactional corpus revisions, cooperative construction, end-of-startup preparation and the existing manual update action are implemented. Ordinary writes retain session BM25; clear/model deletion/close/reattach invalidate memory. Snapshots match database identity, revision, model and algorithm contracts and verify SHA-256; a software version change alone does not invalidate them. Searches wait for shared preparation without dual-version service. Missing items return item_not_found, localized at the UI boundary, with no links or live metadata in MCP/REST. All ten locale files are updated. Node tests and nine frozen corpus/mode ranking and JSON round-trip checks pass; Zotero runtime acceptance is in progress. Synchronous JSON parsing/serialization and peak memory require measurement; no binary format or fixed startup time is promised.
 
 ## Table of Contents
 

@@ -188,6 +188,8 @@ const ready = Zotero.ZotSeek.api.isReady();
 
 Run the same reconciliation as the settings-page **Check and update index** action for the configured scope: add missing items, replace items whose content or configuration changed, skip unchanged ones, and purge identities that no longer exist in Zotero.
 
+Plan 62: completion also waits for local BM25 preparation. It reuses a matching JSON snapshot or rebuilds when the corpus revision changed. If semantic work is skipped because its model/strategy is unavailable, local BM25 can still prepare from stored chunks; `skipped` describes the semantic reconciliation. A preparation failure rejects the call rather than reporting a successful refresh. Ordinary writes outside this action may leave BM25 session-stale until the next startup/manual update. This action does not add cloud authorization.
+
 ```js
 const result = await Zotero.ZotSeek.api.checkForIndexUpdates();
 // { checked, indexedNew, rebuilt, notesUpdated, baselined,
