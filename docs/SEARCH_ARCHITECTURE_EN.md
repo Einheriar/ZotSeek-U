@@ -6,6 +6,10 @@ A comprehensive guide to how semantic and hybrid search works in ZotSeek.
 
 ---
 
+## Plan 62 implementation status (2026-09-09)
+
+This branch is replacing the immediate lexical invalidation contract described under Plan 40B below: ordinary chunk writes advance the durable revision but may retain a ready BM25 index for the session; vector caches still invalidate immediately. Initial preparation tries an independent JSON snapshot before rebuilding on a miss. Model changes, clear, reattach and close retain hard invalidation. Revision changes commit atomically with writes; JSON integrity checks do not scan corpus text. Tokenization and scoring order remain unchanged, while construction yields cooperatively. Startup/manual scheduling and missing-item errors are subsequent steps; runtime acceptance is pending.
+
 ## Table of Contents
 
 1. [Overview](#overview)

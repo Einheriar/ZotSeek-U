@@ -24,6 +24,8 @@ import {
   libraryKeyFromLocalID,
 } from './identity-resolver';
 import { LexicalDocument, T0BM25Index } from './lexical-search';
+import { loadLexicalSnapshot, persistLexicalSnapshot, sameLexicalIdentity,
+  type LexicalSnapshotIdentity } from './lexical-snapshot';
 
 declare const Zotero: any;
 declare const PathUtils: any;
@@ -189,6 +191,10 @@ export class VectorStoreSQLite {
   private cacheGeneration = 0;
   private vectorCacheBuilds = new Map<string, Promise<CachedEmbeddingRow[]>>();
   private lexicalCacheBuilds = new Map<string, Promise<T0BM25Index>>();
+  private lexicalPreparation: Promise<void> | null = null;
+  private lexicalStartup: Promise<unknown> | null = null;
+  private lexicalIdentity: LexicalSnapshotIdentity | null = null;
+  private closed = false;
   private cacheWarningAt = new Map<'vector' | 'lexical', number>();
 
   constructor() {
@@ -293,6 +299,9 @@ export class VectorStoreSQLite {
       // Persist the exact PDF attachment that produced each Full-mode chunk.
       await this.migrateToV12();
 
+      await this.initializeLexicalRevision();
+
+      this.closed = false;
       this.initialized = true;
       this.logger.info('SQLite store initialized successfully');
 
@@ -448,6 +457,7 @@ export class VectorStoreSQLite {
     this.attached = false;
     await this.attachDatabase();
     await this.createTables();
+    await this.initializeLexicalRevision();
     this.invalidateCache();
     this.logger.info('zotseek database re-attached successfully');
   }
@@ -1649,6 +1659,35 @@ export class VectorStoreSQLite {
     `, [String(SCHEMA_VERSION)]);
   }
 
+  /** Add cache metadata without changing table layout or the schema version. */
+  private async initializeLexicalRevision(): Promise<void> {
+    await Zotero.DB.executeTransaction(async () => {
+      await Zotero.DB.queryAsync(`INSERT OR IGNORE INTO ${DB_NAME}.metadata (key, value)
+        VALUES ('bm25_database_id', lower(hex(randomblob(16))))`);
+      await Zotero.DB.queryAsync(`INSERT OR IGNORE INTO ${DB_NAME}.metadata (key, value)
+        VALUES ('bm25_corpus_revision', '0')`);
+    });
+  }
+
+  private async readLexicalIdentity(modelId: string): Promise<LexicalSnapshotIdentity> {
+    const databaseId = await Zotero.DB.valueQueryAsync(
+      `SELECT value FROM ${DB_NAME}.metadata WHERE key = 'bm25_database_id'`);
+    const revision = await Zotero.DB.valueQueryAsync(
+      `SELECT value FROM ${DB_NAME}.metadata WHERE key = 'bm25_corpus_revision'`);
+    if (typeof databaseId !== 'string' || !/^[a-f0-9]{32}$/.test(databaseId) ||
+        !/^\d+$/.test(String(revision))) throw new Error('Invalid BM25 revision metadata');
+    return { databaseId, revision: String(revision), modelId };
+  }
+
+  /** The revision commits or rolls back with the chunks, never after them. */
+  private async mutateLexicalCorpus(write: () => Promise<void>): Promise<void> {
+    await Zotero.DB.executeTransaction(async () => {
+      await write();
+      await Zotero.DB.queryAsync(`UPDATE ${DB_NAME}.metadata
+        SET value = CAST(value AS INTEGER) + 1 WHERE key = 'bm25_corpus_revision'`);
+    });
+  }
+
   /**
    * Convert embedding array to base64 string for storage
    * Stores raw Float32Array bytes as base64 (4096 bytes for 768 dims vs ~15000 JSON)
@@ -2015,48 +2054,50 @@ export class VectorStoreSQLite {
       throw new Error(`put: embedding missing libraryKey/itemKey identity`);
     }
 
-    const itemPk = await this.getOrCreateItemPk({
-      libraryKey: embedding.libraryKey,
-      itemKey: embedding.itemKey,
-      title: embedding.title,
-      abstract: embedding.abstract,
-      modelId: embedding.modelId,
-      indexedAt: embedding.indexedAt,
-      contentHash: embedding.contentHash,
-      wasTruncated: embedding.wasTruncated,
-      pagesIndexed: embedding.pagesIndexed,
-      pagesTotal: embedding.pagesTotal,
+    await this.mutateLexicalCorpus(async () => {
+      const itemPk = await this.getOrCreateItemPk({
+        libraryKey: embedding.libraryKey,
+        itemKey: embedding.itemKey,
+        title: embedding.title,
+        abstract: embedding.abstract,
+        modelId: embedding.modelId,
+        indexedAt: embedding.indexedAt,
+        contentHash: embedding.contentHash,
+        wasTruncated: embedding.wasTruncated,
+        pagesIndexed: embedding.pagesIndexed,
+        pagesTotal: embedding.pagesTotal,
+      });
+
+      const embeddingStr = this.embeddingToBase64(embedding.embedding);
+      const chunkIndex = embedding.chunkIndex ?? 0;
+
+      await this.upsertItemModel(itemPk, {
+        modelId: embedding.modelId, indexedAt: embedding.indexedAt, contentHash: embedding.contentHash,
+        wasTruncated: embedding.wasTruncated, pagesIndexed: embedding.pagesIndexed, pagesTotal: embedding.pagesTotal,
+      });
+
+      await Zotero.DB.queryAsync(`
+        INSERT OR REPLACE INTO ${DB_NAME}.chunks
+        (item_pk, chunk_index, model_id, chunk_text, section_paths, pdf_attachment_key, text_source, embedding,
+         page_number, paragraph_index, start_char, end_char, bbox)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        itemPk, chunkIndex, embedding.modelId,
+        embedding.chunkText || null,
+        this.sectionPathsToJSON(embedding.sectionPaths),
+        embedding.pdfAttachmentKey ?? null,
+        embedding.textSource,
+        embeddingStr,
+        embedding.pageNumber ?? null,
+        embedding.paragraphIndex ?? null,
+        embedding.startChar ?? null,
+        embedding.endChar ?? null,
+        embedding.bbox ?? null,
+      ]);
+
     });
-
-    const embeddingStr = this.embeddingToBase64(embedding.embedding);
-    const chunkIndex = embedding.chunkIndex ?? 0;
-
-    await this.upsertItemModel(itemPk, {
-      modelId: embedding.modelId, indexedAt: embedding.indexedAt, contentHash: embedding.contentHash,
-      wasTruncated: embedding.wasTruncated, pagesIndexed: embedding.pagesIndexed, pagesTotal: embedding.pagesTotal,
-    });
-
-    await Zotero.DB.queryAsync(`
-      INSERT OR REPLACE INTO ${DB_NAME}.chunks
-      (item_pk, chunk_index, model_id, chunk_text, section_paths, pdf_attachment_key, text_source, embedding,
-       page_number, paragraph_index, start_char, end_char, bbox)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      itemPk, chunkIndex, embedding.modelId,
-      embedding.chunkText || null,
-      this.sectionPathsToJSON(embedding.sectionPaths),
-      embedding.pdfAttachmentKey ?? null,
-      embedding.textSource,
-      embeddingStr,
-      embedding.pageNumber ?? null,
-      embedding.paragraphIndex ?? null,
-      embedding.startChar ?? null,
-      embedding.endChar ?? null,
-      embedding.bbox ?? null,
-    ]);
-
-    this.invalidateCache();
-    this.logger.debug(`Stored chunk for (${embedding.libraryKey}, ${embedding.itemKey}) idx=${chunkIndex}`);
+    this.invalidateCache(true);
+    this.logger.debug(`Stored chunk for (${embedding.libraryKey}, ${embedding.itemKey}) idx=${embedding.chunkIndex ?? 0}`);
   }
 
   /**
@@ -2078,7 +2119,7 @@ export class VectorStoreSQLite {
       this.logger.info(`${withLocation}/${embeddings.length} chunks have location data`);
     }
 
-    await Zotero.DB.executeTransaction(async () => {
+    await this.mutateLexicalCorpus(async () => {
       // Resolve all unique items to item_pks (insert-or-update)
       const pkByIdent = new Map<string, number>();
       const seen = new Set<string>();
@@ -2139,7 +2180,7 @@ export class VectorStoreSQLite {
 
     // The transaction has committed. Invalidate synchronously before any
     // diagnostic await so a failed verification query cannot leave stale data.
-    this.invalidateCache();
+    this.invalidateCache(true);
     this.logger.info(`Stored ${embeddings.length} embeddings`);
 
     // Verification log only — not a correctness check
@@ -2172,7 +2213,7 @@ export class VectorStoreSQLite {
       throw new Error('replaceItemModelChunks: all chunks must belong to one item/model');
     }
 
-    await Zotero.DB.executeTransaction(async () => {
+    await this.mutateLexicalCorpus(async () => {
       const itemPk = await this.getOrCreateItemPk({
         libraryKey: first.libraryKey,
         itemKey: first.itemKey,
@@ -2224,7 +2265,7 @@ export class VectorStoreSQLite {
         [first.libraryKey, first.itemKey, first.modelId]
       );
     });
-    this.invalidateCache();
+    this.invalidateCache(true);
   }
 
   /**
@@ -2247,7 +2288,7 @@ export class VectorStoreSQLite {
       return;
     }
 
-    await Zotero.DB.executeTransaction(async () => {
+    await this.mutateLexicalCorpus(async () => {
       await Zotero.DB.queryAsync(
         `DELETE FROM ${DB_NAME}.chunks WHERE item_pk = ?`,
         [Number(pk)]
@@ -2270,7 +2311,7 @@ export class VectorStoreSQLite {
       );
     });
 
-    this.invalidateCache();
+    this.invalidateCache(true);
     this.logger.debug(`Deleted item (${libraryKey}, ${itemKey})`);
   }
 
@@ -2287,7 +2328,7 @@ export class VectorStoreSQLite {
       [libraryKey, itemKey]
     );
     if (!pk || Number(pk) <= 0) return;
-    await Zotero.DB.executeTransaction(async () => {
+    await this.mutateLexicalCorpus(async () => {
       if (modelId) {
         await Zotero.DB.queryAsync(
           `DELETE FROM ${DB_NAME}.chunks WHERE item_pk = ? AND model_id = ?`, [Number(pk), modelId]);
@@ -2314,7 +2355,7 @@ export class VectorStoreSQLite {
         );
       }
     });
-    this.invalidateCache();
+    this.invalidateCache(true);
   }
 
   /** @deprecated Use deleteItem(libraryKey, itemKey). Resolves identity via the resolver. */
@@ -2775,13 +2816,19 @@ export class VectorStoreSQLite {
   /**
    * Invalidate the in-memory cache
    */
-  invalidateCache(): void {
+  invalidateCache(preserveLexical = false): void {
     this.cacheGeneration++;
     if (this.cache) {
       this.logger.debug('invalidateCache(): Cache invalidated');
       this.cache = null;
     }
-    this.lexicalCache = null;
+    if (preserveLexical && this.lexicalCache) {
+      // Ordinary writes are deliberately visible at the next maintenance pass.
+      this.lexicalCache.generation = this.cacheGeneration;
+    } else {
+      this.lexicalCache = null;
+      this.lexicalIdentity = null;
+    }
   }
 
   /**
@@ -2790,15 +2837,19 @@ export class VectorStoreSQLite {
    * Builds the frozen T0 BM25 contract over faithful chunk text. For each item,
    * the active model partition is preferred; a deterministic fallback partition
    * keeps lexical search available while a model migration is incomplete. Large
-   * embedding blobs are never decoded. The cache is invalidated together with
-   * the vector cache after every index mutation.
+   * embedding blobs are never decoded. Ordinary writes preserve the session
+   * lexical index; explicit maintenance checks its durable corpus revision.
    */
   async searchText(
     query: string,
     options: { limit?: number; libraryId?: number; textSources?: TextSourceType[] } = {}
   ): Promise<IndexedTextMatch[]> {
+    if (this.closed) return [];
     await this.ensureInit();
     try {
+      if (this.lexicalStartup) await this.lexicalStartup;
+      if (this.closed) return [];
+      if (this.lexicalPreparation) await this.lexicalPreparation;
       for (let attempt = 0; attempt < 2; attempt++) {
         const modelId = getActiveModelId();
         const generation = this.cacheGeneration;
@@ -2848,7 +2899,45 @@ export class VectorStoreSQLite {
       limit: options.limit,
       libraryKey,
       textSources: options.textSources,
-    });
+    }).map(hit => ({ ...hit, itemId: localItemIDFromIdentity(hit) ?? undefined }));
+  }
+
+  /** Early searches wait for startup reconciliation instead of racing its writes. */
+  deferLexicalPreparation(until: Promise<unknown>): void {
+    this.lexicalStartup = until;
+    void until.finally(() => {
+      if (this.lexicalStartup === until) this.lexicalStartup = null;
+    }).catch(() => {});
+  }
+
+  /** Explicit maintenance checks the durable revision; ordinary searches do not. */
+  prepareLexicalIndex(): Promise<void> {
+    if (this.lexicalPreparation) return this.lexicalPreparation;
+    const task = (async () => {
+      if (this.closed) return;
+      await this.ensureInit();
+      const current = await this.readLexicalIdentity(getActiveModelId());
+      if (this.lexicalCache && this.lexicalIdentity &&
+          sameLexicalIdentity(current, this.lexicalIdentity)) return;
+      this.lexicalCache = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (this.closed) return;
+        const modelId = getActiveModelId();
+        const generation = this.cacheGeneration;
+        const index = await this.getOrStartLexicalCacheBuild(modelId, generation);
+        if (this.initialized && !this.closed && this.cacheGeneration === generation &&
+            getActiveModelId() === modelId) {
+          this.lexicalCache = { modelId, generation, index };
+          return;
+        }
+      }
+      throw new Error('BM25 corpus changed during preparation; retry maintenance when indexing finishes');
+    })();
+    this.lexicalPreparation = task;
+    void task.finally(() => {
+      if (this.lexicalPreparation === task) this.lexicalPreparation = null;
+    }).catch(() => {});
+    return task;
   }
 
   private async getOrStartLexicalCacheBuild(
@@ -2874,9 +2963,8 @@ export class VectorStoreSQLite {
   }
 
   /**
-   * The FROM/WHERE shared by the lexical corpus reader and by the persisted
-   * snapshot fingerprint. Exposed so the snapshot module hashes exactly the
-   * rows that buildLexicalCache would index, with no drift between the two.
+   * Deterministic corpus selection, including the active-model fallback.
+   * Snapshot identity includes modelId because this selection depends on it.
    */
   public lexicalCorpusQuery(modelId: string): { fromWhere: string; params: any[] } {
     const params = [modelId, modelId];
@@ -2906,6 +2994,16 @@ export class VectorStoreSQLite {
 
   private async buildLexicalCache(modelId: string, generation: number): Promise<T0BM25Index> {
     const startedAt = Date.now();
+    const identity = await this.readLexicalIdentity(modelId);
+    const canPublish = () => this.initialized && !this.closed &&
+      this.cacheGeneration === generation && getActiveModelId() === modelId;
+    const restored = await loadLexicalSnapshot(identity);
+    if (restored) {
+      const latest = await this.readLexicalIdentity(modelId);
+      if (!sameLexicalIdentity(identity, latest)) throw new Error('BM25 snapshot changed during loading');
+      if (canPublish()) this.lexicalIdentity = identity;
+      return restored;
+    }
     const { fromWhere, params } = this.lexicalCorpusQuery(modelId);
     const [pks, libraryKeys, itemKeys, chunkIndexes, chunkTexts, sectionPaths, pdfAttachmentKeys, textSources] = await Promise.all([
       Zotero.DB.columnQueryAsync(`SELECT c.item_pk ${fromWhere}`, params),
@@ -2937,7 +3035,12 @@ export class VectorStoreSQLite {
         textSource: (textSources[index] as TextSourceType) || 'content',
       };
     });
-    const index = new T0BM25Index(documents);
+    const index = await T0BM25Index.buildAsync(documents, () => this.initialized && !this.closed);
+    const latest = await this.readLexicalIdentity(modelId);
+    if (!sameLexicalIdentity(identity, latest) && canPublish()) {
+      // Also reject database writes that did not pass through in-memory invalidation.
+      this.invalidateCache(true);
+    }
     const stats = index.stats;
     this.logger.info(
       `Built T0 BM25 cache model=${modelId} generation=${generation} chunks=${stats.documentCount} ` +
@@ -2945,6 +3048,10 @@ export class VectorStoreSQLite {
       `terms=${stats.termCount} postings=${stats.postingCount} ` +
       `in ${Date.now() - startedAt}ms`
     );
+    if (canPublish()) {
+      this.lexicalIdentity = identity;
+      await persistLexicalSnapshot(identity, index, canPublish);
+    }
     return index;
   }
 
@@ -3492,7 +3599,7 @@ export class VectorStoreSQLite {
   async clear(): Promise<void> {
     await this.ensureInit();
 
-    await Zotero.DB.executeTransaction(async () => {
+    await this.mutateLexicalCorpus(async () => {
       await Zotero.DB.queryAsync(`DELETE FROM ${DB_NAME}.chunks`);
       await Zotero.DB.queryAsync(`DELETE FROM ${DB_NAME}.item_models`);
       await Zotero.DB.queryAsync(`DELETE FROM ${DB_NAME}.items`);
@@ -3593,7 +3700,7 @@ export class VectorStoreSQLite {
   async deleteModelEmbeddings(modelId: string): Promise<number> {
     await this.ensureInit();
     let deleted = 0;
-    await Zotero.DB.executeTransaction(async () => {
+    await this.mutateLexicalCorpus(async () => {
       deleted = Number(await Zotero.DB.valueQueryAsync(
         `SELECT COUNT(*) FROM ${DB_NAME}.chunks WHERE model_id = ?`, [modelId]));
       await Zotero.DB.queryAsync(`DELETE FROM ${DB_NAME}.chunks WHERE model_id = ?`, [modelId]);
@@ -3778,6 +3885,7 @@ export class VectorStoreSQLite {
    */
   async close(): Promise<void> {
     // Prevent in-flight builders from publishing while detach is awaiting.
+    this.closed = true;
     this.initialized = false;
     this.invalidateCache();
     await this.detachDatabase();

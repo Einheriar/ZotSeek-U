@@ -6,6 +6,10 @@
 >
 > Status markers: **[Shipped]** = in production code and accepted; **[In progress]** = approved, partially implemented or awaiting runtime acceptance. Finer-grained experiment data and per-item acceptance records live in the maintainer's local workspace and are not distributed with this repository.
 
+## Plan 62: BM25 snapshots (in progress)
+
+2026-09-09: JSON snapshot foundations, transactional corpus revisions and cooperative construction are implemented. Chunk-writing transactions increment the revision; ordinary writes retain the session BM25 index, while clear/model deletion/close/reattach invalidate memory. Snapshots match database identity, revision, model and algorithm contracts and verify SHA-256. Corruption or IO failure falls back to rebuilding without affecting the database. Startup/manual scheduling, missing-item presentation and Zotero runtime acceptance remain in progress. A software version change alone does not invalidate snapshots.
+
 ## Table of Contents
 
 1. [Relationship to Upstream](#1-relationship-to-upstream)

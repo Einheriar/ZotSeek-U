@@ -179,7 +179,25 @@ export class T0BM25Index {
   ) {
     this.k1 = k1;
     this.b = b;
-    this.build(documents);
+    for (const _ of this.buildSteps(documents)) { /* Synchronous benchmark contract. */ }
+  }
+
+  /** Same construction order as the synchronous path, with cooperative UI yields. */
+  static async buildAsync(
+    documents: LexicalDocument[],
+    canContinue: () => boolean = () => true,
+  ): Promise<T0BM25Index> {
+    const index = new T0BM25Index([]);
+    let sliceStarted = Date.now();
+    for (const _ of index.buildSteps(documents)) {
+      if (!canContinue()) throw new Error('BM25 preparation cancelled');
+      if (Date.now() - sliceStarted >= 8) {
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+        sliceStarted = Date.now();
+      }
+    }
+    if (!canContinue()) throw new Error('BM25 preparation cancelled');
+    return index;
   }
 
   get documentCount(): number {
@@ -212,7 +230,7 @@ export class T0BM25Index {
     return code;
   }
 
-  private build(documents: LexicalDocument[]): void {
+  private *buildSteps(documents: LexicalDocument[]): Generator<void> {
     // Deduplicate exactly like the legacy index: first documentId wins.
     const seen = new Set<string>();
     const kept: LexicalDocument[] = [];
@@ -223,6 +241,7 @@ export class T0BM25Index {
       seen.add(legacyId);
       kept.push(document);
       legacyIds.push(legacyId);
+      if (kept.length % 256 === 0) yield;
     }
 
     const count = kept.length;
@@ -277,6 +296,7 @@ export class T0BM25Index {
         }
         this.postingCountInternal += 1;
       }
+      if (index % 32 === 0) yield;
     }
 
     // Pass 2: allocate CSR arrays from per-term counts, then fill.
@@ -284,14 +304,16 @@ export class T0BM25Index {
     const counts = new Uint32Array(termCount);
     for (let index = 0; index < count; index += 1) {
       for (const term of perDocTerms[index].keys()) {
-        counts[this.termIndex.get(term)!] += 1;
-      }
+          counts[this.termIndex.get(term)!] += 1;
+        }
+      if (index % 64 === 0) yield;
     }
     this.postingOffsets = new Uint32Array(termCount + 1);
     let totalPostings = 0;
     for (let term = 0; term < termCount; term += 1) {
       this.postingOffsets[term] = totalPostings;
       totalPostings += counts[term];
+      if (term % 1024 === 0) yield;
     }
     this.postingOffsets[termCount] = totalPostings;
     this.postingDoc = new Uint32Array(totalPostings);
@@ -306,6 +328,9 @@ export class T0BM25Index {
         this.postingTf[slot] = tf;
         fill[termId] += 1;
       }
+      // Release temporary term Maps as soon as their CSR segment is filled.
+      perDocTerms[index].clear();
+      if (index % 32 === 0) yield;
     }
   }
 

@@ -90,6 +90,9 @@ function makeStore(): VectorStoreSQLite {
   (store as any).initialized = true;
   (store as any).attached = true;
   (store as any).ensureInit = async () => {};
+  (store as any).readLexicalIdentity = async (modelId: string) => ({
+    databaseId: 'a'.repeat(32), revision: '0', modelId,
+  });
   return store;
 }
 
@@ -580,6 +583,6 @@ describe('Plan 40B cache publication and single-flight', () => {
 
     await assert.doesNotReject(store.putBatch([embedding]));
     assert.equal((store as any).cache, null);
-    assert.equal((store as any).lexicalCache, null);
+    assert.ok((store as any).lexicalCache, 'ordinary writes preserve the session BM25 index');
   });
 });
