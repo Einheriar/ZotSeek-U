@@ -138,6 +138,41 @@ describe('HybridSearchEngine product dispatch', () => {
     assert.equal(fused[0].itemKey, 'PAPER001');
   });
 
+  test('uses the reusable semantic score table with a bounded lexical bonus', () => {
+    const engine = new HybridSearchEngine({} as any) as any;
+    const fused = engine.boundedLexicalBonusFusion(
+      [
+        { itemId: 1, libraryKey: 'user', itemKey: 'SEM001', score: 0.9 },
+        { itemId: 2, libraryKey: 'user', itemKey: 'SEM002', score: 0.89 },
+      ],
+      new Map([
+        ['user|SEM001', { itemId: 1, libraryKey: 'user', itemKey: 'SEM001', similarity: 0.9 }],
+        ['user|SEM002', { itemId: 2, libraryKey: 'user', itemKey: 'SEM002', similarity: 0.89 }],
+        // This semantic score is outside the displayed semantic Top-2, but it
+        // is still available when the keyword branch brings the item in.
+        ['user|LEX001', { itemId: 3, libraryKey: 'user', itemKey: 'LEX001', similarity: 0.88 }],
+      ]),
+      [
+        { itemId: 3, libraryKey: 'user', itemKey: 'LEX001', score: 1 },
+        { itemId: 1, libraryKey: 'user', itemKey: 'SEM001', score: 0.5 },
+      ],
+      {
+        rrfK: 60,
+        semanticWeight: 0.2,
+        returnAllChunks: false,
+      },
+    );
+
+    assert.deepEqual(fused.map((entry: any) => entry.itemKey), [
+      'SEM001', 'LEX001', 'SEM002',
+    ]);
+    assert.equal(fused[0].source, 'both');
+    assert.equal(fused[1].source, 'both');
+    assert.equal(fused[1].semanticRank, null);
+    assert.ok(Math.abs(fused[0].rrfScore - (0.9 + 0.05 * (11 / 12))) < 1e-6);
+    assert.ok(Math.abs(fused[1].rrfScore - (0.88 + 0.05)) < 1e-6);
+  });
+
   test('batch-loads semantic book-filter items and preserves result order', async () => {
     const zotero = installZoteroStub({ 'zotseek.excludeBooks': true });
     const items = new Map<number, any>([

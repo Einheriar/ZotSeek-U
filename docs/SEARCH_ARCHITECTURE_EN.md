@@ -43,7 +43,7 @@ Plan 62 prepares BM25 after startup maintenance and through Check and update ind
 
 ## Overview
 
-ZotSeek's search is built from three layers: **identity navigation** (resolving DOI, title and author-style queries against Zotero metadata first), **RRF fusion between a semantic side and a keyword branch** (the keyword branch merges T0 BM25 with Zotero quicksearch), and — Full mode only — **source-aware result allocation**. The user-facing search modes (Semantic / Keyword / Hybrid) are different combinations of these layers; the underlying mechanisms and their costs are described in [Search Approach](#search-approach), and the pipeline details in [Semantic Search Pipeline](#semantic-search-pipeline) and [BM25 Pipeline](#bm25-pipeline).
+ZotSeek's search is built from three layers: **identity navigation** (resolving DOI, title and author-style queries against Zotero metadata first), **controlled score fusion between a semantic side and a keyword branch** (Notes keeps the semantic score as its baseline and gives keyword evidence a bounded bonus; the keyword branch merges T0 BM25 with Zotero quicksearch), and — Full mode only — **source-aware result allocation**. The user-facing search modes (Semantic / Keyword / Hybrid) are different combinations of these layers; the underlying mechanisms and their costs are described in [Search Approach](#search-approach), and the pipeline details in [Semantic Search Pipeline](#semantic-search-pipeline) and [BM25 Pipeline](#bm25-pipeline).
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -69,7 +69,7 @@ ZotSeek's search is built from three layers: **identity navigation** (resolving 
 │          ┌─────────────┐  ┌───────────────────┐ ┌─────────────────┐         │
 │          │semantic-only│  │R1 Notes semantic  │ │Notes + PDF      │         │
 │          │content path │  │+ T0 BM25 lexical  │ │semantic         │         │
-│          │(R1 Summary) │  │RRF fusion (k=60)  │ │specialists      │         │
+│          │(R1 Summary) │  │bounded score      │ │specialists      │         │
 │          │             │  │                   │ │Notes -> top 2   │         │
 │          │             │  │                   │ │PDF -> fills tail│         │
 │          └─────────────┘  └───────────────────┘ └─────────────────┘         │
@@ -96,7 +96,7 @@ ZotSeek's search is built from three layers: **identity navigation** (resolving 
 Hybrid is the product-default entry point and runs in three layers:
 
 1. **Identity navigation**: the query is first resolved against Zotero metadata — exact DOIs, full titles, and unique distinctive title fragments (Latin: at least 3 words and 12 characters; continuous CJK: at least 6 characters) return the paper directly, and an author name returns the author's collection. Candidates are validated through the original Zotero Search gate; weaker or ambiguous fragments abstain and fall through to the content path.
-2. **RRF fusion of semantic and keyword branch**: the semantic side ranks by embeddings and MaxSim; the keyword branch merges T0 BM25 (over locally indexed chunk text) with Zotero quicksearch (metadata + heuristic re-ranking) per item. The two ranked lists are fused with RRF (`k=60`).
+2. **Fusion of the semantic and keyword branches**: the semantic side ranks by embeddings and MaxSim; the keyword branch merges T0 BM25 (over locally indexed chunk text) with Zotero quicksearch (metadata + heuristic re-ranking) per item. In Notes mode, the semantic score is the baseline and keyword ranks add a bounded bonus over the `S50 ∪ K50` candidate set. Full mode's Notes specialist still uses RRF until its source allocation is revised separately.
 3. **Source-aware allocation (Full mode only)**: the Notes specialist owns the top two head slots; PDF semantic results fill the tail after deduplication.
 
 The content strategy selected by indexing mode:
@@ -104,7 +104,7 @@ The content strategy selected by indexing mode:
 | Indexing mode | Default content strategy |
 |---------------|--------------------------|
 | `abstract` | semantic-only |
-| `notes` | R1 Metadata + Notes semantic and T0 BM25, RRF (`k=60`) |
+| `notes` | R1 Metadata + Notes semantic and T0 BM25, semantic baseline + bounded lexical bonus |
 | `full` | first two papers from the Notes H1 specialist, then PDF semantic results |
 
 The Full result allocation is source-aware: it de-duplicates papers, lets PDF fill the tail, and falls back to remaining Notes results only when PDF cannot fill the requested result count. For `topK=10` this is the finalized product `2+8` contract. Other result counts keep at most two Notes head slots. Passage mode uses the same positional rule but has not received the paper-level Plan 37 paired validation.
@@ -167,7 +167,7 @@ It solves two problems:
 - **Exact body-term hits**: original terms inside Notes/PDF (drug names, abbreviations, method names) are now guaranteed by the inverted index instead of depending on embedding similarity;
 - **Controllable scale**: BM25 walks postings only for terms the query actually hits — far better scaling than per-chunk `LIKE` full-text scans.
 
-quick search was **not removed**: it continues to cover the metadata side, and its hits merge with BM25 per item into the "keyword branch" that RRF fuses against semantic. Hybrid today is therefore a blend of three mechanisms — semantic embeddings + Zotero metadata keywords + body-text BM25 — preceded by identity navigation.
+quick search was **not removed**: it continues to cover the metadata side, and its hits merge with BM25 per item into the "keyword branch" that controlled-score fusion combines with semantic. Hybrid today is therefore a blend of three mechanisms — semantic embeddings + Zotero metadata keywords + body-text BM25 — preceded by identity navigation.
 
 ### Costs
 
@@ -307,7 +307,7 @@ The full Hybrid default pipeline is shown below. Note that Layer 3 exists only i
 | **Robust** | Top results from ANY source get boosted |
 | **Production-proven** | Used by Elasticsearch, Vespa, Pinecone |
 
-Fusion weight has a single source: when automatic weight adjustment is on, query analysis tunes the semantic/lexical share inside the Notes H1 specialist (see [Query Analysis](#query-analysis)); when off, both sides are 50/50. RRF consumes ranks only — the raw BM25 score is already normalized to [0, 1] inside the keyword branch.
+Notes Hybrid no longer compresses both lists into one RRF weight. It keeps the raw semantic MaxSim score and adds `0.05 × 11/(10 + keywordRank)` for a `K50` hit, so one lexical signal can contribute at most 0.05. The semantic score table comes from the same vector pass; a keyword hit can therefore read its semantic score even when it is outside semantic Top-50. The candidate set remains exactly `S50 ∪ K50`. Full specialists retain their existing RRF and source-allocation contract until a separate change revises them.
 
 ### Result Indicators
 
@@ -321,7 +321,7 @@ Fusion weight has a single source: when automatic weight adjustment is on, query
 
 `full` mode adds one allocation step after RRF (`fullSourceAwareSearch()`):
 
-1. The Notes specialist (RRF of R1 semantic + T0 BM25) and the PDF semantic specialist produce independent rankings; the two semantic specialists share one query embedding, one vector-cache filter and one dot-product traversal.
+1. The Notes specialist (R1 semantic baseline + bounded T0 BM25 bonus) and the PDF semantic specialist produce independent rankings; the two semantic specialists share one query embedding, one vector-cache filter and one dot-product traversal.
 2. Notes results own the first `FULL_NOTES_HEAD_SLOTS = 2` head slots.
 3. PDF semantic results fill the remaining slots after stable-identity deduplication (`2+8` at `topK=10`).
 4. When PDF is short, remaining Notes results backfill.
@@ -1275,7 +1275,7 @@ between the Metadata/Notes and PDF semantic specialists. Each specialist still
 owns its independent MaxSim state, source filter, stable tie-break, Top-50
 window, and snippet hydration. The shared scan therefore does not form a global
 50-result window before splitting sources, and the later Notes-2/PDF-tail
-allocation and RRF behavior are unchanged.
+allocation behavior is unchanged.
 
 The identity snapshot uses its own monotonic generation and keyed single-flight.
 Item, collection-item, and collection Notifier events, relevant preference

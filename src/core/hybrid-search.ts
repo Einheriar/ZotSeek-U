@@ -13,7 +13,12 @@
  */
 
 import { Logger } from '../utils/logger';
-import { SearchEngine, SearchPartitionOptions, SearchResult } from './search-engine';
+import {
+  SearchEngine,
+  SearchPartitionOptions,
+  SearchResult,
+  SemanticScoreTable,
+} from './search-engine';
 import { TextSourceType } from './vector-store-sqlite';
 import { boundedTextSnippet, noteHTMLToStructuredText } from '../utils/note-text';
 import { identityFromItem } from './identity-resolver';
@@ -171,6 +176,11 @@ interface SemanticSearchHit {
   paragraphIndex?: number;
 }
 
+interface SemanticSearchPassResult {
+  results: SemanticSearchHit[];
+  scores: SemanticScoreTable;
+}
+
 interface IdentityNavigationCandidate {
   id: string;
   itemId: number;
@@ -309,19 +319,22 @@ export class HybridSearchEngine {
     opts: ResolvedHybridSearchOptions,
     populateMetadata = true,
   ): Promise<HybridSearchResult[]> {
-    const [semanticResults, keywordResults] = await Promise.all([
-      this.semanticSearchQuery(query, opts),
+    const [semanticPass, keywordResults] = await Promise.all([
+      this.semanticSearchQueryWithScores(query, opts),
       this.keywordSearchQuery(query, opts),
     ]);
+    const semanticResults = semanticPass.results;
 
     this.logger.info(`Got ${semanticResults.length} semantic, ${keywordResults.length} keyword results`);
 
-    // Fuse results using RRF
-    const fusedResults = this.reciprocalRankFusion(
-      semanticResults,
-      keywordResults,
-      opts
-    );
+    const fusedResults = opts.returnAllChunks
+      ? this.reciprocalRankFusion(semanticResults, keywordResults, opts)
+      : this.boundedLexicalBonusFusion(
+        semanticResults,
+        semanticPass.scores,
+        keywordResults,
+        opts,
+      );
 
     // Populate metadata for top results
     if (populateMetadata) {
@@ -760,6 +773,37 @@ export class HybridSearchEngine {
   /**
    * Semantic search using embeddings
    */
+  private async semanticSearchQueryWithScores(
+    query: string,
+    opts: ResolvedHybridSearchOptions
+  ): Promise<SemanticSearchPassResult> {
+    try {
+      if (!this.semanticSearch.isReady()) {
+        await this.semanticSearch.init();
+      }
+
+      const pass = await this.semanticSearch.searchPartitionsWithScores(query, [{
+        key: 'default',
+        topK: opts.returnAllChunks ? opts.semanticTopK * 3 : opts.semanticTopK,
+        textSources: opts.semanticTextSources,
+      }], {
+        minSimilarity: opts.minSimilarity,
+        libraryId: opts.libraryId,
+        returnAllChunks: opts.returnAllChunks,
+      });
+      return {
+        results: await this.filterAndMapSemanticResults(
+          pass.resultsByPartition.get('default') ?? [],
+        ),
+        scores: pass.scoresByPartition.get('default') ?? new Map(),
+      };
+    } catch (error) {
+      if ((error as any)?.code === 'SERVER_MODEL_NOT_READY') throw error;
+      this.logger.error('Semantic search with score table failed:', error);
+      return { results: [], scores: new Map() };
+    }
+  }
+
   private async semanticSearchQuery(
     query: string,
     opts: ResolvedHybridSearchOptions
@@ -1111,6 +1155,80 @@ export class HybridSearchEngine {
    * @param keywordResults - Results from keyword search, ordered by relevance
    * @param opts - Options including rrfK and semanticWeight
    */
+  private boundedLexicalBonusFusion(
+    semanticResults: SemanticSearchHit[],
+    semanticScores: SemanticScoreTable,
+    keywordResults: KeywordSearchHit[],
+    opts: ResolvedHybridSearchOptions,
+  ): HybridSearchResult[] {
+    const lexicalBonusCap = 0.05;
+    const semanticMap = new Map<string, SemanticSearchHit & { rank: number }>();
+    semanticResults.forEach((result, index) => {
+      const key = stableRankingKey(result);
+      if (!semanticMap.has(key)) semanticMap.set(key, { ...result, rank: index + 1 });
+    });
+
+    const keywordMap = new Map<string, KeywordSearchHit & { rank: number }>();
+    keywordResults.forEach((result, index) => {
+      const key = stableRankingKey(result);
+      if (!keywordMap.has(key)) keywordMap.set(key, { ...result, rank: index + 1 });
+    });
+
+    const allKeys = new Set<string>([
+      ...semanticMap.keys(),
+      ...keywordMap.keys(),
+    ]);
+    const fusedResults: HybridSearchResult[] = [];
+
+    for (const key of allKeys) {
+      const semantic = semanticMap.get(key);
+      const scoreEntry = semanticScores.get(key);
+      const keyword = keywordMap.get(key);
+      const representative = semantic ?? keyword;
+      if (!representative) continue;
+
+      const semanticScore = scoreEntry?.similarity ?? semantic?.score ?? null;
+      const lexicalBonus = keyword
+        ? lexicalBonusCap * (11 / (10 + keyword.rank))
+        : 0;
+      const hybridScore = (semanticScore ?? 0) + lexicalBonus;
+      const hasSemantic = semanticScore !== null;
+      const source: 'both' | 'semantic' | 'keyword' = hasSemantic && keyword
+        ? 'both'
+        : hasSemantic
+          ? 'semantic'
+          : 'keyword';
+
+      fusedResults.push({
+        itemId: representative.itemId,
+        libraryKey: representative.libraryKey,
+        itemKey: representative.itemKey || '',
+        title: '',
+        creators: '',
+        year: 0,
+        semanticScore,
+        keywordScore: keyword?.score ?? null,
+        rrfScore: hybridScore,
+        semanticRank: semantic?.rank ?? null,
+        keywordRank: keyword?.rank ?? null,
+        source,
+        ...(keyword?.itemStatus ? { itemStatus: keyword.itemStatus, itemId: undefined } : {}),
+        textSource: semantic?.textSource ?? keyword?.textSource ?? scoreEntry?.textSource,
+        chunkIndex: semantic?.chunkIndex,
+        chunkText: semantic?.chunkText ?? keyword?.chunkText,
+        sectionPaths: semantic?.sectionPaths ?? keyword?.sectionPaths,
+        pdfAttachmentKey: semantic?.pdfAttachmentKey ?? keyword?.pdfAttachmentKey,
+        pageNumber: semantic?.pageNumber ?? scoreEntry?.pageNumber,
+        paragraphIndex: semantic?.paragraphIndex ?? scoreEntry?.paragraphIndex,
+      });
+    }
+
+    fusedResults.sort((a, b) => b.rrfScore - a.rrfScore ||
+      stableRankingKey(a).localeCompare(stableRankingKey(b)) ||
+      (a.chunkIndex ?? 0) - (b.chunkIndex ?? 0));
+    return fusedResults;
+  }
+
   private reciprocalRankFusion(
     semanticResults: SemanticSearchHit[],
     keywordResults: KeywordSearchHit[],
