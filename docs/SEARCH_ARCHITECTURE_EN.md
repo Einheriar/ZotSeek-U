@@ -45,7 +45,7 @@ Plan 62 prepares BM25 after startup maintenance and through Check and update ind
 
 ## Overview
 
-Paper Hybrid runs identity navigation, then independent scoped semantic and lexical retrieval, adding at most 0.05 lexical reward to real semantic scores. All indexing modes share the formula; Full has no source quotas. The following diagram retains historical context; see “Current paper-level Hybrid” for the current data flow.
+The current branch has two layers. The indexing mode determines which content is searchable; the search mode determines which retrieval channels run. Paper-level Hybrid is the default: it tries identity navigation first, then runs semantic and keyword retrieval in parallel and applies a fixed bounded lexical bonus. All three indexing modes share one paper-level formula, and Full no longer reserves Notes or PDF slots.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -55,35 +55,32 @@ Paper Hybrid runs identity navigation, then independent scoped semantic and lexi
 │                                 USER QUERY                                  │
 │                                      │                                      │
 │                                      ▼                                      │
-│          ┌────────────────────────────────────────────────────────┐         │
-│          │IDENTITY NAVIGATION (metadata-only prepass)             │         │
-│          │exact DOI / full title / distinctive title              │         │
-│          │fragment (>=3 Latin words or >=6 CJK chars)             │         │
-│          │author name -> author collection                        │         │
-│          └────────────────────────────────────────────────────────┘         │
-│                                      │  concept query (no identity match)   │
+│          ┌──────────────────────────────────────────────┐                   │
+│          │IDENTITY NAVIGATION (Hybrid only)              │                   │
+│          │DOI / exact title / distinctive title fragment │                   │
+│          │author navigation                              │                   │
+│          └──────────────────────────────────────────────┘                   │
+│                                      │ no identity hit                      │
 │                                      ▼                                      │
-│┌────────────────────────────────────────────────────────┐                   │
-││MODE-AWARE CONTENT STRATEGY (search-policy.ts)          │                   │
-│└──────┬───────────────────┬────────────────────┬────────┘                   │
-│                 │                   │                    │                  │
-│             abstract              notes                full                 │
-│          ┌─────────────┐  ┌───────────────────┐ ┌─────────────────┐         │
-│          │semantic-only│  │R1 Notes semantic  │ │Notes + PDF      │         │
-│          │content path │  │+ T0 BM25 lexical  │ │semantic         │         │
-│          │(R1 Summary) │  │bounded score      │ │specialists      │         │
-│          │             │  │                   │ │Notes -> top 2   │         │
-│          │             │  │                   │ │PDF -> fills tail│         │
-│          └─────────────┘  └───────────────────┘ └─────────────────┘         │
+│       ┌──────────────────────┐       ┌──────────────────────────────┐       │
+│       │ SEMANTIC             │       │ KEYWORD                      │       │
+│       │ scoped vector scan   │       │ Zotero Quick Search + BM25   │       │
+│       │ MaxSim → S50         │       │ Q50 + L50 → K50 (RRF k=10)   │       │
+│       └──────────┬───────────┘       └──────────────┬───────────────┘       │
+│                  └───────────────┬─────────────────┘                        │
+│                                  ▼                                          │
+│             S50 ∪ K50 → semantic score + bounded lexical bonus             │
+│                         → stable paper ranking                             │
 │                                                                             │
+│Index modes: abstract = metadata; notes = metadata + Child Notes;            │
+│full = metadata + Child Notes + PDF.                                         │
 │T0 BM25: Intl.Segmenter(zh-Hans) natural terms + CJK bigrams;                │
 │BM25 (k1=1.2, b=0.75), zero third-party dependencies                         │
 │                                                                             │
-│User-facing modes: Semantic / Keyword / Hybrid (default)                     │
-│Keyword branch = T0 BM25 over chunk text + Zotero quick                      │
-│search, merged per item. Identity prepass reads Zotero                       │
-│metadata only. Explicit semantic / keyword selection                         │
-│bypasses the default strategy.                                               │
+│User-facing modes: Semantic / Keyword / Hybrid (default).                    │
+│Keyword = Quick Search + BM25; Semantic = vector search;                    │
+│Hybrid = identity navigation + both channels.                                │
+│Paper ranking is shared by UI, MCP and REST.                                 │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -95,11 +92,9 @@ Paper Hybrid runs identity navigation, then independent scoped semantic and lexi
 
 ### 🔗 Hybrid (Recommended)
 
-Hybrid is the product-default entry point and runs in three layers:
+Hybrid is the product-default entry point.
 
-1. **Identity navigation**: the query is first resolved against Zotero metadata — exact DOIs, full titles, and unique distinctive title fragments (Latin: at least 3 words and 12 characters; continuous CJK: at least 6 characters) return the paper directly, and an author name returns the author's collection. Candidates are validated through the original Zotero Search gate; weaker or ambiguous fragments abstain and fall through to the content path.
-2. **Fusion of the semantic and keyword branches**: the semantic side ranks by embeddings and MaxSim; the keyword branch merges T0 BM25 (over locally indexed chunk text) with Zotero quicksearch (metadata + heuristic re-ranking) per item. In Notes and Full mode's Notes specialist, the semantic score is the baseline and keyword ranks add a bounded bonus over the `S50 ∪ K50` candidate set. Full then puts Notes and PDF candidates into one score ordering.
-3. **Source-aware allocation (Full mode only)**: Notes and PDF results are sorted by the same score and deduplicated by stable identity; no source slots are reserved.
+Identity navigation runs only in Hybrid: an exact DOI, full title, sufficiently distinctive title fragment or author navigation returns Zotero-gated results directly; an ambiguous fragment declines navigation and enters content retrieval. Content retrieval runs semantic and keyword channels together. Semantic retrieval performs MaxSim over the range allowed by the current indexing mode. The keyword channel merges Zotero Quick Search with local BM25. Each channel contributes one representative hit per paper, followed by one paper-level ranking. Full does not split Notes/PDF candidates or reserve source slots.
 
 The content strategy selected by indexing mode:
 
@@ -133,7 +128,7 @@ Explicit semantic mode bypasses Hybrid identity navigation and fusion and runs s
 
 ### 🔤 Keyword Only
 
-Explicitly selecting keyword mode also bypasses the default strategy and runs the keyword branch alone: **T0 BM25** (over locally indexed chunk text, covering exact terms inside Notes/PDF bodies) and **Zotero quicksearch** (metadata retrieval + heuristic re-ranking) merged into one ranking.
+When Keyword mode is explicitly selected, it bypasses Hybrid identity navigation and semantic retrieval but still runs both keyword mechanisms: **T0 BM25** (chunk text in the current local lexical index) and **Zotero Quick Search** (metadata retrieval + heuristic re-ranking). Both explicit Keyword and paper Hybrid restrict BM25 sources to the current indexing mode and combine channel top-50 lists using equal RRF `0.5/(10+rankQ)+0.5/(10+rankL)`. Missing channels contribute zero; ties use stable identity. Eligibility precedes BM25 top-K without refitting IDF. API scores retain raw RRF; UI keyword scores are normalized to the query's best result for relative display, not probability.
 
 **Best for:**
 - Author searches: "Smith 2023"
@@ -280,10 +275,10 @@ After the existing identity-navigation gate declines a query, all three indexing
 - minSimilarity filters S50, not the complete semantic score table. K-only candidates retain their real MaxSim. The fixed 0.05 bonus cap does not depend on language, library, query length or legacy automatic-weight settings.
 - Abstract uses summary/abstract/title_only; Notes also includes note; Full includes all indexed sources, without Notes/PDF quotas. Default channel depth is 50, adjustable through internal topK options. Deduplication and ties use libraryKey + itemKey.
 - Genuinely missing vectors retain semanticScore=null and the compatible zero-baseline lexical bonus. This case has not been validated for retrieval quality; complete vector coverage bounds the 66L conclusions. Missing items return item_not_found; unresolved collection membership does not enter that collection.
-- The legacy rrfScore field now contains the fused score, potentially above 1. semanticScore remains cosine; keywordScore on this path is Q/L RRF, not probability. source=both means a semantic score exists and the paper is in K50, not necessarily in S50, and is not confidence.
+- The legacy rrfScore field now contains the fused score, potentially above 1. semanticScore remains cosine; keywordScore on this path is Q/L RRF, not probability. source=both means a semantic score exists and the paper is in K50; that semantic score may come from the complete score table outside S50, and it is not confidence.
 - A K-only paper's winning semantic chunk is hydrated with that same chunk's text, Note paths, PDF source and page; lexical snippets cannot inherit another chunk's location.
 
-Explicit Keyword/Semantic and multi-query aggregation retain their existing behavior. Paper experiments are not extrapolated to passage ranking: passages/location retain compatibility paths (Abstract semantic, Notes RRF, Full source merging). UI and MCP use the same engine for the same granularity. Unifying passage ranking requires separate design and acceptance.
+Explicit Keyword now shares Q/L K50; explicit Semantic and multi-query aggregation logic remain unchanged. Paper experiments are not extrapolated to passage ranking: passages/location retain compatibility paths (Abstract semantic, Notes RRF, Full source merging). UI and MCP use the same engine for the same granularity. Unifying passage ranking requires separate design and acceptance.
 
 The UI Match column retains semantic similarity (falling back to keyword display relevance when no semantic score exists), rather than the paper fusion score. Hybrid percentages therefore need not decrease monotonically with result order: K50 bonuses can promote a result with lower semantic similarity. Real Notes search-window acceptance on 2026-09-10 covered mode switching, a research-relation query, full-title navigation, source previews, item selection and empty results. Full PDF page navigation and HTTP transport were not revalidated in that round.
 
@@ -296,7 +291,7 @@ All 1,080 frozen 66L cells replay through production fusion; the 180 cells with 
 
 ### Offline Benchmark: Four Index Modes x Five Search Methods
 
-The six figures come from the Plan 58 unified offline matrix: the frozen `10_Hyperscanning`
+The six figures are the historical Plan 58 unified offline matrix, not a re-evaluation of the 66P formula: the frozen `10_Hyperscanning`
 150-paper corpus, the MN-50 / FT-50 question sets, `multilingual-e5-base`, T0 BM25
 (k1=1.2 / b=0.75) and RRF k=60. The primary run and an independent replay are byte-identical,
 11 historical bindings match at six decimals; full numbers live in `plan/REPORT-58`. All
@@ -329,12 +324,10 @@ Conclusions readable directly from the figures:
 - On the Metadata + Notes mode the current Hybrid reaches R@10 0.87 / MRR 0.817, the best of
   this track; BM25 alone already hits 0.87 — the T0 lexical upgrade is the main gain behind the
   current Hybrid versus the legacy Hybrid (MRR 0.549).
-- On the abstract mode lexical evidence is too weak: the current Hybrid front rank (R@1 0.06)
-  drops below pure semantic (0.22) — the numeric reason production defaults the `abstract` mode
-  to semantic-only.
+- On the abstract mode lexical evidence was too weak in that historical run: the old Hybrid front rank (R@1 0.06) dropped below pure semantic (0.22). This describes the old candidates and formula; it does not mean the current branch defaults paper-level `abstract` Hybrid to semantic-only.
 - Only clusters containing PDF text achieve high recall on FT questions: the PDF-only cluster
-  reaches R@10 0.73 while Metadata + Notes stays at 0.41-0.44; Full mode under the production
-  `FIXED-NOTES-2-8` contract from the previous section reaches FT R@10 0.78 / MRR 0.499.
+  reaches R@10 0.73 while Metadata + Notes stays at 0.41-0.44; Full mode under the historical
+  `FIXED-NOTES-2-8` source-slot contract reached FT R@10 0.78 / MRR 0.499. That source allocation is no longer the paper-level Full Hybrid contract.
 - The legacy keyword path (quicksearch proxy + K0) nearly fails on Chinese content questions
   (R@10 <= 0.18), which is the direct motivation for replacing it with T0 BM25.
 
@@ -343,6 +336,11 @@ Conclusions readable directly from the figures:
 ## Multi-Query Search
 
 ZotSeek supports combining up to 4 search queries with AND/OR logic to find papers at the intersection of multiple topics.
+
+This section documents the existing multi-query combiner. It has not been
+refactored to the 66P single-query paper-level S50/K50 formula; its internal
+subquery aggregation remains a separate compatibility behavior and should not
+be read as using the fixed 0.05 lexical bonus.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -698,7 +696,7 @@ score(D, Q) = Σ IDF(t) · tf(t,D) · (k1 + 1) / ( tf(t,D) + k1 · (1 − b + b 
 IDF(t)      = ln( 1 + (N − df + 0.5) / (df + 0.5) )              k1 = 1.2, b = 0.75
 ```
 
-- **Source isolation reaches the statistics layer**: `N`, `df` and the average document length are recomputed within the set of documents the current query is allowed to see (the Notes specialist restricts to metadata/note sources, the PDF specialist to PDF sources) — not computed corpus-wide and filtered afterwards. Each specialist sees a self-consistent corpus statistics set.
+- **Source isolation reaches the statistics layer**: `N`, `df` and average document length are recomputed within the set of sources the current query is allowed to see, rather than computed corpus-wide and filtered afterwards. Notes or Abstract queries restrict the set accordingly; Full paper-level queries allow all indexed sources. The legacy passage path may use source specialists, but that is not the current paper-level Full contract.
 - **Paper-granularity exit**: only the BM25-best chunk of each paper enters the ranking (deterministic tie-break: score first, then libraryKey/itemKey), so a single paper cannot flood the list with fragments.
 - **Score normalization**: raw BM25 scores are unbounded; before output they are normalized by the query's best hit to [0, 1] — order-preserving, and it lets BM25 compete directly with quicksearch heuristic scores (also 0–1) in the merge and in the UI.
 - The default returns the top 50 matches (`limit`).
@@ -1234,13 +1232,11 @@ mapping batch-loads Zotero items and then restores input order; T0 tokenization
 reuses one `Intl.Segmenter` instance. These optimizations do not change the
 per-semantic-branch 50-candidate hydration window.
 
-Full's default Hybrid policy uses `searchPartitions()` to share one query
-embedding, one active-model vector-cache filter, and one dot-product traversal
-between the Metadata/Notes and PDF semantic specialists. Each specialist still
-owns its independent MaxSim state, source filter, stable tie-break, Top-50
-window, and snippet hydration. The shared scan therefore does not form a global
-50-result window before splitting sources, and the later Notes-2/PDF-tail
-allocation behavior is unchanged.
+Paper-level Full Hybrid performs one scoped semantic scan and ranks it together
+with Quick/BM25 keyword candidates; it no longer runs Metadata/Notes and PDF
+specialists with fixed source slots. `searchPartitions()` and source specialists
+remain for the `passages` compatibility path and must not be described as the
+paper-level default.
 
 The identity snapshot uses its own monotonic generation and keyed single-flight.
 Item, collection-item, and collection Notifier events, relevant preference
@@ -1514,7 +1510,11 @@ Schema v12 adds nullable `chunks.pdf_attachment_key`. New Full-mode PDF chunks s
 
 ## Query Analysis
 
-Automatic weight adjustment (`hybridSearch.autoAdjustWeights`, on by default) remains for compatibility. Paper Hybrid in all indexing modes uses a fixed 0.05 bonus cap; the historical query-weight examples below do not affect that formula. Passage compatibility paths may still use legacy weights.
+Paper-level Hybrid does not change channel weights based on query language,
+length, question form or detected patterns. All three indexing modes use the
+fixed 0.05 bonus cap. `hybridSearch.autoAdjustWeights` and the historical
+query-weight analysis below remain only for legacy configuration and passage
+compatibility paths; they do not affect current `papers` ranking.
 
 The metadata identity prepass emits timing diagnostics for Zotero Search, bulk `Zotero.Items.getAsync()` loading, candidate filtering, classification and final result preparation, together with candidate counts and the match kind. These diagnostics do not include the query, creator list, DOI or document text.
 
@@ -1555,11 +1555,14 @@ The metadata identity prepass emits timing diagnostics for Zotero Search, bulk `
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-### Keyword-branch scoring
+### Keyword-branch scoring (current Keyword mode and Hybrid Q/L stage)
 
-The keyword branch merges two hit sources into one ranking that then enters RRF:
+The keyword branch always contains Quick Search and BM25. Keyword mode merges
+the two sources per paper and returns that keyword ranking. Paper-level Hybrid
+keeps their ranks and combines them into K50 with equal-weight RRF `k=10`, then
+uses only the K50 rank as the bounded bonus in the final formula:
 
-**1) T0 BM25 ranking.** Query and documents use the same T0 tokenization (natural words + CJK bigrams); scoring and source-isolation rules are in [BM25 Pipeline](#bm25-pipeline). Only the best chunk per paper enters the ranking, normalized by the query's best hit to [0, 1].
+**1) T0 BM25 ranking.** Query and documents use the same T0 tokenization (natural words + CJK bigrams); scoring and source-isolation rules are in [BM25 Pipeline](#bm25-pipeline). Only the best chunk per paper enters the ranking; standalone BM25 output is normalized by the query's best hit to [0, 1]. Paper-level Hybrid uses that hit's K50 rank in the final formula rather than adding the normalized value directly to the semantic score.
 
 **2) Zotero quicksearch heuristic scoring.** Quick search does not rank by relevance, so the plugin re-ranks by match quality:
 
@@ -1575,13 +1578,13 @@ Bonuses:
 Maximum: 1.00 (100%)
 ```
 
-**3) Per-item merge.** Hits from both sources merge into one score map keyed by `itemId`, keeping the higher score — the normalized BM25 score and the quicksearch heuristic score (both 0–1) compete directly. Special rules:
+**3) Per-item merge.** Hits from both sources merge by stable paper identity. Keyword and paper Hybrid share Q/L K50, keeping both ranks to compute `0.5/(10+rankQ)+0.5/(10+rankL)`; it does not add a BM25 raw or normalized value directly to the semantic score. Special rules:
 
 - Note hits returned by quicksearch map back to their parent item and are re-scored against clean note text: a full-phrase containment scores 1.0 directly, partial term hits score `0.65 + 0.3 × (matched terms / query terms)`; if quicksearch only matched content that the index-side filters out (such as the "basic information" or References sections), the hit is dropped.
-- In explicit keyword mode, quicksearch uses `quicksearch-titleCreatorYear` (when restricted to metadata sources) or `quicksearch-everything`.
+- Explicit Keyword and paper Hybrid both use `quicksearch-everything`; BM25 source restrictions do not change the Quick entry point.
 - Book exclusion, library and collection constraints apply to both sources equally.
 
-The merged ranking keeps the top `keywordTopK` entries and enters RRF.
+Keyword mode keeps the top `keywordTopK` entries after this merge. Hybrid keeps the top `keywordTopK` as K50, then applies the paper-level bounded lexical-bonus formula; the final formula does not consume normalized BM25 values.
 
 
 ---
@@ -1594,7 +1597,7 @@ The merged ranking keeps the top `keywordTopK` entries and enters RRF.
 |------------|---------|-------------|
 | `hybridSearch.mode` | `"hybrid"` | `"hybrid"`, `"semantic"`, or `"keyword"` |
 | `hybridSearch.semanticWeightPercent` | `50` | Compatibility parameter for the old RRF path; unused by bounded Hybrid |
-| `hybridSearch.rrfK` | `60` | RRF constant (higher = more weight to top ranks) |
+| `hybridSearch.rrfK` | `60` | Compatibility constant for the legacy passage RRF path; paper-level Hybrid fixes Q/L K50 at `k=10` |
 | `hybridSearch.autoAdjustWeights` | `true` | Compatibility switch for the old RRF path; bounded Hybrid keeps a fixed score contract |
 
 ### Chunking Settings
@@ -1620,7 +1623,7 @@ ZotSeek's search combines three mechanisms:
 2. **Semantic understanding** — AI embeddings capture meaning, with R1 breadcrumbs adding document structure
 3. **Lexical precision** — T0 BM25 (Intl.Segmenter + CJK bigrams) ranks exact terms in Notes and PDF text
 4. **Keyword branch** — BM25 and Zotero quicksearch heuristic scores merge per item, covering both exact body hits and metadata retrieval
-5. **Intelligent fusion and source allocation** — RRF fuses the semantic and keyword branches; Full mode allocates results source-aware (Notes top-2 + PDF tail)
+5. **Paper-level Hybrid fusion** — equal-weight RRF `k=10` combines Q/L into K50, then semantic MaxSim plus a lexical rank bonus capped at 0.05 ranks the union; Full does not allocate Notes/PDF source slots
 6. **Performance** — narrow-projection vector cache, keyed single-flight builds and a bounded identity snapshot keep hot queries fast
 
 The combination finds conceptually related papers, resolves identity queries exactly, and guarantees that original terms in notes and body text remain retrievable.

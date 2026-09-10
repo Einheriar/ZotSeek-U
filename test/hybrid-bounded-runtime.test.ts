@@ -30,6 +30,60 @@ test('K50 fuses independent Quick and BM25 ranks with fixed k=10', () => {
   assert.equal(ranked[0].score, 0.5 / 12 + 0.5 / 11);
 });
 
+test('explicit Keyword uses scoped K50 without embeddings and preserves relative UI scores', async () => {
+  for (const indexingMode of ['abstract', 'notes', 'full'] as const) {
+    const zotero = installZoteroStub({ 'zotseek.excludeBooks': true });
+    zotero.Libraries = { get: () => ({ libraryType: 'user' }), userLibraryID: 1 };
+    const items = [1, 2, 3, 4].map(id => ({
+      id, key: `P000000${id}`, libraryID: 1,
+      itemType: id === 4 ? 'book' : 'journalArticle',
+      isRegularItem: () => true, isNote: () => false,
+      getField: (field: string) => field === 'title' && id === 1 ? 'coupling' : '',
+      getCreators: () => [],
+    }));
+    zotero.Items = {
+      get: (id: number) => items[id - 1],
+      getAsync: async (ids: number[]) => ids.map(id => items[id - 1]),
+    };
+    const conditions: string[] = [];
+    zotero.Search = class {
+      addCondition(name: string) { conditions.push(name); }
+      async search() { return [1, 2, 4]; }
+    };
+    let captured: any;
+    const engine = new HybridSearchEngine({
+      search: () => { throw new Error('Keyword must not invoke semantic search'); },
+      searchWithScores: () => { throw new Error('Keyword must not invoke semantic scores'); },
+      searchIndexedText: async (_query: string, options: any) => {
+        captured = options;
+        assert.equal(options.candidateFilter({ libraryKey: 'user', itemKey: items[3].key, itemId: 4 }), false);
+        return [2, 3].map((id, i) => ({
+          libraryKey: 'user', itemKey: items[id - 1].key, itemId: id,
+          score: 1 - i * 0.1, textSource: 'summary', chunkText: `Evidence ${id}`,
+        }));
+      },
+    } as any);
+    (engine as any).populateItemMetadata = async () => {};
+    const results = await engine.search('coupling', { mode: 'keyword', indexingMode, finalTopK: 2 });
+    assert.deepEqual(results.map(r => r.itemId), [2, 1], 'agreement wins over Quick-only title match');
+    assert.equal(results[0].rrfScore, 0.5 / 12 + 0.5 / 11);
+    assert.equal(results[1].rrfScore, 0.5 / 11);
+    assert.equal(results[0].keywordScore, 1);
+    assert.equal(results[1].keywordScore, results[1].rrfScore / results[0].rrfScore);
+    assert.equal(results[0].semanticScore, null);
+    assert.equal(results[0].chunkText, 'Evidence 2');
+    assert.equal(captured.topK, 50, 'return cap does not shrink channel depth');
+    assert.equal(typeof captured.candidateFilter, 'function');
+    assert.ok(conditions.includes('quicksearch-everything'));
+    if (indexingMode === 'full') assert.equal(captured.textSources, undefined);
+    else {
+      assert.ok(captured.textSources.includes('summary'));
+      assert.equal(captured.textSources.includes('note'), indexingMode === 'notes');
+      assert.ok(!captured.textSources.includes('content'));
+    }
+  }
+});
+
 test('paper Hybrid scans globally, excludes books before S50 and hydrates a K-only PDF winner', async () => {
   const zotero = installZoteroStub({ 'zotseek.excludeBooks': true });
   zotero.Libraries = { get: () => ({ libraryType: 'user' }), userLibraryID: 1 };

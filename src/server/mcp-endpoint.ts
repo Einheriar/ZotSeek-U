@@ -35,55 +35,74 @@ const TOOL_DEFINITIONS = [
   {
     name: 'search',
     description:
-      "Semantic search over the user's Zotero library using ZotSeek's local " +
-      'embeddings. Returns papers ranked by relevance, with matched text ' +
+      "Search the user's Zotero library by keywords, semantic similarity or Hybrid ranking. " +
+      'Start with hybrid/papers for literature discovery; use get_item to read complete evidence. ' +
+      'Returns ranked results with bounded matched text ' +
       'excerpts and page numbers where available. Each resolvable result also ' +
       'includes structured metadata with the full creator list, date, journal ' +
       'or book title, volume, issue, pages, DOI, and other citation fields. ' +
       'Use these fields when the user requests a bibliography or a citation ' +
-      'style such as APA. Each result carries ' +
+      'style such as APA. Resolvable results carry available ' +
       'zotero:// deep links: links.select opens the item in Zotero, ' +
       'links.openPdf opens the PDF at the matched page — include them when ' +
       'citing results to the user. If your client does not render zotero:// ' +
       'URIs as clickable links, use links.selectHttp / links.openPdfHttp ' +
-      'instead (same action via a local http launcher). 100% local; no data ' +
-      'leaves the machine. ' +
-      'Hybrid-mode scores are RRF values (small numbers, ~0.005-0.03) meaningful only for ranking within one result set; semantic-mode scores are 0-1 cosine similarities.',
+      'instead (same action via a local http launcher). The MCP endpoint is local and read-only; ' +
+      'semantic/Hybrid query embedding can send query text to the selected cloud provider. ' +
+      'Keyword search does not request query embeddings. ' +
+      'Paper Hybrid content scores are semantic MaxSim plus a bounded lexical bonus, possibly above 1, ' +
+      'not probabilities. Keyword scores are equal Quick/BM25 RRF with k=10, not the normalized UI percentage. ' +
+      'Semantic scores are cosine similarities; identity navigation and ' +
+      'passage paths retain their own score conventions. Compare scores only within the same query and policy.',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Natural-language search query' },
-        max_results: { type: 'integer', minimum: 1, maximum: 100, default: 10 },
+        query: {
+          type: 'string',
+          description: 'Non-empty query: keywords for keyword mode, a focused research question for semantic/Hybrid, ' +
+            'or a known title/DOI for Hybrid identity navigation. Queries are not automatically rewritten or split.',
+        },
+        max_results: {
+          type: 'integer', minimum: 1, maximum: 100, default: 10,
+          description: 'Return cap, not a guaranteed count. Default 10 is independent of the UI preference; ' +
+            'request 20 for broader exploration. Does not expand internal candidate depth (normally S50/K50 for paper Hybrid).',
+        },
         mode: {
           type: 'string',
           enum: ['hybrid', 'semantic', 'keyword'],
           default: 'hybrid',
           description:
-            'hybrid = the indexing-mode-aware ZotSeek product default (same ' +
-            'results as the ZotSeek dialog: Abstract semantic, Notes fixed RRF, ' +
-            'Full Notes-2 + PDF-tail); semantic and keyword are explicit overrides',
+            'hybrid = the same ranking engine as the UI. Papers first attempt explicit identity navigation; ' +
+            'content queries independently retrieve semantic S50 and lexical K50 (equal Quick/BM25 RRF, k=10), ' +
+            'then rank their union by MaxSim + 0.05*11/(10+rankK50), with no bonus outside K50. ' +
+            'Abstract/Notes/Full follow the configured indexing sources without reserved source slots. ' +
+            'Legacy automatic weights do not change this formula. semantic is an explicit override; ' +
+            'keyword returns the same Q/L K50 ranking without semantic retrieval or Hybrid identity navigation.',
         },
         min_similarity: {
           type: 'number',
           minimum: 0,
           maximum: 1,
           description:
-            'Minimum semantic similarity (0-1). Defaults to the user\'s ' +
-            'ZotSeek preference (typically 0.3).',
+            'Semantic candidate threshold (0-1). Omit to inherit the ZotSeek preference: shipped default 0.7, ' +
+            'current fallback 0.3 if unreadable or invalid. In paper Hybrid content retrieval this filters S50 only; ' +
+            'K50 results may fall below it. Not a final Hybrid score floor or confidence cutoff. ' +
+            'Does not filter identity-navigation hits and has no effect in keyword mode.',
         },
         granularity: {
           type: 'string',
           enum: ['papers', 'passages'],
           default: 'papers',
           description:
-            'papers = one result per paper (best-matching chunk); ' +
-            'passages = every matching chunk as its own result',
+            'papers = one result per paper with a best-matching chunk, recommended for discovery. ' +
+            'passages = chunk-level results, possibly several from one paper, for targeted evidence gathering. ' +
+            'Both are capped by max_results; passages retain compatibility ranking, not the new paper formula.',
         },
         library_key: {
           type: 'string',
           description:
             "'user' for the personal library, or 'group:<groupID>' to limit the search to one group library. " +
-            'Omit to search all indexed libraries.',
+            'Omit to search all indexed libraries, not just the selected collection. Indexing mode follows ZotSeek settings.',
         },
         filter: {
           type: 'object',

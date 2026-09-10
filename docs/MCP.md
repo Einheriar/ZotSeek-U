@@ -2,7 +2,7 @@
 
 ZotSeek can expose read-only search plus stable-identity item, Note, and PDF reading to AI agents and scripts through a local MCP server and matching REST endpoints, served on Zotero's own HTTP server.
 
-This needs no extra software: the endpoints run inside the Zotero you already have open. They are **opt-in** (off by default), **read-only** (nothing can modify your library or the index), and bound to **localhost only** — no data leaves your machine.
+This needs no extra software: the endpoints run inside the Zotero you already have open. They are **opt-in** (off by default), expose **read-only** library operations, and are bound to **localhost only**. Search can prepare local caches. Localhost describes the MCP connection, not every downstream operation: semantic/Hybrid query embedding uses the selected provider and can send query text to a configured cloud service. Keyword search does not request query embeddings. The connected agent receives returned excerpts and metadata and handles them according to its own configuration.
 
 Everything routes through the running Zotero, where your embeddings and index already live, so **Zotero must be running** for the endpoints to respond.
 
@@ -45,12 +45,23 @@ Any other MCP client that supports the HTTP transport works the same way (for ex
 
 ## MCP Tools
 
+Documentation alignment (2026-09-10, search-strategy branch): the behavior below describes the current implementation. The `tools/list` search descriptions in `src/server/mcp-endpoint.ts` are aligned with this documentation. Parameters, defaults and ranking are unchanged. Restart Zotero to load the rebuilt plugin, then have the MCP client refresh its tool definitions.
+
 | Tool | Arguments | Returns |
 |------|-----------|---------|
 | `search` | `query` *(required)*; `max_results` (1–100, default 10); `mode` (`hybrid` \| `semantic` \| `keyword`, default `hybrid`); `granularity` (`papers` \| `passages`, default `papers`); `min_similarity` (0–1, defaults to your ZotSeek preference); `library_key` (`user` or `group:<groupID>`, omit to search all indexed libraries); optional `filter` (`year_from`, `year_to`, `journal`, `author`, `exact`) | Ranked results, optionally post-filtered within the ranked result window |
 | `get_item` | `item_key` *(required)*; `library_key` (default `user`); `include_notes` (default `false`); `include_pdf` (`none` \| `pages` \| `full`, default `none`); `pdf_pages` (`3` or `3-5`, at most 20 pages); `pdf_attachment_key` | A normalized live Zotero item snapshot, optionally with complete Notes and exact PDF text |
 | `find_similar` | `item_key` *(required, 8-character Zotero key)*; `library_key` (`user` or `group:<groupID>`, default `user`); `max_results` (1–100, default 10) | Papers similar to a known library item, by its stored embeddings |
 | `index_status` | *(none)* | `{ready, modelLoaded, indexedPapers, totalChunks, modelId, activeModel, coverage, configurationError?, lastIndexed, storageUsedBytes}` |
+
+### Search parameter behavior
+
+- `query` is a required non-empty string. Use keywords for `keyword`, a focused research question for `semantic` or `hybrid`, and a known title or DOI for Hybrid identity navigation. The parameter does not itself rewrite or split a query.
+- `max_results` defaults to **10**, independently of the UI's result-count preference. It is a return cap, not a promise to fill the window. Exploratory calls can explicitly request **20**. Increasing it does not expand internal channel depth: paper Hybrid normally uses S50 and K50, whose union may contain fewer than 100 distinct papers.
+- `mode` defaults to `hybrid`; `granularity` defaults to `papers`. Passage search may return several locations from one paper and retains its existing compatibility ranking. It is not the paper-ranking formula applied to chunks.
+- `min_similarity` inherits `zotseek.minSimilarityPercent / 100`. The shipped preference is **70 → 0.7**; the current MCP helper falls back to **0.3** if that preference cannot be read or is invalid. In paper Hybrid content retrieval it filters S50 only: K50 candidates can still appear below that threshold, retaining their real semantic scores. It is not a floor on the final Hybrid score, does not filter identity-navigation hits, and has no effect in Keyword mode. In Semantic mode it filters semantic candidates.
+- `library_key` limits the library, not a collection. Omitting it searches all indexed libraries. The indexing content mode (`abstract`, `notes`, `full`) follows ZotSeek settings; `search` does not expose an indexing-mode override.
+- `filter` operates after the ranked `max_results` window is obtained, as detailed below. No collection filter, candidate-depth control, lexical-bonus coefficient or RRF-weight parameter is exposed by this tool.
 
 `mode` mirrors the ZotSeek UI. Paper-level **hybrid** first attempts explicit
 metadata identity navigation. Content queries independently retrieve semantic
@@ -68,7 +79,7 @@ If the fixed Server model slot is selected but its profile JSON template is `NON
 
 `search.filter` is deliberately a **post-filter**. ZotSeek first obtains the normal ranked `max_results` window and then filters it without changing order. It is not an exhaustive database field query, so the result can contain fewer than `max_results` items or be empty even when another matching item exists below the original window. `journal` checks publication, book, and proceedings titles. `author` checks first name, last name, `First Last`, `Last, First`, and institutional creator names. Matching trims values, normalizes Unicode NFC, and ignores case; `exact:true` switches the two string filters from substring to whole-candidate matching.
 
-For `index_status`, `ready` is `true` when the index contains papers and the selected model has an operational identity; the embedding model itself lazy-loads on the first search, adding ~30s to that first call when `modelLoaded` is `false`. `modelLoaded` reports whether that pipeline is already warm. A `ready: true, modelLoaded: false` status means searches will work but the first one will be slow. `activeModel` is the short identifier of the currently configured embedding model (e.g. `"bge-m3"`), or `"server-slot"` while an incomplete Server choice is retained. `coverage` is `{ covered, total }` — the number of library items indexed under the operational model vs. the total items in the index, letting agents detect when a model switch has left items to be re-indexed.
+For `index_status`, `ready` is `true` when the index contains papers and the selected model has an operational identity. `modelLoaded` reports pipeline initialization, not whether BM25 and vector caches are both warm. A first semantic/Hybrid request can incur provider initialization, query embedding and local cache preparation; timing depends on the provider and library, and readiness does not guarantee request success or a fixed delay. `activeModel` is the short identifier of the currently configured embedding model (e.g. `"bge-m3"`), or `"server-slot"` while an incomplete Server choice is retained. `coverage` is `{ covered, total }` — the number of library items indexed under the operational model vs. the total items in the index, letting agents detect when a model switch has left items to be re-indexed.
 
 ### Result shape
 
@@ -81,7 +92,7 @@ For `index_status`, `ready` is `true` when the index contains papers and the sel
   "title": "Attention Is All You Need",
   "authors": "Vaswani et al.",
   "year": 2017,
-  "score": 0.016,
+  "score": 0.812,
   "source": "both",
   "metadata": {
     "itemType": "journalArticle",
@@ -118,7 +129,7 @@ Notes on the shape:
 - `authors` is a formatted string for `search` results and an array of strings for `find_similar` results.
 - `matchedChunk` is `null` when no excerpt or page is available; `page`, `textSource`, `sectionPaths`, and `pdfAttachmentKey` may be absent within it. `pdfAttachmentKey` is present on newly indexed Full-mode PDF chunks and identifies the exact attachment that produced the hit; copy it into `get_item.pdf_attachment_key`. Old Full indexes remain searchable but return no exact PDF key until refreshed.
 - Child Note keyword fallbacks return a query-centred excerpt capped at 1200 Unicode characters, never the complete long Note. When the stored index has the matching chunk, its faithful chunk text and `sectionPaths` take precedence.
-- `score` is the selected search policy's score, rounded to three decimals. Paper Hybrid returns semantic MaxSim plus the bounded lexical bonus, possibly above 1; it is not a percentage or probability. Semantic / `find_similar` return cosine scores. Keyword and passage paths retain their own score conventions. Compare scores within the same query and policy. A genuinely missing vector retains a null internal semantic score and compatible zero-baseline lexical bonus; this case is outside the complete-vector offline quality validation. `source: "both"` means a semantic score exists and the paper is in K50, even if it is outside S50; it does not imply confidence.
+- `score` is the selected search policy's score, rounded to three decimals. Paper Hybrid returns semantic MaxSim plus the bounded lexical bonus, possibly above 1; it is not a percentage or probability. Semantic / `find_similar` return cosine scores. Keyword returns raw equal-weight Quick/BM25 RRF (k=10); its UI percentage is separately normalized to the best result in the query. Hybrid passage paths retain their own score conventions. Compare scores within the same query and policy. A genuinely missing vector retains a null internal semantic score and compatible zero-baseline lexical bonus; this case is outside the complete-vector offline quality validation. `source: "both"` means a semantic score exists and the paper is in K50, even if it is outside S50; it does not imply confidence.
 
 ### `get_item` result and PDF behavior
 
@@ -133,7 +144,7 @@ PDF reading never reruns the main-PDF classifier. A supplied `pdf_attachment_key
 An agent should separate discovery from complete-item reading:
 
 1. Call `index_status` before a retrieval session. If `ready` is false, `coverage.covered` is lower than `coverage.total`, or `configurationError` is present, report the limitation instead of presenting the result set as complete.
-2. For literature discovery, start with `search` using `mode: "hybrid"`, `granularity: "papers"`, and multiple results (normally 10). Do not answer a completeness-sensitive question from the first result alone.
+2. For literature discovery, start with `search` using `mode: "hybrid"`, `granularity: "papers"`, and multiple results (default 10; explicitly request 20 for broader exploration). Omit `min_similarity` to inherit the current setting; do not interpret it as a universal relevance or confidence cutoff. Do not answer a completeness-sensitive question from the first result alone.
 3. For comparisons or questions that require several papers, split the information need into focused retrieval queries, run one paper-level search per concept or claim, then merge and deduplicate results by `libraryKey + itemKey`. Putting several weakly related concepts into one long embedding query can reduce recall.
 4. Use `granularity: "passages"` only for targeted evidence gathering. Passage results may contain several chunks from the same paper, so they should not replace paper-level discovery when document diversity matters.
 5. For a chosen result, call `get_item` with its `libraryKey` and `itemKey`. For a PDF hit, pass `matchedChunk.pdfAttachmentKey` and request the matched page or a small adjacent range before requesting `full`.
@@ -206,10 +217,10 @@ curl 'http://localhost:23119/zotseek/search?q=transformer+attention&topK=2&mode=
 | Property | Guarantee |
 |----------|-----------|
 | **Opt-in** | Off by default; you enable it explicitly in ZotSeek settings |
-| **Read-only** | Nothing exposed here can modify your library or the index — tools only search or read live item, Note, PDF, and index-status data |
+| **Read-only operations** | Tools expose search and reading, not library edits or index-maintenance commands; requests can initialize local caches |
 | **Localhost only** | Endpoints bind to the loopback interface; not reachable from the network |
 | **Not reachable from web pages** | Zotero's server blocks browser-originated requests to the data endpoints before they reach ZotSeek, and ZotSeek additionally validates the `Origin` header. The one deliberate exception is the `GET /zotseek/open` link launcher, which browsers can reach by design — it exposes no data and can only select an item or open a PDF in Zotero (strictly validated input, prefetch requests ignored) |
-| **100% local** | All search and inference run on your machine; no data leaves it |
+| **Provider-dependent inference** | Index retrieval is local; semantic/Hybrid query embedding can use the selected cloud provider. Returned data is also available to the connected agent |
 
 ## See also
 

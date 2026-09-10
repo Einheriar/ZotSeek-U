@@ -52,7 +52,7 @@ export interface HybridSearchResult {
 
   // Scores from different sources
   semanticScore: number | null;    // Cosine similarity (0-1)
-  keywordScore: number | null;     // Q/L RRF in paper Hybrid; legacy relevance otherwise
+  keywordScore: number | null;     // Q/L RRF in paper Hybrid; relative display score in Keyword
 
   // Combined score (kept under the legacy field name for UI/API compatibility)
   rrfScore: number;
@@ -764,7 +764,14 @@ export class HybridSearchEngine {
     query: string,
     opts: ResolvedHybridSearchOptions
   ): Promise<HybridSearchResult[]> {
-    const results = await this.keywordSearchQuery(query, opts);
+    const indexingMode = this.resolveIndexingMode(opts.indexingMode);
+    const keywordTextSources = opts.keywordTextSources ?? (indexingMode === 'abstract'
+      ? ['summary', 'abstract', 'title_only'] as TextSourceType[]
+      : indexingMode === 'notes' ? METADATA_NOTE_SOURCES : undefined);
+    // Share the validated Q/L rank fusion, including eligibility before top-K.
+    // Keyword never calls the semantic embedding/scoring path.
+    const results = await this.keywordSearchQuery(query, { ...opts, keywordTextSources }, true);
+    const displayScale = results[0]?.score || 1;
 
     const hybridResults: HybridSearchResult[] = results.map((r, index) => ({
       itemId: r.itemId,
@@ -774,8 +781,8 @@ export class HybridSearchEngine {
       creators: '',
       year: 0,
       semanticScore: null,
-      keywordScore: r.score,
-      rrfScore: r.score, // Use raw score for keyword-only
+      keywordScore: r.score / displayScale, // Relative UI relevance, not confidence.
+      rrfScore: r.score, // Preserve the actual Q/L RRF score for ranking and APIs.
       ...(r.itemStatus ? { itemStatus: r.itemStatus } : {}),
       semanticRank: null,
       keywordRank: index + 1,

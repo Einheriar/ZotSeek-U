@@ -223,6 +223,10 @@ Plan 60 兼容修补将词法契约更新为 v2：对实际合并的韩英片段
 
 ## 10. MCP/REST 扩展 [已上线]
 
+独立 Keyword 后续接入 REPORT66 选中的 K50：Quick 与 BM25 分别取前 50，以等权 RRF（k=10）排序，BM25 按索引模式限制来源并在 TopK 前过滤资格；不调用语义模型。UI 与 MCP/REST 共用该路径，接口 `score` 为原始 Q/L RRF，UI 百分比为本查询第一名归一化后的相对匹配分。文献级 Hybrid 的公式不变。
+
+2026-09-10 参数文档对齐：`search` 保留默认 `hybrid` / `papers` / 最多 10 条，探索性调用可显式请求 20 条；不开放候选深度或融合权重。相似度继承用户偏好（安装默认 0.7，MCP 读取失败或值无效时现有回退为 0.3），文献 Hybrid 中只限制 S50，不是最终融合分门槛。筛选仍作用于最终窗口；查询 Embedding 是否外发取决于所选提供方，localhost 不等于全程离线。详见 MCP.md。文档及 `mcp-endpoint.ts` 的 `tools/list` 搜索说明已同步，运行参数与排序行为未变；重启 Zotero 加载新构建后，客户端需刷新工具定义。
+
 在上游 `search` / `find_similar` / `index_status` 基础上新增（完整用法见 [MCP.md](MCP.md)）：
 
 - **`get_item` 工具**：按 `library_key + item_key` 读取规范化书目、tags、collections、relatedItems 与附件清单；`include_notes: true` 返回全部 Child Notes 的完整未过滤文本（不应用索引侧的"基本信息"/References 排除规则）及实时 `sections` / `sectionPaths`；`include_pdf: "pages" | "full"` 支持指定附件与 ≤20 连续页，PDF 读取优先 Zotero 全文缓存、缺页时批量 `PDFWorker` 兜底，`pdf.status` 以机器值 `ok / partial / missing / unresolved / empty / failed` 表达；不暴露本机文件路径。REST 对应 `GET /zotseek/item`。

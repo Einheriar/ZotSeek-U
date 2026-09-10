@@ -223,6 +223,10 @@ Index identities **already indexed** that come to match `excludeTag` / `excludeB
 
 ## 10. MCP/REST Extensions [Shipped]
 
+Explicit Keyword now adopts the K50 selected in REPORT66: the top 50 Quick and BM25 results are combined by equal RRF (k=10); BM25 sources follow indexing mode and eligibility precedes top-K. No semantic model is called. UI and MCP/REST share this path: API `score` is raw Q/L RRF, whereas UI percentages are relative scores normalized to the query's best result. Paper Hybrid's formula is unchanged.
+
+Parameter documentation alignment on 2026-09-10: `search` retains `hybrid` / `papers` / at most 10 results by default; exploratory calls can explicitly request 20. Candidate depth and fusion weights are not exposed. Similarity inherits the user preference (shipped default 0.7; the current MCP fallback is 0.3 when unreadable or invalid); in paper Hybrid it limits S50, not the final fusion score. Filters still apply to the final window. Query-embedding transmission depends on the selected provider; localhost does not imply an entirely offline workflow. See MCP.md. Documentation and the `tools/list` search descriptions in `mcp-endpoint.ts` are aligned, with no parameter or ranking changes. Restart Zotero to load the new build and refresh the client tool definitions.
+
 On top of upstream's `search` / `find_similar` / `index_status` (full usage in [MCP.md](MCP.md)):
 
 - **`get_item` tool**: reads normalized bibliography, tags, collections, relatedItems and attachment lists by `library_key + item_key`; `include_notes: true` returns all child notes' complete unfiltered text (the index-side "basic information"/References exclusion rules are not applied) plus live `sections` / `sectionPaths`; `include_pdf: "pages" | "full"` supports a chosen attachment and ≤20 consecutive pages, reading from Zotero's full-text cache first with a batched `PDFWorker` fallback for missing pages; `pdf.status` uses the machine values `ok / partial / missing / unresolved / empty / failed`; local file paths are never exposed. REST equivalent: `GET /zotseek/item`.
