@@ -65,23 +65,40 @@ describe('HybridSearchEngine product dispatch', () => {
     assert.deepEqual(calls, []);
   });
 
-  test('allocates Full by stable identity and fills a missing PDF tail from Notes', async () => {
+  test('ranks Full specialists by unified score and deduplicates by stable identity', async () => {
     const engine = new HybridSearchEngine({} as any) as any;
     let capturedPartitions: any[] = [];
-    engine.semanticSearchPartitionsQuery = async (_query: string, partitions: any[]) => {
+    engine.semanticSearchPartitionsWithScoresQuery = async (_query: string, partitions: any[]) => {
       capturedPartitions = partitions;
-      return new Map([
-        ['notes', [
+      return {
+        resultsByPartition: new Map([
+          ['notes', [
           { itemId: 1, libraryKey: 'user', itemKey: 'NOTE0001', score: 0.9 },
           { itemId: 2, libraryKey: 'user', itemKey: 'NOTE0002', score: 0.8 },
           { itemId: 3, libraryKey: 'user', itemKey: 'NOTE0003', score: 0.7 },
-        ]],
-        ['pdf', [
+          ]],
+          ['pdf', [
           // Same stable paper as NOTE0001 but a deliberately different local ID.
-          { itemId: 99, libraryKey: 'user', itemKey: 'NOTE0001', score: 0.95 },
+          {
+            itemId: 99,
+            libraryKey: 'user',
+            itemKey: 'NOTE0001',
+            score: 0.95,
+            textSource: 'content',
+            pageNumber: 3,
+          },
           { itemId: 4, libraryKey: 'user', itemKey: 'PDF00004', score: 0.85 },
-        ]],
-      ]);
+          ]],
+        ]),
+        scoresByPartition: new Map([
+          ['notes', new Map([
+            ['user|NOTE0001', { itemId: 1, libraryKey: 'user', itemKey: 'NOTE0001', similarity: 0.9 }],
+            ['user|NOTE0002', { itemId: 2, libraryKey: 'user', itemKey: 'NOTE0002', similarity: 0.8 }],
+            ['user|NOTE0003', { itemId: 3, libraryKey: 'user', itemKey: 'NOTE0003', similarity: 0.7 }],
+          ])],
+          ['pdf', new Map()],
+        ]),
+      };
     };
     engine.keywordSearchQuery = async () => [];
     engine.populateItemMetadata = async () => undefined;
@@ -99,11 +116,13 @@ describe('HybridSearchEngine product dispatch', () => {
     });
 
     assert.deepEqual(results.map((entry: any) => entry.itemKey), [
-      'NOTE0001', 'NOTE0002', 'PDF00004', 'NOTE0003',
+      'NOTE0001', 'PDF00004', 'NOTE0002', 'NOTE0003',
     ]);
     assert.deepEqual(results.map((entry: any) => entry.policyChannel), [
-      'notes', 'notes', 'pdf', 'notes',
+      'pdf', 'pdf', 'notes', 'notes',
     ]);
+    assert.equal(results[0].textSource, 'content');
+    assert.equal(results[0].pageNumber, 3);
     assert.deepEqual(capturedPartitions, [
       { key: 'notes', topK: 50, textSources: ['summary', 'abstract', 'title_only', 'note'] },
       { key: 'pdf', topK: 50, textSources: ['fulltext', 'methods', 'findings', 'content'] },

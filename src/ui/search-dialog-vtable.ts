@@ -8,10 +8,6 @@
 import { SearchResultsTable } from './results-table';
 import { SearchEngine, searchEngine, SearchResult } from '../core/search-engine';
 import { HybridSearchEngine, HybridSearchResult, SearchMode } from '../core/hybrid-search';
-import {
-  FULL_NOTES_HEAD_SLOTS,
-  allocatePrimaryWithAlternateTail,
-} from '../core/search-policy';
 import { ZoteroAPI } from '../utils/zotero-api';
 import { Logger } from '../utils/logger';
 import { getZotero } from '../utils/zotero-helper';
@@ -992,26 +988,6 @@ export class ZotSeekDialogVTable {
 
     // Sort by combined score descending
     combinedResults.sort((a, b) => (b.semanticScore ?? 0) - (a.semanticScore ?? 0));
-
-    if (this.searchMode === 'hybrid' && this.indexingMode === 'full') {
-      const notesResults = combinedResults.filter(result => result.policyChannel !== 'pdf');
-      const pdfResults = combinedResults.filter(result => result.policyChannel === 'pdf');
-      const identity = (result: HybridSearchResult) => {
-        const paperKey = result.libraryKey && result.itemKey
-          ? `${result.libraryKey}|${result.itemKey}`
-          : `local:${result.itemId}`;
-        return this.granularity === 'location'
-          ? `${paperKey}|chunk:${result.chunkIndex ?? 0}`
-          : paperKey;
-      };
-      return allocatePrimaryWithAlternateTail(
-        notesResults,
-        pdfResults,
-        this.userTopK,
-        FULL_NOTES_HEAD_SLOTS,
-        identity,
-      );
-    }
 
     return combinedResults.slice(0, this.userTopK);
   }

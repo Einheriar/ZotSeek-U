@@ -96,8 +96,8 @@ ZotSeek 的搜索由三层机制组成：**身份导航**（先在 Zotero 元数
 Hybrid 是产品默认入口，按三层执行：
 
 1. **身份导航**：先在 Zotero 元数据上解析查询——精确 DOI、完整标题、唯一且有区分度的标题片段（Latin 至少 3 个词且 12 个字符；连续 CJK 至少 6 个字符）直接返回对应文献，作者名返回作者文献集合。候选都经原始 Zotero Search 门验证；较弱或含糊的片段主动弃权，落入内容路径。
-2. **语义 + 关键词分支融合**：语义侧用嵌入与 MaxSim 排名；关键词分支由 T0 BM25（对本地已索引 chunk 文本）与 Zotero quicksearch（元数据 + 启发式重排）按条目合并而成。Notes 模式把语义原始分作为基线，在 `S50 ∪ K50` 候选上按关键词名次加入有界加分；Full 模式的 Notes specialist 暂保留 RRF，随后再做来源分配。
-3. **来源感知分配（仅 Full 模式）**：Notes specialist 结果占据前二头部槽位，PDF 语义结果去重后补齐尾部。
+2. **语义 + 关键词分支融合**：语义侧用嵌入与 MaxSim 排名；关键词分支由 T0 BM25（对本地已索引 chunk 文本）与 Zotero quicksearch（元数据 + 启发式重排）按条目合并而成。Notes 与 Full 的 Notes specialist 都把语义原始分作为基线，在 `S50 ∪ K50` 候选上按关键词名次加入有界加分；Full 再把 Notes 与 PDF 候选放进同一分数排序。
+3. **来源感知分配（仅 Full 模式）**：Notes 与 PDF 结果按统一分数排序并按稳定身份去重，不再预留固定来源槽位。
 
 按索引模式选择的内容策略：
 
@@ -105,9 +105,9 @@ Hybrid 是产品默认入口，按三层执行：
 |---------------|--------------------------|
 | `abstract` | 仅语义（semantic-only） |
 | `notes` | R1 Metadata + Notes 语义 + T0 BM25，语义基线 + 有界词法加分 |
-| `full` | Notes H1 specialist 前两篇，其余由 PDF 语义结果补齐 |
+| `full` | Notes 有界融合 + PDF 语义候选，统一分数排序 |
 
-Full 模式的结果分配是来源感知的：对文献去重、让 PDF 填满尾部，仅当 PDF 无法填满请求数量时回退到剩余 Notes 结果。对 `topK=10` 这就是定稿的产品 `2+8` 契约。其他结果数同样最多保留两个 Notes 头部槽位。passages 粒度沿用同样的位置规则，但尚未经过 Plan 37 的文献级配对验证。
+Full 模式的结果分配是来源感知的：Notes 与 PDF specialist 各自保留来源字段，然后按统一分数排序并按稳定身份去重。对 `topK=10` 不再承诺固定的 `2+8` 比例；passages 粒度沿用稳定身份与 chunk 去重规则。
 
 | 查询类型 | 纯语义 | 纯关键词 | Hybrid |
 |------------|---------------|--------------|--------|
@@ -271,7 +271,7 @@ Hybrid 默认入口的完整管线如下图。注意 Layer 3 只在 `full` 模�
 │    └────────────────────────────────────────────────────────────────────┘   │
 │                                      │  content query (no identity match)   │
 │                                      ▼                                      │
-│    │LAYER 2 - RRF FUSION (k=60)                                         │   │
+│    │LAYER 2 - CONTROLLED SCORE FUSION                                  │   │
 │    │                                                                    │   │
 │    │  ┌────────────────────┐          ┌──────────────────────────┐      │   │
 │    │  │semantic list       │          │keyword branch            │      │   │
@@ -281,14 +281,14 @@ Hybrid 默认入口的完整管线如下图。注意 Layer 3 只在 `full` 模�
 │    │  │                    │          │per item                  │      │   │
 │    │  └────────────────────┘          └──────────────────────────┘      │   │
 │    │                                                                    │   │
-│    │fused by Reciprocal Rank Fusion (k=60)                              │   │
+│    │semantic baseline + bounded lexical bonus                            │   │
 │    └─────────────────────────────────┬──────────────────────────────────┘   │
 │                                      │                                      │
 │                                      ▼                                      │
 │    ┌────────────────────────────────────────────────────────────────────┐   │
 │    │LAYER 3 - FULL MODE ONLY: SOURCE ALLOCATION                         │   │
-│    │Notes specialist owns the top-2 head slots;                         │   │
-│    │PDF semantic results fill the tail (2+8 at topK=10)                 │   │
+│    │Notes and PDF specialists share one score order;                    │   │
+│    │stable-identity deduplication decides the final list                │   │
 │    └────────────────────────────────────────────────────────────────────┘   │
 │                                                                             │
 │notes mode    = Layer 2 result directly (R1 semantic + T0 BM25)              │
@@ -307,7 +307,7 @@ Hybrid 默认入口的完整管线如下图。注意 Layer 3 只在 `full` 模�
 | **稳健** | 任何来源的头部结果都会被提升 |
 | **生产验证** | Elasticsearch、Vespa、Pinecone 均在使用 |
 
-当前 Notes Hybrid 不再把两路排名压成同一套 RRF 权重：它保留语义 MaxSim 原始分，并对 `K50` 命中按 `0.05 × 11/(10 + keywordRank)` 加分，单条词法证据最多增加 0.05。语义分数表来自同一轮向量遍历，因此关键词命中即使不在语义 Top-50 也能读取自己的语义分数；候选集合仍严格限制为 `S50 ∪ K50`。Full specialist 的 RRF 和来源分配暂保持原合同，后续单独调整。
+Notes 与 Full 的 Notes specialist 不再把两路排名压成同一套 RRF 权重：它们保留语义 MaxSim 原始分，并对 `K50` 命中按 `0.05 × 11/(10 + keywordRank)` 加分，单条词法证据最多增加 0.05。语义分数表来自同一轮向量遍历，因此关键词命中即使不在语义 Top-50 也能读取自己的语义分数；候选集合仍严格限制为 `S50 ∪ K50`。Full 再将 Notes 和 PDF 分数放在同一排序中。
 
 ### 结果指示符
 
@@ -319,14 +319,13 @@ Hybrid 默认入口的完整管线如下图。注意 Layer 3 只在 `full` 模�
 
 ### 来源感知分配（Full 模式）
 
-`full` 模式在 RRF 之后多做一步分配（`fullSourceAwareSearch()`）：
+`full` 模式在 specialist 评分之后多做一步统一排序（`fullSourceAwareSearch()`）：
 
 1. Notes specialist（R1 语义基线 + T0 BM25 有界加分）与 PDF 语义 specialist 各自产出独立排名；两个语义 specialist 共享一次查询嵌入、一次向量缓存过滤和一次点积遍历。
-2. Notes 结果占据前 `FULL_NOTES_HEAD_SLOTS = 2` 个头部槽位。
-3. PDF 语义结果按稳定身份去重后填满剩余槽位（`topK=10` 时即 `2+8`）。
-4. PDF 不足时由剩余 Notes 结果回填。
+2. 两个 specialist 结果按统一分数排序并按稳定身份去重。
+3. 不再预留固定 Notes/PDF 位置；实际名次由分数决定。
 
-该契约来自 Plan 37/40 的离线与实机验证；passages 粒度沿用同样的位置规则，但尚未经过文献级配对验证。
+该契约沿用稳定身份、来源和页码字段；passages 粒度按稳定身份加 chunk 位置去重。
 
 
 ### 离线实测：四种索引内容 × 五种搜索方式
@@ -1357,7 +1356,7 @@ Schema v12 增加可空的 `chunks.pdf_attachment_key`。新的 Full 模式 PDF 
 
 ## 查询分析
 
-自动权重调节（`hybridSearch.autoAdjustWeights`，默认开启）只调整 **Notes H1 specialist 内部**的语义/词法份额：年份、作者、缩写等模式提升关键词侧权重，疑问句与长自然句提升语义侧权重。它不改变 Full 模式的 2+N 来源分配；`abstract` 模式在身份导航后始终是纯语义。
+自动权重调节（`hybridSearch.autoAdjustWeights`，默认开启）仍保留用于兼容旧配置，但当前 bounded Hybrid 评分不再按查询动态改变语义/词法份额；语义原始分固定作为基线，词法最多增加 0.05。`abstract` 模式在身份导航后始终是纯语义。
 
 元数据身份预检输出 Zotero Search、批量 `Zotero.Items.getAsync()` 加载、候选过滤、分类与最终结果准备的计时诊断，以及候选数和匹配类型。这些诊断不包含查询、creator 列表、DOI 或文档文本。
 
@@ -1436,9 +1435,9 @@ Maximum: 1.00 (100%)
 | 偏好 | 默认 | 说明 |
 |------------|---------|-------------|
 | `hybridSearch.mode` | `"hybrid"` | `"hybrid"`、`"semantic"` 或 `"keyword"` |
-| `hybridSearch.semanticWeightPercent` | `50` | 关闭自动调节时 H1 的语义份额 |
+| `hybridSearch.semanticWeightPercent` | `50` | 旧 RRF 路径的兼容参数；bounded Hybrid 不使用 |
 | `hybridSearch.rrfK` | `60` | RRF 常数（越高越偏向头部排名） |
-| `hybridSearch.autoAdjustWeights` | `true` | 调节 Notes H1 的语义/词法份额；从不改变 Full 的 2+N 分配 |
+| `hybridSearch.autoAdjustWeights` | `true` | 旧 RRF 路径的兼容开关；bounded Hybrid 不改变分数配比 |
 
 ### 分块设置
 

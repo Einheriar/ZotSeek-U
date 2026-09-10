@@ -1,7 +1,7 @@
 /**
  * Hybrid Search - Combines semantic search with Zotero keyword search
  *
- * Uses Reciprocal Rank Fusion (RRF) to merge results from:
+ * Uses controlled score fusion to merge results from:
  * 1. Semantic search (embedding similarity)
  * 2. Zotero's built-in quick search (keywords, metadata)
  *
@@ -28,11 +28,9 @@ import {
   MetadataIdentitySnapshotCandidate,
 } from './metadata-identity-cache';
 import {
-  FULL_NOTES_HEAD_SLOTS,
   METADATA_NOTE_SOURCES,
   PDF_SOURCES,
   ProductIndexingMode,
-  allocatePrimaryWithAlternateTail,
   analyzeMetadataIdentity,
   classifyMetadataIdentity,
   normalizeProductIndexingMode,
@@ -56,8 +54,8 @@ export interface HybridSearchResult {
   semanticScore: number | null;    // Cosine similarity (0-1)
   keywordScore: number | null;     // Normalized keyword relevance
 
-  // Combined score
-  rrfScore: number;                // RRF combined score
+  // Combined score (kept under the legacy field name for UI/API compatibility)
+  rrfScore: number;
 
   // Rank information (for debugging/display)
   semanticRank: number | null;
@@ -66,8 +64,7 @@ export interface HybridSearchResult {
   // Source indicator: 'both' | 'semantic' | 'keyword'
   source: 'both' | 'semantic' | 'keyword';
 
-  // Internal product-policy channel. This lets UI-level multi-query merging
-  // preserve Full's Notes-head/PDF-tail allocation after combining scores.
+  // Internal product-policy channel identifying the winning Full specialist.
   policyChannel?: 'identity' | 'notes' | 'pdf';
 
   // Original text source from semantic search (e.g., 'methods', 'findings', 'summary')
@@ -179,6 +176,11 @@ interface SemanticSearchHit {
 interface SemanticSearchPassResult {
   results: SemanticSearchHit[];
   scores: SemanticScoreTable;
+}
+
+interface SemanticPartitionPassResult {
+  resultsByPartition: Map<string, SemanticSearchHit[]>;
+  scoresByPartition: Map<string, SemanticScoreTable>;
 }
 
 interface IdentityNavigationCandidate {
@@ -345,7 +347,7 @@ export class HybridSearchEngine {
     return fusedResults.slice(0, opts.finalTopK);
   }
 
-  /** Full product default: Notes H1 owns two head slots; PDF semantic owns the tail. */
+  /** Full product default: rank Notes and PDF candidates under one score contract. */
   private async fullSourceAwareSearch(
     query: string,
     opts: ResolvedHybridSearchOptions,
@@ -356,12 +358,6 @@ export class HybridSearchEngine {
       finalTopK: specialistTopK,
       semanticTextSources: METADATA_NOTE_SOURCES,
       keywordTextSources: METADATA_NOTE_SOURCES,
-    };
-    const pdfOpts: ResolvedHybridSearchOptions = {
-      ...opts,
-      finalTopK: specialistTopK,
-      semanticTopK: specialistTopK,
-      semanticTextSources: PDF_SOURCES,
     };
     const semanticPartitions: SearchPartitionOptions[] = [
       {
@@ -375,38 +371,32 @@ export class HybridSearchEngine {
         textSources: PDF_SOURCES,
       },
     ];
-    const [semanticResults, keywordResults] = await Promise.all([
-      this.semanticSearchPartitionsQuery(query, semanticPartitions, opts),
+    const [semanticPass, keywordResults] = await Promise.all([
+      this.semanticSearchPartitionsWithScoresQuery(query, semanticPartitions, opts),
       this.keywordSearchQuery(query, notesOpts),
     ]);
 
-    const notesSemantic = semanticResults.get('notes') ?? [];
-    const pdfSemantic = semanticResults.get('pdf') ?? [];
+    const notesSemantic = semanticPass.resultsByPartition.get('notes') ?? [];
+    const pdfSemantic = semanticPass.resultsByPartition.get('pdf') ?? [];
     this.logger.info(`Got ${notesSemantic.length} semantic, ${keywordResults.length} keyword results`);
 
-    const notesResults = this.reciprocalRankFusion(
+    const notesResults = this.boundedLexicalBonusFusion(
       notesSemantic,
+      semanticPass.scoresByPartition.get('notes') ?? new Map(),
       keywordResults,
       notesOpts,
     ).slice(0, specialistTopK);
     const pdfResults = this.semanticHitsToHybrid(pdfSemantic)
-      .slice(0, pdfOpts.finalTopK);
+      .slice(0, specialistTopK);
 
     const taggedNotes = notesResults.map(result => ({ ...result, policyChannel: 'notes' as const }));
     const taggedPdf = pdfResults.map(result => ({ ...result, policyChannel: 'pdf' as const }));
-    const identity = opts.returnAllChunks ? stablePassageKey : stableRankingKey;
-    const allocated = allocatePrimaryWithAlternateTail(
+    const allocated = this.mergeFullHybridCandidates(
       taggedNotes,
       taggedPdf,
       opts.finalTopK,
-      FULL_NOTES_HEAD_SLOTS,
-      identity,
-    ).map((result, index) => ({
-      ...result,
-      // Hybrid scores remain rank-only values. The specialist's native
-      // semanticScore/keywordScore fields retain the useful diagnostics.
-      rrfScore: 1 / (opts.rrfK + index + 1),
-    }));
+      opts.returnAllChunks,
+    );
 
     await this.populateItemMetadata(allocated);
     return allocated;
@@ -830,30 +820,38 @@ export class HybridSearchEngine {
     }
   }
 
-  /** Full-mode semantic specialists share vector work but keep independent results. */
-  private async semanticSearchPartitionsQuery(
+  /** Full-mode semantic specialists share vector work and retain their score tables. */
+  private async semanticSearchPartitionsWithScoresQuery(
     query: string,
     partitions: SearchPartitionOptions[],
     opts: ResolvedHybridSearchOptions,
-  ): Promise<Map<string, SemanticSearchHit[]>> {
+  ): Promise<SemanticPartitionPassResult> {
     try {
       if (!this.semanticSearch.isReady()) {
         await this.semanticSearch.init();
       }
-      const rawPartitions = await this.semanticSearch.searchPartitions(query, partitions, {
+      const pass = await this.semanticSearch.searchPartitionsWithScores(query, partitions, {
         minSimilarity: opts.minSimilarity,
         libraryId: opts.libraryId,
         returnAllChunks: opts.returnAllChunks,
       });
       const mappedEntries = await Promise.all(partitions.map(async partition => [
         partition.key,
-        await this.filterAndMapSemanticResults(rawPartitions.get(partition.key) ?? []),
+        await this.filterAndMapSemanticResults(
+          pass.resultsByPartition.get(partition.key) ?? [],
+        ),
       ] as const));
-      return new Map(mappedEntries);
+      return {
+        resultsByPartition: new Map(mappedEntries),
+        scoresByPartition: pass.scoresByPartition,
+      };
     } catch (error) {
       if ((error as any)?.code === 'SERVER_MODEL_NOT_READY') throw error;
-      this.logger.error('Partitioned semantic search failed:', error);
-      return new Map(partitions.map(partition => [partition.key, []]));
+      this.logger.error('Partitioned semantic search with score tables failed:', error);
+      return {
+        resultsByPartition: new Map(partitions.map(partition => [partition.key, []])),
+        scoresByPartition: new Map(partitions.map(partition => [partition.key, new Map()])),
+      };
     }
   }
 
@@ -1162,9 +1160,13 @@ export class HybridSearchEngine {
     opts: ResolvedHybridSearchOptions,
   ): HybridSearchResult[] {
     const lexicalBonusCap = 0.05;
+    const useChunkKey = opts.returnAllChunks;
     const semanticMap = new Map<string, SemanticSearchHit & { rank: number }>();
     semanticResults.forEach((result, index) => {
-      const key = stableRankingKey(result);
+      const baseKey = stableRankingKey(result);
+      const key = useChunkKey
+        ? `${baseKey}|chunk:${result.chunkIndex ?? 0}`
+        : baseKey;
       if (!semanticMap.has(key)) semanticMap.set(key, { ...result, rank: index + 1 });
     });
 
@@ -1182,8 +1184,9 @@ export class HybridSearchEngine {
 
     for (const key of allKeys) {
       const semantic = semanticMap.get(key);
-      const scoreEntry = semanticScores.get(key);
-      const keyword = keywordMap.get(key);
+      const baseKey = useChunkKey ? key.replace(/\|chunk:\d+$/, '') : key;
+      const scoreEntry = semanticScores.get(baseKey);
+      const keyword = keywordMap.get(baseKey);
       const representative = semantic ?? keyword;
       if (!representative) continue;
 
@@ -1227,6 +1230,29 @@ export class HybridSearchEngine {
       stableRankingKey(a).localeCompare(stableRankingKey(b)) ||
       (a.chunkIndex ?? 0) - (b.chunkIndex ?? 0));
     return fusedResults;
+  }
+
+  private mergeFullHybridCandidates(
+    notesResults: HybridSearchResult[],
+    pdfResults: HybridSearchResult[],
+    finalTopK: number,
+    returnAllChunks: boolean,
+  ): HybridSearchResult[] {
+    const identity = returnAllChunks ? stablePassageKey : stableRankingKey;
+    const selected = new Map<string, HybridSearchResult>();
+    for (const candidate of [...notesResults, ...pdfResults]) {
+      const key = identity(candidate);
+      const existing = selected.get(key);
+      if (!existing || candidate.rrfScore > existing.rrfScore) {
+        selected.set(key, candidate);
+      }
+    }
+
+    return [...selected.values()]
+      .sort((a, b) => b.rrfScore - a.rrfScore ||
+        stableRankingKey(a).localeCompare(stableRankingKey(b)) ||
+        (a.chunkIndex ?? 0) - (b.chunkIndex ?? 0))
+      .slice(0, finalTopK);
   }
 
   private reciprocalRankFusion(

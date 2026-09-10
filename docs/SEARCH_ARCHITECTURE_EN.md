@@ -96,8 +96,8 @@ ZotSeek's search is built from three layers: **identity navigation** (resolving 
 Hybrid is the product-default entry point and runs in three layers:
 
 1. **Identity navigation**: the query is first resolved against Zotero metadata — exact DOIs, full titles, and unique distinctive title fragments (Latin: at least 3 words and 12 characters; continuous CJK: at least 6 characters) return the paper directly, and an author name returns the author's collection. Candidates are validated through the original Zotero Search gate; weaker or ambiguous fragments abstain and fall through to the content path.
-2. **Fusion of the semantic and keyword branches**: the semantic side ranks by embeddings and MaxSim; the keyword branch merges T0 BM25 (over locally indexed chunk text) with Zotero quicksearch (metadata + heuristic re-ranking) per item. In Notes mode, the semantic score is the baseline and keyword ranks add a bounded bonus over the `S50 ∪ K50` candidate set. Full mode's Notes specialist still uses RRF until its source allocation is revised separately.
-3. **Source-aware allocation (Full mode only)**: the Notes specialist owns the top two head slots; PDF semantic results fill the tail after deduplication.
+2. **Fusion of the semantic and keyword branches**: the semantic side ranks by embeddings and MaxSim; the keyword branch merges T0 BM25 (over locally indexed chunk text) with Zotero quicksearch (metadata + heuristic re-ranking) per item. In Notes and Full mode's Notes specialist, the semantic score is the baseline and keyword ranks add a bounded bonus over the `S50 ∪ K50` candidate set. Full then puts Notes and PDF candidates into one score ordering.
+3. **Source-aware allocation (Full mode only)**: Notes and PDF results are sorted by the same score and deduplicated by stable identity; no source slots are reserved.
 
 The content strategy selected by indexing mode:
 
@@ -105,9 +105,9 @@ The content strategy selected by indexing mode:
 |---------------|--------------------------|
 | `abstract` | semantic-only |
 | `notes` | R1 Metadata + Notes semantic and T0 BM25, semantic baseline + bounded lexical bonus |
-| `full` | first two papers from the Notes H1 specialist, then PDF semantic results |
+| `full` | bounded Notes fusion + PDF semantic candidates under one score order |
 
-The Full result allocation is source-aware: it de-duplicates papers, lets PDF fill the tail, and falls back to remaining Notes results only when PDF cannot fill the requested result count. For `topK=10` this is the finalized product `2+8` contract. Other result counts keep at most two Notes head slots. Passage mode uses the same positional rule but has not received the paper-level Plan 37 paired validation.
+The Full result allocation is source-aware: Notes and PDF specialists keep their source fields, then compete under one score order and stable-identity deduplication. For `topK=10` there is no fixed `2+8` ratio; passage mode uses stable identity plus chunk position for deduplication.
 
 | Query Type | Pure Semantic | Pure Keyword | Hybrid |
 |------------|---------------|--------------|--------|
@@ -271,7 +271,7 @@ The full Hybrid default pipeline is shown below. Note that Layer 3 exists only i
 │    └────────────────────────────────────────────────────────────────────┘   │
 │                                      │  content query (no identity match)   │
 │                                      ▼                                      │
-│    │LAYER 2 - RRF FUSION (k=60)                                         │   │
+│    │LAYER 2 - CONTROLLED SCORE FUSION                                  │   │
 │    │                                                                    │   │
 │    │  ┌────────────────────┐          ┌──────────────────────────┐      │   │
 │    │  │semantic list       │          │keyword branch            │      │   │
@@ -281,14 +281,14 @@ The full Hybrid default pipeline is shown below. Note that Layer 3 exists only i
 │    │  │                    │          │per item                  │      │   │
 │    │  └────────────────────┘          └──────────────────────────┘      │   │
 │    │                                                                    │   │
-│    │fused by Reciprocal Rank Fusion (k=60)                              │   │
+│    │semantic baseline + bounded lexical bonus                            │   │
 │    └─────────────────────────────────┬──────────────────────────────────┘   │
 │                                      │                                      │
 │                                      ▼                                      │
 │    ┌────────────────────────────────────────────────────────────────────┐   │
 │    │LAYER 3 - FULL MODE ONLY: SOURCE ALLOCATION                         │   │
-│    │Notes specialist owns the top-2 head slots;                         │   │
-│    │PDF semantic results fill the tail (2+8 at topK=10)                 │   │
+│    │Notes and PDF specialists share one score order;                    │   │
+│    │stable-identity deduplication decides the final list                │   │
 │    └────────────────────────────────────────────────────────────────────┘   │
 │                                                                             │
 │notes mode    = Layer 2 result directly (R1 semantic + T0 BM25)              │
@@ -307,7 +307,7 @@ The full Hybrid default pipeline is shown below. Note that Layer 3 exists only i
 | **Robust** | Top results from ANY source get boosted |
 | **Production-proven** | Used by Elasticsearch, Vespa, Pinecone |
 
-Notes Hybrid no longer compresses both lists into one RRF weight. It keeps the raw semantic MaxSim score and adds `0.05 × 11/(10 + keywordRank)` for a `K50` hit, so one lexical signal can contribute at most 0.05. The semantic score table comes from the same vector pass; a keyword hit can therefore read its semantic score even when it is outside semantic Top-50. The candidate set remains exactly `S50 ∪ K50`. Full specialists retain their existing RRF and source-allocation contract until a separate change revises them.
+Notes and Full's Notes specialist no longer compress both lists into one RRF weight. They keep the raw semantic MaxSim score and add `0.05 × 11/(10 + keywordRank)` for a `K50` hit, so one lexical signal can contribute at most 0.05. The semantic score table comes from the same vector pass; a keyword hit can therefore read its semantic score even when it is outside semantic Top-50. The candidate set remains exactly `S50 ∪ K50`; Full then compares those Notes scores with PDF semantic scores.
 
 ### Result Indicators
 
@@ -319,14 +319,13 @@ Notes Hybrid no longer compresses both lists into one RRF weight. It keeps the r
 
 ### Source-aware allocation (Full mode)
 
-`full` mode adds one allocation step after RRF (`fullSourceAwareSearch()`):
+`full` mode adds one unified-ranking step after specialist scoring (`fullSourceAwareSearch()`):
 
 1. The Notes specialist (R1 semantic baseline + bounded T0 BM25 bonus) and the PDF semantic specialist produce independent rankings; the two semantic specialists share one query embedding, one vector-cache filter and one dot-product traversal.
-2. Notes results own the first `FULL_NOTES_HEAD_SLOTS = 2` head slots.
-3. PDF semantic results fill the remaining slots after stable-identity deduplication (`2+8` at `topK=10`).
-4. When PDF is short, remaining Notes results backfill.
+2. The two specialist lists are sorted by their unified score and deduplicated by stable identity.
+3. No fixed Notes/PDF positions are reserved; actual rank follows the score.
 
-This contract comes from the Plan 37/40 offline and runtime validation; passage mode follows the same positional rule but has not received paper-level paired validation.
+This contract preserves stable identity, source and page metadata; passage mode deduplicates by stable identity plus chunk position.
 
 
 ### Offline Benchmark: Four Index Modes x Five Search Methods
@@ -1549,7 +1548,7 @@ Schema v12 adds nullable `chunks.pdf_attachment_key`. New Full-mode PDF chunks s
 
 ## Query Analysis
 
-Automatic weight adjustment (`hybridSearch.autoAdjustWeights`, on by default) tunes only the **semantic/lexical share inside the Notes H1 specialist**: year, author and acronym patterns boost the lexical side, while question forms and long natural sentences boost the semantic side. It never changes Full mode's 2+N source allocation, and `abstract` mode remains semantic after identity navigation.
+Automatic weight adjustment (`hybridSearch.autoAdjustWeights`, on by default) remains for compatibility with the old RRF path, but the current bounded Hybrid scorer does not change its semantic/lexical share per query: the raw semantic score is always the baseline and lexical evidence contributes at most 0.05. `abstract` mode remains semantic after identity navigation.
 
 The metadata identity prepass emits timing diagnostics for Zotero Search, bulk `Zotero.Items.getAsync()` loading, candidate filtering, classification and final result preparation, together with candidate counts and the match kind. These diagnostics do not include the query, creator list, DOI or document text.
 
@@ -1628,9 +1627,9 @@ The merged ranking keeps the top `keywordTopK` entries and enters RRF.
 | Preference | Default | Description |
 |------------|---------|-------------|
 | `hybridSearch.mode` | `"hybrid"` | `"hybrid"`, `"semantic"`, or `"keyword"` |
-| `hybridSearch.semanticWeightPercent` | `50` | H1 balance when automatic adjustment is disabled |
+| `hybridSearch.semanticWeightPercent` | `50` | Compatibility parameter for the old RRF path; unused by bounded Hybrid |
 | `hybridSearch.rrfK` | `60` | RRF constant (higher = more weight to top ranks) |
-| `hybridSearch.autoAdjustWeights` | `true` | Tune the Notes H1 semantic/lexical share; never changes Full's 2+N allocation |
+| `hybridSearch.autoAdjustWeights` | `true` | Compatibility switch for the old RRF path; bounded Hybrid keeps a fixed score contract |
 
 ### Chunking Settings
 
