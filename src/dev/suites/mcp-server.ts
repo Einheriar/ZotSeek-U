@@ -134,11 +134,11 @@ selfTest.register('mcp-server', async () => {
 
   scenarios.push(await scenario('mode=semantic matches the JS API ordering (#38 parity)', async () => {
     const q = 'collaboration methods analysis';
-    const apiResults = await searchEngine.search(q, { topK: 5, minSimilarity: 0.3 });
+    const apiResults = await searchEngine.search(q, { topK: 5, minSimilarity: 0 });
     if (!apiResults.length) return; // empty index — nothing to compare
     const { json } = await callMcp('tools/call', {
       name: 'search',
-      arguments: { query: q, max_results: 5, mode: 'semantic', min_similarity: 0.3 },
+      arguments: { query: q, max_results: 5, mode: 'semantic' },
     });
     const payload = parseToolPayload(json);
     assertEq(
@@ -157,16 +157,16 @@ selfTest.register('mcp-server', async () => {
     assertTrue(Array.isArray(parseToolPayload(json).results), 'results array');
   }));
 
-  scenarios.push(await scenario('min_similarity filters results monotonically', async () => {
+  scenarios.push(await scenario('legacy MCP min_similarity cannot change the fixed threshold', async () => {
     const args = (min: number) => ({
       name: 'search',
       arguments: { query: 'analysis', max_results: 50, mode: 'semantic', min_similarity: min },
     });
     const loose = parseToolPayload((await callMcp('tools/call', args(0.1))).json);
     const strict = parseToolPayload((await callMcp('tools/call', args(0.99))).json);
-    assertTrue(
-      strict.results.length <= loose.results.length,
-      `strict (${strict.results.length}) should return no more than loose (${loose.results.length})`
+    assertEq(
+      JSON.stringify(strict.results), JSON.stringify(loose.results),
+      'legacy threshold values must return the same results'
     );
   }));
 

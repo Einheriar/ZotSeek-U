@@ -53,6 +53,8 @@ export interface HybridSearchResult {
   // Scores from different sources
   semanticScore: number | null;    // Cosine similarity (0-1)
   keywordScore: number | null;     // Q/L RRF in paper Hybrid; relative display score in Keyword
+  /** Unnormalized BM25 score from the indexed-text channel, when available. */
+  bm25Score?: number | null;
 
   // Combined score (kept under the legacy field name for UI/API compatibility)
   rrfScore: number;
@@ -153,6 +155,8 @@ interface KeywordSearchHit {
   libraryKey?: string;
   itemKey?: string;
   score: number;
+  /** Unnormalized BM25 score; absent for Zotero Quick-only hits. */
+  bm25Score?: number | null;
   textSource?: TextSourceType;
   chunkText?: string;
   sectionPaths?: string[][];
@@ -697,6 +701,7 @@ export class HybridSearchEngine {
       year: Number(candidate.year || 0),
       semanticScore: null,
       keywordScore: 1,
+      bm25Score: null,
       rrfScore: 1 / (opts.rrfK + index + 1),
       semanticRank: null,
       keywordRank: index + 1,
@@ -743,6 +748,7 @@ export class HybridSearchEngine {
       year: 0,
       semanticScore: r.score,
       keywordScore: null,
+      bm25Score: null,
       rrfScore: r.score,
       semanticRank: index + 1,
       keywordRank: null,
@@ -782,6 +788,7 @@ export class HybridSearchEngine {
       year: 0,
       semanticScore: null,
       keywordScore: r.score / displayScale, // Relative UI relevance, not confidence.
+      bm25Score: r.bm25Score ?? null,
       rrfScore: r.score, // Preserve the actual Q/L RRF score for ranking and APIs.
       ...(r.itemStatus ? { itemStatus: r.itemStatus } : {}),
       semanticRank: null,
@@ -1195,6 +1202,7 @@ export class HybridSearchEngine {
             libraryKey: match.libraryKey,
             itemKey: match.itemKey,
             score: match.score,
+            bm25Score: typeof match.rawScore === 'number' ? match.rawScore : null,
             textSource: match.textSource,
             chunkText: match.chunkText,
             sectionPaths: match.sectionPaths,
@@ -1203,6 +1211,14 @@ export class HybridSearchEngine {
           const previous = scoredResults.get(stableRankingKey(hit));
           if (!previous || hit.score > previous.score) {
             scoredResults.set(stableRankingKey(hit), hit);
+          } else if (previous.bm25Score == null && hit.bm25Score != null) {
+            // A Quick result may win the keyword display score while the same
+            // paper still has useful BM25 evidence. Preserve that evidence
+            // without changing the existing representative or its ranking.
+            scoredResults.set(stableRankingKey(hit), {
+              ...previous,
+              bm25Score: hit.bm25Score,
+            });
           }
         } catch (error) {
           this.logger.debug(`Could not merge indexed text result ${match.itemId}: ${error}`);
@@ -1287,6 +1303,7 @@ export class HybridSearchEngine {
         year: 0,
         semanticScore,
         keywordScore: keyword?.score ?? null,
+        bm25Score: keyword?.bm25Score ?? null,
         rrfScore: hybridScore,
         semanticRank: semantic?.rank ?? null,
         keywordRank: keyword?.rank ?? null,
@@ -1411,6 +1428,7 @@ export class HybridSearchEngine {
         year: 0,
         semanticScore: semantic?.score ?? null,
         keywordScore: keyword?.score ?? null,
+        bm25Score: keyword?.bm25Score ?? null,
         rrfScore,
         semanticRank: semantic?.rank ?? null,
         keywordRank: keyword?.rank ?? null,

@@ -88,6 +88,9 @@ export interface ToolResultItem {
   authors?: string[] | string;
   year?: number;
   score: number;
+  /** Unrounded component scores; null means unavailable, not zero relevance. */
+  semanticScore: number | null;
+  bm25Score: number | null;
   source?: 'both' | 'semantic' | 'keyword';
   matchedChunk: MatchedChunk | null;
   links?: ResultLinks;
@@ -354,10 +357,15 @@ async function buildLinks(
 
 async function mapHybridResult(r: HybridSearchResult): Promise<ToolResultItem> {
   const libraryKey = r.libraryKey || libraryKeyForItemId(r.itemId);
+  const scores = {
+    semanticScore: typeof r.semanticScore === 'number' && Number.isFinite(r.semanticScore) ? r.semanticScore : null,
+    bm25Score: typeof r.bm25Score === 'number' && Number.isFinite(r.bm25Score) ? r.bm25Score : null,
+  };
   if (r.itemStatus === 'item_not_found') {
     return {
       itemKey: r.itemKey, libraryKey, title: 'Item not found', itemStatus: 'item_not_found',
       score: round3(r.rrfScore), source: r.source, matchedChunk: chunkOf(r),
+      ...scores,
     };
   }
   const metadata = buildBibliographicMetadata(getLocalItem(r.itemId));
@@ -368,6 +376,7 @@ async function mapHybridResult(r: HybridSearchResult): Promise<ToolResultItem> {
     authors: r.creators || undefined,
     year: metadata?.year ?? (r.year || undefined),
     score: round3(r.rrfScore),
+    ...scores,
     source: r.source,
     matchedChunk: chunkOf(r),
     links: await buildLinks(libraryKey, r.itemKey, r.pageNumber, r.pdfAttachmentKey),
@@ -384,6 +393,8 @@ async function mapSearchResult(r: SearchResult): Promise<ToolResultItem> {
     authors: r.authors && r.authors.length ? r.authors : undefined,
     year: metadata?.year ?? r.year,
     score: round3(r.similarity),
+    semanticScore: Number.isFinite(r.similarity) ? r.similarity : null,
+    bm25Score: null,
     matchedChunk: chunkOf(r),
     links: await buildLinks(r.libraryKey || null, r.itemKey, r.pageNumber, r.pdfAttachmentKey),
     metadata,
@@ -508,6 +519,11 @@ export function applySearchResultFilter(
     }
     return true;
   });
+}
+
+/** MCP has a fixed threshold; legacy arguments cannot override it or UI prefs. */
+export async function runMcpSearchTool(args: Omit<SearchToolArgs, 'min_similarity'>): Promise<{ results: ToolResultItem[] }> {
+  return runSearchTool({ ...args, min_similarity: 0 });
 }
 
 export async function runSearchTool(args: SearchToolArgs): Promise<{ results: ToolResultItem[] }> {

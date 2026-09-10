@@ -94,6 +94,8 @@ function result(overrides: Partial<ToolResultItem> = {}): ToolResultItem {
     libraryKey: 'user',
     title: 'Paper',
     score: 1,
+    semanticScore: null,
+    bm25Score: null,
     matchedChunk: null,
     metadata: {
       title: 'Paper',

@@ -95,6 +95,8 @@ export interface IndexedTextMatch {
   pdfAttachmentKey?: string;
   textSource: TextSourceType;
   score: number;
+  /** Unnormalized BM25 score; score remains the historical normalized value. */
+  rawScore: number;
 }
 
 /**

@@ -18,6 +18,8 @@ test('lexical eligibility fills top-K without refitting corpus scores', () => {
   });
   assert.deepEqual(filtered.map(hit => hit.itemKey), all.slice(20).map(hit => hit.itemKey));
   assert.deepEqual(filtered.map(hit => hit.score), all.slice(20).map(hit => hit.score));
+  assert.deepEqual(filtered.map(hit => hit.rawScore), all.slice(20).map(hit => hit.rawScore));
+  assert.ok(filtered.every(hit => hit.rawScore > 0));
 });
 
 test('K50 fuses independent Quick and BM25 ranks with fixed k=10', () => {
@@ -59,7 +61,7 @@ test('explicit Keyword uses scoped K50 without embeddings and preserves relative
         assert.equal(options.candidateFilter({ libraryKey: 'user', itemKey: items[3].key, itemId: 4 }), false);
         return [2, 3].map((id, i) => ({
           libraryKey: 'user', itemKey: items[id - 1].key, itemId: id,
-          score: 1 - i * 0.1, textSource: 'summary', chunkText: `Evidence ${id}`,
+          score: 1 - i * 0.1, rawScore: 8 - i, textSource: 'summary', chunkText: `Evidence ${id}`,
         }));
       },
     } as any);
@@ -71,6 +73,8 @@ test('explicit Keyword uses scoped K50 without embeddings and preserves relative
     assert.equal(results[0].keywordScore, 1);
     assert.equal(results[1].keywordScore, results[1].rrfScore / results[0].rrfScore);
     assert.equal(results[0].semanticScore, null);
+    assert.equal(results[0].bm25Score, 8);
+    assert.equal(results[1].bm25Score, null, 'Quick-only result must not invent a BM25 score');
     assert.equal(results[0].chunkText, 'Evidence 2');
     assert.equal(captured.topK, 50, 'return cap does not shrink channel depth');
     assert.equal(typeof captured.candidateFilter, 'function');
@@ -120,7 +124,7 @@ test('paper Hybrid scans globally, excludes books before S50 and hydrates a K-on
   (semantic as any).store = {
     isReady: () => true,
     getAllCached: async () => { scans++; return chunks; },
-    searchText: async () => [{ ...winner, score: 1, chunkText: 'Wrong lexical snippet', textSource: 'note' }],
+    searchText: async () => [{ ...winner, score: 1, rawScore: 4.2, chunkText: 'Wrong lexical snippet', textSource: 'note' }],
     getChunkTexts: async () => new Map([['112:7', { text: 'Winning PDF passage', pdfAttachmentKey: 'PDF00001' }]]),
   };
   const hybrid = new HybridSearchEngine(semantic) as any;
@@ -136,6 +140,7 @@ test('paper Hybrid scans globally, excludes books before S50 and hydrates a K-on
   assert.equal(results[0].itemId, 112);
   assert.equal(results[0].semanticRank, null);
   assert.equal(results[0].source, 'both');
+  assert.equal(results[0].bm25Score, 4.2);
   assert.ok(Math.abs(results[0].rrfScore - (winner.embedding[0] + 0.05)) < 1e-8);
   assert.equal(results[0].textSource, 'content');
   assert.equal(results[0].chunkIndex, 7);

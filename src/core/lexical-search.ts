@@ -27,6 +27,8 @@ export interface LexicalSearchOptions {
 
 export interface LexicalMatch extends LexicalDocument {
   score: number;
+  /** Unnormalized BM25 score for diagnostics and downstream evidence. */
+  rawScore: number;
 }
 
 function increment(terms: Map<string, number>, term: string): void {
@@ -435,8 +437,10 @@ export class T0BM25Index {
       textSource: this.sourceStrings[this.sourceCodeCol[doc]],
       // The fusion consumes ranks, while UI/debug consumers historically
       // expect keyword relevance in [0, 1]. Normalizing by the query's best
-      // BM25 hit preserves order without exposing unbounded raw BM25 values.
+      // BM25 hit preserves order; rawScore exposes the unbounded value to
+      // diagnostic/API layers without changing the ranking contract.
       score: maxScore > 0 ? score / maxScore : 0,
+      rawScore: score,
     }));
   }
 

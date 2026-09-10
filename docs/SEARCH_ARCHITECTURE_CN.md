@@ -45,6 +45,8 @@ Plan 62 已接入启动末尾与现有“检查并更新索引”入口。BM25 �
 
 当前分支的搜索架构分为两层：索引模式决定可搜索的内容范围，搜索模式决定使用哪些召回通道。文献级 Hybrid 是默认入口；它先尝试身份导航，失败后并行执行语义检索和关键词检索，再用固定的有界关键词奖励排序。三个索引模式共用同一文献级公式，Full 不再为 Notes 或 PDF 预留固定名额。
 
+UI、MCP 和 REST 复用同一搜索引擎与文献级排序。三者的入口参数边界独立：UI 继续使用现有相似度偏好；MCP `search` 固定语义候选门槛为 0，不暴露 `min_similarity`（旧客户端发送该字段时忽略）；REST 继续保留 `minSimilarity` 参数及其原有偏好默认。MCP/REST 结果提供最终 `score`、原始 `semanticScore` 和原始未归一化 `bm25Score`，无对应计算或命中时为 `null`。
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                  SEARCH ARCHITECTURE OVERVIEW (ZotSeek-U)                   │
@@ -270,10 +272,10 @@ RRF 根据各路名次合并列表，不需要把原始分数归一到同一尺�
 - Q50 沿用 Quick 的前 100 个原始匹配及启发式重排；使用 quicksearch-everything，Note 匹配映射到父文献。L50 按索引模式限制 chunk 来源；book/库/collection 资格在取 TopK 前检查，不重拟合 BM25 的 IDF 统计。
 - 索引模式限制 Semantic/BM25 的文本来源；Quick 仍使用 Zotero 自身的 everything 范围，因此不是仅在 ZotSeek 的摘要或 Notes chunks 中匹配。
 - K50 分数为 `0.5/(10+rankQ)+0.5/(10+rankL)`，缺失一路贡献为零。最终公式使用 K50 的名次，不使用 BM25 归一化分值。
-- S50 受 minSimilarity 控制；完整语义分数表不受该展示阈值或 S50 截断影响。K50 独占候选仍读取真实 MaxSim。λ 固定为 0.05，不随语言、库、问句长短或旧自动权重设置变化。
+- UI/REST 的 S50 受各自 `minSimilarity` 设置控制；MCP 入口固定使用 0，因此不会因 UI 偏好提前丢弃语义候选。完整语义分数表不受该展示阈值或 S50 截断影响。K50 独占候选仍读取真实 MaxSim。λ 固定为 0.05，不随语言、库、问句长短或旧自动权重设置变化。
 - `abstract` 使用 summary/abstract/title_only；`notes` 再含 note；`full` 使用全部索引来源。Full 不拆 Notes/PDF 配额。默认两路各 50，可由内部 topK 选项调整；文献去重与并列按 libraryKey + itemKey。
 - 真正缺失有效向量时 semanticScore 保留 null，沿用零基值加词法奖励的兼容行为。这不是已通过离线效果验证的情形；完整向量覆盖是 66L 质量结论的边界。丢失条目以 item_not_found 返回；无法证明 collection 归属的失效身份不进入该 collection。
-- 分数字段 rrfScore 为兼容旧接口保留，实际存放上述融合分，可能超过 1；semanticScore 仍为真实余弦。keywordScore 在此路径是 Q/L RRF 分，不是概率。source=both 表示存在语义分且进入 K50；该语义分可能来自完整分数表而不在 S50 中，也不是置信度。
+- 分数字段 rrfScore 为兼容旧接口保留，实际存放上述融合分，可能超过 1；对外 `score` 是最终分，`semanticScore` 是原始未四舍五入的真实余弦/MaxSim，`bm25Score` 是最佳词法 chunk 的原始未归一化 BM25 分，无对应计算或命中时为 null。Keyword 不为补齐 semanticScore 调用语义检索；find_similar 为语义结果，bm25Score 为 null。keywordScore 在 UI 路径是 Q/L RRF 的相对展示分，不是概率。MCP/REST 与 UI 共用排序但入口门槛可不同；原始 BM25 分不能跨查询当作置信度。source=both 表示存在语义分且进入 K50；该语义分可能来自完整分数表而不在 S50 中，也不是置信度。
 - K-only 文献先确定最佳语义块，再补齐该块的文字/Note 路径/PDF 来源和页码，禁止把词法片段配到另一块的页码。
 
 后续独立 Keyword 已接入上述 Q/L K50；显式 Semantic 及多查询组合逻辑不变。本次不把文献级实验外推为 passage 排序实验：passages/location 暂留兼容路径（Abstract 语义、Notes RRF、Full 分来源合并），UI 与 MCP 对相同粒度使用同一引擎。后续统一 passage 排序需独立设计与验收。

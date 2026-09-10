@@ -12,7 +12,7 @@
  * reliability under the esbuild IIFE bundle.
  */
 import {
-  runSearchTool,
+  runMcpSearchTool,
   runFindSimilarTool,
   runIndexStatusTool,
   runGetItemTool,
@@ -36,13 +36,18 @@ const TOOL_DEFINITIONS = [
     name: 'search',
     description:
       "Search the user's Zotero library by keywords, semantic similarity or Hybrid ranking. " +
-      'Start with hybrid/papers for literature discovery; use get_item to read complete evidence. ' +
+      'Start with hybrid/papers and 10 results. Turn informal requests into focused queries, preserving ' +
+      'research objects, relationships and reliable clues. Do not invent missing details or turn uncertain ' +
+      'years into hard filters. An acronym alone does not make a relationship question a keyword query. ' +
+      'Read the results before deciding to stop, request more, search a missing angle, or use get_item ' +
+      'to verify selected papers. Do not routinely run every mode or translate every query. ' +
+      'When assessing results, check the user\'s research objects, relationships and material constraints, not just topical similarity. ' +
       'Returns ranked results with bounded matched text ' +
       'excerpts and page numbers where available. Each resolvable result also ' +
       'includes structured metadata with the full creator list, date, journal ' +
       'or book title, volume, issue, pages, DOI, and other citation fields. ' +
       'Use these fields when the user requests a bibliography or a citation ' +
-      'style such as APA. Resolvable results carry available ' +
+      'style such as APA; do not guess missing or conflicting bibliographic details. Resolvable results carry available ' +
       'zotero:// deep links: links.select opens the item in Zotero, ' +
       'links.openPdf opens the PDF at the matched page — include them when ' +
       'citing results to the user. If your client does not render zotero:// ' +
@@ -52,7 +57,10 @@ const TOOL_DEFINITIONS = [
       'Keyword search does not request query embeddings. ' +
       'Paper Hybrid content scores are semantic MaxSim plus a bounded lexical bonus, possibly above 1, ' +
       'not probabilities. Keyword scores are equal Quick/BM25 RRF with k=10, not the normalized UI percentage. ' +
-      'Semantic scores are cosine similarities; identity navigation and ' +
+      'semanticScore is the unrounded cosine similarity and bm25Score is the unnormalized BM25 score; ' +
+      'null means that component was not computed or did not match. These fields do not trigger extra searches. ' +
+      'Use excerpts and source evidence to assess relevance, not scores as confidence. ' +
+      'Identity navigation and ' +
       'passage paths retain their own score conventions. Compare scores only within the same query and policy.',
     inputSchema: {
       type: 'object',
@@ -72,22 +80,11 @@ const TOOL_DEFINITIONS = [
           enum: ['hybrid', 'semantic', 'keyword'],
           default: 'hybrid',
           description:
-            'hybrid = the same ranking engine as the UI. Papers first attempt explicit identity navigation; ' +
-            'content queries independently retrieve semantic S50 and lexical K50 (equal Quick/BM25 RRF, k=10), ' +
-            'then rank their union by MaxSim + 0.05*11/(10+rankK50), with no bonus outside K50. ' +
-            'Abstract/Notes/Full follow the configured indexing sources without reserved source slots. ' +
-            'Legacy automatic weights do not change this formula. semantic is an explicit override; ' +
-            'keyword returns the same Q/L K50 ranking without semantic retrieval or Hybrid identity navigation.',
-        },
-        min_similarity: {
-          type: 'number',
-          minimum: 0,
-          maximum: 1,
-          description:
-            'Semantic candidate threshold (0-1). Omit to inherit the ZotSeek preference: shipped default 0.7, ' +
-            'current fallback 0.3 if unreadable or invalid. In paper Hybrid content retrieval this filters S50 only; ' +
-            'K50 results may fall below it. Not a final Hybrid score floor or confidence cutoff. ' +
-            'Does not filter identity-navigation hits and has no effect in keyword mode.',
+            'hybrid = default, sharing the UI ranking engine and combining semantic matching with keyword evidence; ' +
+            'papers also support explicit title/DOI identity navigation. ' +
+            'semantic = semantic matching only. keyword = Quick Search and BM25 without query embeddings; ' +
+            'suited to actual term/phrase queries, not chosen merely because a research question contains an acronym. ' +
+            'Semantic and BM25 follow the configured indexing sources; Quick Search uses Zotero searchable fields.',
         },
         granularity: {
           type: 'string',
@@ -134,7 +131,12 @@ const TOOL_DEFINITIONS = [
   {
     name: 'get_item',
     description:
-      'Read one Zotero parent item by stable library_key + item_key. Returns a normalized metadata snapshot and attachment list; optionally includes complete, unfiltered Child Notes and exact PDF pages or full text. PDF reads use the exact attachment selected during Full indexing when available, prefer Zotero\'s full-text cache, and fall back to one batched PDFWorker call. Read-only and local.',
+      'Read one Zotero parent item by stable library_key + item_key. Returns a normalized metadata snapshot and attachment list; optionally includes complete, unfiltered Child Notes and exact PDF pages or full text. ' +
+      'For a selected search hit, begin with its matched PDF page and necessary adjacent pages; request full text when the question requires it. ' +
+      'Verify passages supporting key claims before issuing near-duplicate searches. ' +
+      'PDF content is extracted text, not a faithful rendering: Greek letters, mathematical symbols, superscripts, subscripts, column order and tables may be incorrect. ' +
+      'Do not guess missing symbols or treat extraction artifacts as the paper\'s claims. Distinguish the source\'s direct claims, studies reported by a review, and your own inference; identify background or insufficient evidence and cite material actually read. ' +
+      'PDF reads use the exact attachment selected during Full indexing when available, prefer Zotero\'s full-text cache, and fall back to one batched PDFWorker call. Read-only and local.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -236,7 +238,7 @@ async function callTool(id: any, params: any): Promise<EndpointResponse> {
   let payload: any;
   try {
     if (name === 'search') {
-      payload = await runSearchTool(args);
+      payload = await runMcpSearchTool(args);
     } else if (name === 'get_item') {
       payload = await runGetItemTool(args);
     } else if (name === 'find_similar') {
