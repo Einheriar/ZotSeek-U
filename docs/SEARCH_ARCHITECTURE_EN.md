@@ -8,7 +8,7 @@ A comprehensive guide to how semantic and hybrid search works in ZotSeek.
 
 ## Plan 62 implementation status (2026-09-09)
 
-For the 2026-09-10 branch prototype, “Current paper-level Hybrid” is authoritative. Historical diagrams and old S/K RRF examples do not describe the current paper default.
+For the 2026-09-10 paper-level implementation (merged to main in `211b22e`), “Current paper-level Hybrid” is authoritative. Historical diagrams and old S/K RRF examples do not describe the current paper default.
 
 Plan 62 prepares BM25 after startup maintenance and through Check and update index. Searches wait for shared preparation. Matching snapshots load; misses release old memory before rebuilding, without dual versions. Ordinary additions, edits and deletions may retain session-stale content. Missing items return item_not_found, localized at the UI boundary. Vector and identity caches still invalidate immediately.
 
@@ -45,7 +45,7 @@ Plan 62 prepares BM25 after startup maintenance and through Check and update ind
 
 ## Overview
 
-The current branch has two layers. The indexing mode determines which content is searchable; the search mode determines which retrieval channels run. Paper-level Hybrid is the default: it tries identity navigation first, then runs semantic and keyword retrieval in parallel and applies a fixed bounded lexical bonus. All three indexing modes share one paper-level formula, and Full no longer reserves Notes or PDF slots.
+The current architecture has two layers. The indexing mode determines which content is searchable; the search mode determines which retrieval channels run. Paper-level Hybrid is the default: it tries identity navigation first, then runs semantic and keyword retrieval in parallel and applies a fixed bounded lexical bonus. All three indexing modes share one paper-level formula, and Full no longer reserves Notes or PDF slots.
 
 UI, MCP and REST reuse the same search engine and paper-level ranking. Their entry parameter boundaries are independent: the UI keeps its existing similarity preference; MCP `search` uses a fixed semantic candidate threshold of 0 and does not expose `min_similarity` (an older client-supplied field is ignored); REST keeps its existing `minSimilarity` parameter and preference-based default. MCP/REST results expose the final `score`, raw `semanticScore` and raw unnormalized `bm25Score`; a value is `null` when that channel was not computed or produced no match.
 
@@ -249,7 +249,7 @@ RRF combines ranked lists without putting raw scores on a common scale, but k an
 
 > The "KEYWORD BRANCH" on the right of the diagram is not plain metadata search: it merges hits from **T0 BM25** (over locally indexed chunk text) and **Zotero quicksearch** (metadata + heuristic re-ranking) per item; the merge rules are in [Query Analysis](#query-analysis).
 
-### Current paper-level Hybrid (Plan 66P, branch prototype)
+### Current paper-level Hybrid (Plan 66P)
 
 After the existing identity-navigation gate declines a query, all three indexing modes share this contract. S is paper MaxSim over all eligible scoped vector chunks; lexical retrieval does not shortlist the papers for the semantic scan.
 
@@ -326,7 +326,7 @@ Conclusions readable directly from the figures:
 - On the Metadata + Notes mode the current Hybrid reaches R@10 0.87 / MRR 0.817, the best of
   this track; BM25 alone already hits 0.87 — the T0 lexical upgrade is the main gain behind the
   current Hybrid versus the legacy Hybrid (MRR 0.549).
-- On the abstract mode lexical evidence was too weak in that historical run: the old Hybrid front rank (R@1 0.06) dropped below pure semantic (0.22). This describes the old candidates and formula; it does not mean the current branch defaults paper-level `abstract` Hybrid to semantic-only.
+- On the abstract mode lexical evidence was too weak in that historical run: the old Hybrid front rank (R@1 0.06) dropped below pure semantic (0.22). This describes the old candidates and formula; it does not mean the current implementation defaults paper-level `abstract` Hybrid to semantic-only.
 - Only clusters containing PDF text achieve high recall on FT questions: the PDF-only cluster
   reaches R@10 0.73 while Metadata + Notes stays at 0.41-0.44; Full mode under the historical
   `FIXED-NOTES-2-8` source-slot contract reached FT R@10 0.78 / MRR 0.499. That source allocation is no longer the paper-level Full Hybrid contract.
@@ -1619,7 +1619,7 @@ Upstream once compared maxTokens=512 vs 2000 with citation pairs (A cites B as g
 
 ## Summary
 
-ZotSeek's search combines three mechanisms:
+ZotSeek's search combines three retrieval mechanisms and three supporting layers:
 
 1. **Identity navigation** — exact DOI / title / author queries resolve directly from Zotero metadata, validated through the original Zotero Search gate
 2. **Semantic understanding** — AI embeddings capture meaning, with R1 breadcrumbs adding document structure

@@ -133,11 +133,11 @@ Plan 60 compatibility fixes advance the lexical contract to v2: recover Latin te
 | `notes` | after identity navigation, Metadata + Notes S50 ∪ K50 with bounded bonus |
 | `full` | after identity navigation, all-source S50 ∪ K50 with bounded bonus, no source quotas |
 
-The 2026-09-10 Plan 66P branch prototype unifies paper-level UI / MCP / REST ranking as `S + 0.05*11/(10+rankK50)`. S is real MaxSim retained from an independent scoped scan; K50 combines Quick/BM25 ranks with equal weights and k=10. Eligibility precedes top-K; the semantic score table is not threshold-truncated; K-only semantic winners are hydrated on demand. Legacy weight settings do not affect this formula. Explicit Keyword/Semantic, multi-query aggregation and passage compatibility paths are not redesigned here. Truly missing vectors retain a zero-baseline compatibility behavior outside the validated offline quality conclusions. See the search architecture for formulas, fields and boundaries.
+The 2026-09-10 Plan 66P implementation (merged to main in `211b22e`) unifies paper-level UI / MCP / REST ranking as `S + 0.05*11/(10+rankK50)`. S is real MaxSim retained from an independent scoped scan; K50 combines Quick/BM25 ranks with equal weights and k=10. Eligibility precedes top-K; the semantic score table is not threshold-truncated; K-only semantic winners are hydrated on demand. Legacy weight settings do not affect this formula. Explicit Keyword/Semantic, multi-query aggregation and passage compatibility paths are not redesigned here. Truly missing vectors retain a zero-baseline compatibility behavior outside the validated offline quality conclusions. See the search architecture for formulas, fields and boundaries.
 
 Initial vector-cache decoding now yields on an approximately 8 ms budget, preserving normalization arithmetic and concurrent publication checks, with no schema, dependency or disk-file additions. Production fusion matches 1,080 frozen cells; K50 matches 180 Q/L cells. In one isolated 57,523-chunk cache component comparison, the maximum timer gap fell from 1.725 s to 0.763 s while total loading changed from 5.808 s to 6.344 s. This does not establish lower full UI latency.
 
-Additional real-window acceptance on 2026-09-10: the development proxy loaded this branch build against the existing Notes index and real cloud query embeddings. Mode switching, English short keywords, a Chinese research-relation query, full-title navigation, summary/note hover previews, opening a selected item and empty results were checked without blocking issues. This round does not cover Full PDF page navigation, HTTP transport or complete cold-start performance; the source strategy remains unchanged.
+Additional real-window acceptance on 2026-09-10: the development proxy loaded this build against the existing Notes index and real cloud query embeddings. Mode switching, English short keywords, a Chinese research-relation query, full-title navigation, summary/note hover previews, opening a selected item and empty results were checked without blocking issues. This round does not cover Full PDF page navigation, HTTP transport or complete cold-start performance; the source strategy remains unchanged.
 
 ### 6.4 Queries and caching
 
@@ -147,7 +147,7 @@ Additional real-window acceptance on 2026-09-10: the development proxy loaded th
 
 ### 6.5 Performance work
 
-Narrow-projection vector cache for the active model (base64 decoded straight into `Float32Array` and normalized in place), in-flight query-embedding sharing for identical model+query, a single shared vector pass for the two semantic specialists in Full mode, and `metadata-identity-cache.ts` — a compact identity snapshot (stable identity + title + DOI + year + creators, never holding `Zotero.Item`, 32 MiB cap, conservatively invalidated whole-snapshot by the Notifier). Median hot-query latency on the real 150-paper Full corpus dropped from ~3.05s to ~1.33s; known cold-build and memory costs are recorded in the architecture document.
+Narrow-projection vector cache for the active model (base64 decoded straight into `Float32Array` and normalized in place), in-flight query-embedding sharing for identical model+query, and `metadata-identity-cache.ts` — a compact identity snapshot (stable identity + title + DOI + year + creators, never holding `Zotero.Item`, 32 MiB cap, conservatively invalidated whole-snapshot by the Notifier). Paper-level Full Hybrid now runs one scoped semantic pass (no Notes/PDF specialist split); `searchPartitions()` source specialists and their shared vector traversal remain for the `passages` compatibility path. Median hot-query latency on the real 150-paper Full corpus dropped from ~3.05s to ~1.33s; known cold-build and memory costs are recorded in the architecture document.
 
 ## 7. Embedding and Models [Shipped]
 
@@ -255,7 +255,7 @@ On top of upstream's `search` / `find_similar` / `index_status` (full usage in [
 
 ### 13.1 Implemented core modules [Shipped (module level)]
 
-The brief feature's server-side core is in the source tree, but the end-to-end entry points are not open yet:
+The brief feature's server-side core plus its settings/item entry points are committed (`108552c`) and default off; real-Zotero end-to-end and paid-generation acceptance are not complete yet:
 
 - The model is pinned to Bailian `deepseek-v4-flash-0731` (OpenAI-compatible endpoint, thinking mode on, `max_completion_tokens` with a default 16384 output budget).
 - A title/abstract forced-choice classifier distinguishes `review` / `standard` papers (stable machine values; ambiguous samples default to `standard`) with its own call budget.
@@ -266,7 +266,7 @@ The brief feature's server-side core is in the source tree, but the end-to-end e
 
 ### 13.2 In-progress closed-loop design [In progress]
 
-The approved full generation loop is being implemented (parts such as `brief-source-builder` / `brief-generation-runner` / `brief-note-writer` and the settings entries have landed; the end-to-end loop and runtime acceptance are not complete):
+The full generation loop below is implemented and committed (`108552c`); its real-Zotero end-to-end and paid-generation acceptance are not complete yet:
 
 - A "Briefs" collapsible section after "Search" in the preferences pane with a master switch (`zotseek.brief.enabled`, default off).
 - A dedicated wizard dialog collects domain / output language and lets the LLM rewrite personal prompts from the bundled templates; the default templates are downloaded automatically and a controlled paired copy is enabled; advanced users may edit and import.
@@ -278,7 +278,7 @@ The approved full generation loop is being implemented (parts such as `brief-sou
 ### 14.1 Tests and validation
 
 - `npm test`: Node's built-in test runner over 50+ test files in `test/`, using `helpers/zotero-stub.ts` to stub the Zotero API; covers chunker, model registry / input config / input policy, worker input preparation, collection resolution, mode-transition reuse, Cloud contracts and other pure-logic modules.
-- The search engine and hybrid search are **deliberately not unit tested**: mocked embeddings and items only produce tests that always pass; retrieval quality is the eval framework's job (that framework is not yet in the repository — a known gap).
+- The paper-level Hybrid fusion contract (candidate union, eligibility before top-K, K50 ranks, bounded bonus, stable identity, missing vectors, snippet location and cache-invalidation concurrency) is covered by Node unit tests (`hybrid-bounded-runtime.test.ts`, `hybrid-search-policy.test.ts`, `search-policy.test.ts`, `lexical-search.test.ts`, `mcp-search-contract.test.ts`); mocked embeddings and items still cannot judge retrieval quality, which remains the eval framework's job (that framework is not yet in the repository — a known gap).
 - `npm run typecheck`: checks both `src/` and `test/` via `tsconfig.test.json`, with `scripts/typecheck-baseline.json` guarding known baselines against regressions.
 - `npm run check:versions` validates version consistency across `package.json` / `manifest.json` / `update.json`; CI runs only that check.
 - `src/dev/suites/` is the self-test harness that needs a real Zotero (27 MCP scenarios, model loading, database integrity, etc.) and cannot be replaced by Node mocks.
@@ -300,7 +300,7 @@ After that, each cycle is: edit sources → `npm run build` → quit Zotero comp
 
 ## 15. Release and Versioning Strategy
 
-- The fork keeps its own version sequence (`1.19.55x` / `1.20.55x`) to stay distinguishable from upstream; three-way version consistency is guarded by `check:versions`.
+- The fork keeps its own version sequence: since the 2026-09-06 ZotSeek-U rebrand it is reset to `0.1.0`, clearly distinct from upstream `1.19.x` / `1.20.x`; three-way consistency across `package.json` / `manifest.json` / `update.json` is guarded by `check:versions`.
 - Embedding model weights are not committed to Git (the E5 ONNX is ~266MB and `.gitignore`d); release XPIs on GitHub must bundle the default model weights; daily development always uses the dev proxy, and XPIs are only for testing packaging or releases.
 - No standing promise to track upstream; upstream integrations are evaluated case by case (most recently v1.20.0).
 - `bootstrap.js` disabling background auto-update is a fork self-protection measure — do not remove it without an explicit reason.

@@ -45,7 +45,7 @@ Any other MCP client that supports the HTTP transport works the same way (for ex
 
 ## MCP Tools
 
-Documentation alignment (2026-09-10, search-strategy branch): the behavior below describes the current MCP contract. The `tools/list` search descriptions in `src/server/mcp-endpoint.ts` are aligned with this documentation. Restart Zotero to load the rebuilt plugin, then have the MCP client refresh its tool definitions.
+Documentation alignment (2026-09-10; merged to main in `211b22e`): the behavior below describes the current MCP contract. The `tools/list` search descriptions in `src/server/mcp-endpoint.ts` are aligned with this documentation. Restart Zotero to load the rebuilt plugin, then have the MCP client refresh its tool definitions.
 
 | Tool | Arguments | Returns |
 |------|-----------|---------|

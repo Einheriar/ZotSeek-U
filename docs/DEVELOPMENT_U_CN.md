@@ -133,11 +133,11 @@ Plan 60 兼容修补将词法契约更新为 v2：对实际合并的韩英片段
 | `notes` | 身份导航后，Metadata + Notes 范围 S50 ∪ K50 有界加分 |
 | `full` | 身份导航后，全范围 S50 ∪ K50 有界加分，不设来源配额 |
 
-2026-09-10 的 Plan 66P 分支原型将文献级 UI / MCP / REST 统一为 `S + 0.05*11/(10+rankK50)`。S 为全范围独立扫描留下的真实 MaxSim；K50 为 Quick/BM25 两路等权、k=10 的 RRF。资格在 TopK 前检查，语义分数表不受候选阈值截断，K-only 最佳语义片段按需补齐。旧权重配置不影响该公式。显式 Keyword/Semantic、多查询组合与 passages 兼容路径不在本轮重设计；真正缺失向量的零基值兼容行为不属于已验证的离线质量结论。详细公式、字段含义和边界见搜索架构文档。
+2026-09-10 的 Plan 66P 实现（已合入 main 并推送，`211b22e`）将文献级 UI / MCP / REST 统一为 `S + 0.05*11/(10+rankK50)`。S 为全范围独立扫描留下的真实 MaxSim；K50 为 Quick/BM25 两路等权、k=10 的 RRF。资格在 TopK 前检查，语义分数表不受候选阈值截断，K-only 最佳语义片段按需补齐。旧权重配置不影响该公式。显式 Keyword/Semantic、多查询组合与 passages 兼容路径不在本轮重设计；真正缺失向量的零基值兼容行为不属于已验证的离线质量结论。详细公式、字段含义和边界见搜索架构文档。
 
 首次向量缓存增加按约 8 ms 预算让出事件循环的解码调度，保留原归一化数值与并发发布检查；不增加 schema、依赖或磁盘文件。生产公式重放 1,080 个冻结单元一致，180 个 Q/L 单元的 K50 一致。隔离 57,523 块缓存组件的最长计时器间隔由 1.725 s 降到 0.763 s，而总加载由 5.808 s 变为 6.344 s；不据此宣称完整 UI 延迟下降。
 
-2026-09-10 补充真实窗口验收：开发代理加载上述分支构建，在现有 Notes 索引及真实云查询 Embedding 下，三种搜索模式切换、英文短词、中文研究关系问句、完整标题导航、摘要/笔记悬停预览、打开选中项和空结果状态均完成检查，未发现阻断问题。该轮不覆盖 Full PDF 页码跳转、HTTP 传输层或完整冷启动性能；源码策略保持不变。
+2026-09-10 补充真实窗口验收：开发代理加载上述构建，在现有 Notes 索引及真实云查询 Embedding 下，三种搜索模式切换、英文短词、中文研究关系问句、完整标题导航、摘要/笔记悬停预览、打开选中项和空结果状态均完成检查，未发现阻断问题。该轮不覆盖 Full PDF 页码跳转、HTTP 传输层或完整冷启动性能；源码策略保持不变。
 
 ### 6.4 查询与缓存
 
@@ -147,7 +147,7 @@ Plan 60 兼容修补将词法契约更新为 v2：对实际合并的韩英片段
 
 ### 6.5 性能优化
 
-活动模型窄投影向量缓存（base64 直接解码 `Float32Array` 并原地归一化）、相同模型相同查询共享在途 query embedding、Full 模式 Notes/PDF 两个语义 specialist 共享一次向量遍历、`metadata-identity-cache.ts` 紧凑身份快照（稳定身份 + 标题 + DOI + 年份 + creator，不持有 `Zotero.Item`，32 MiB 上限，Notifier 保守整份失效）。当前真实 150 篇 Full 语料的热查询中位数从约 3.05s 降至约 1.33s；冷构建与内存的已知成本记录见架构文档。
+活动模型窄投影向量缓存（base64 直接解码 `Float32Array` 并原地归一化）、相同模型相同查询共享在途 query embedding、`metadata-identity-cache.ts` 紧凑身份快照（稳定身份 + 标题 + DOI + 年份 + creator，不持有 `Zotero.Item`，32 MiB 上限，Notifier 保守整份失效）。文献级 Full Hybrid 现为一次全范围语义扫描（不再拆分 Notes/PDF specialist）；`searchPartitions()` 的来源 specialist 与共享向量遍历仍服务于 `passages` 兼容路径。当前真实 150 篇 Full 语料的热查询中位数从约 3.05s 降至约 1.33s；冷构建与内存的已知成本记录见架构文档。
 
 ## 7. Embedding 与模型 [已上线]
 
@@ -255,7 +255,7 @@ MCP 工具说明补充通用证据判断提醒：判断结果时保留用户的�
 
 ### 13.1 已实现的核心模块 [已上线（模块级）]
 
-简报功能的服务端核心已进入源码，但端到端入口尚未开放：
+简报功能的服务端核心与设置/条目入口已进入源码并提交（`108552c`），默认关闭；真实 Zotero 端到端与付费生成验收尚未完成：
 
 - 模型固定为百炼 `deepseek-v4-flash-0731`（OpenAI 兼容端点、思考模式开启、`max_completion_tokens` 默认 16384 输出预算）。
 - 标题/摘要迫选分类器区分 `review` / `standard` 两类文献（稳定机器值，模糊样本默认 `standard`），分类调用独立预算。
@@ -266,7 +266,7 @@ MCP 工具说明补充通用证据判断提醒：判断结果时保留用户的�
 
 ### 13.2 进行中的闭环设计 [进行中]
 
-以下为已批准的完整生成闭环，实现正在推进（工作区已有未提交的 `brief-source-builder` / `brief-generation-runner` / `brief-note-writer` / 设置入口等改动），端到端闭环与实机验收尚未完成：
+以下完整生成闭环已实现并提交（`108552c`），端到端闭环的真实 Zotero 与付费生成验收尚未完成：
 
 - 设置页"搜索"后新增"简报"折叠栏目与总开关（`zotseek.brief.enabled`，默认关闭）。
 - 独立弹窗收集领域 / 输出语言等信息，由 LLM 基于内置双模板改写个人提示词；自动下载默认模板并保存受控副本成对启用，高级用户可编辑后导入。
@@ -278,7 +278,7 @@ MCP 工具说明补充通用证据判断提醒：判断结果时保留用户的�
 ### 14.1 测试与验证
 
 - `npm test`：Node 内建 test runner，`test/` 下 50+ 个测试文件，通过 `helpers/zotero-stub.ts` 模拟 Zotero API；覆盖 chunker、模型注册表 / 输入契约 / 输入策略、Worker 输入准备、collection 解析、索引模式切换复用、Cloud 契约等纯逻辑模块。
-- 搜索引擎与 hybrid 搜索**有意不做单元测试**：mock 嵌入与条目只能产出恒真的测试，检索质量归 eval 框架管（该框架尚不在仓库内，是已知缺口）。
+- 文献级 Hybrid 的融合合同（候选并集、资格前置、K50 名次、有界加分、稳定身份、缺失向量、片段定位与缓存并发失效）已有 Node 单元测试覆盖（`hybrid-bounded-runtime.test.ts`、`hybrid-search-policy.test.ts`、`search-policy.test.ts`、`lexical-search.test.ts`、`mcp-search-contract.test.ts`）；但 mock 嵌入与条目无法判断检索质量，检索质量仍归 eval 框架管（该框架尚不在仓库内，是已知缺口）。
 - `npm run typecheck`：基于 `tsconfig.test.json` 同时检查 `src/` 与 `test/`，配合 `scripts/typecheck-baseline.json` 已知基线防回退。
 - `npm run check:versions` 校验 `package.json` / `manifest.json` / `update.json` 版本一致性；CI 仅运行该检查。
 - `src/dev/suites/` 是需要真实 Zotero 的 self-test harness（MCP 27 场景、模型加载、数据库完整性等），不能用 Node mock 替代。
@@ -300,7 +300,7 @@ MCP 工具说明补充通用证据判断提醒：判断结果时保留用户的�
 
 ## 15. 发布与版本策略
 
-- fork 使用独立版本号序列（`1.19.55x` / `1.20.55x`）与上游区分；三处版本一致性由 `check:versions` 守护。
+- fork 使用独立版本号序列：自 2026-09-06 品牌化为 ZotSeek-U 起重置为 `0.1.0`，与上游 `1.19.x` / `1.20.x` 明确区分；`package.json` / `manifest.json` / `update.json` 三处版本一致性由 `check:versions` 守护。
 - Embedding 模型权重不入 Git（E5 ONNX 约 266MB 已在 `.gitignore`）；GitHub Release 的 XPI 必须内含默认模型权重；日常开发一律走 dev proxy，XPI 仅用于测试打包行为或发布。
 - 不默认承诺与上游同步；上游整合按需评估、逐案执行（最近一次为 v1.20.0）。
 - `bootstrap.js` 禁用后台自动更新是 fork 的自我保护，无明确理由不得移除。

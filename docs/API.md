@@ -47,7 +47,7 @@ const results = await Zotero.ZotSeek.api.search("transformer attention mechanism
 |-----------|------|---------|-------------|
 | `query` | `string` | *(required)* | Natural language search query |
 | `options.topK` | `number` | `20` | Maximum number of results |
-| `options.minSimilarity` | `number` | `0.3` | Minimum cosine similarity threshold (0–1) |
+| `options.minSimilarity` | `number` | `0.7` | Minimum cosine similarity threshold (0–1) |
 | `options.libraryId` | `number` | — | Restrict search to a specific library |
 | `options.excludeItemIds` | `number[]` | — | Item IDs to exclude from results |
 | `options.textSources` | `string[]` | — | Restrict matching to specific chunk sources (e.g. `"note"`, `"summary"`, `"methods"`, `"findings"`, `"content"`, `"fulltext"`) |
@@ -114,7 +114,7 @@ await Zotero.ZotSeek.api.indexItems(items);
 
 **Returns:** `Promise<void>`
 
-Items that are already indexed (matching content hash) are skipped. Progress is saved in checkpoints every ~25 items, so it's safe to interrupt.
+Items that are already indexed (matching content hash) are skipped. Progress is saved in checkpoints every 10 items, so it's safe to interrupt.
 
 ### `getStats()`
 
