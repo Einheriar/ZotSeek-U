@@ -129,11 +129,15 @@ Plan 60 compatibility fixes advance the lexical contract to v2: recover Latin te
 
 | Indexing mode | Default strategy |
 |---|---|
-| `abstract` | after identity navigation, semantic-only for regular content |
-| `notes` | after identity navigation, R1 semantic + T0 BM25 with fixed RRF fusion (H1) |
-| `full` | after identity navigation, top two from the Notes channel + PDF semantic results deduplicated to fill the remaining eight, backfilled from Notes when PDF is short |
+| `abstract` | after identity navigation, abstract-scoped S50 ∪ K50 with bounded bonus |
+| `notes` | after identity navigation, Metadata + Notes S50 ∪ K50 with bounded bonus |
+| `full` | after identity navigation, all-source S50 ∪ K50 with bounded bonus, no source quotas |
 
-UI / MCP / REST share the same strategy routing (`src/core/search-policy.ts`). Semantic MaxSim and BM25 lexical sides are source-isolated (the Notes side does not ingest PDF term frequencies; the PDF side is not crowded out by Note chunks). A query-analysis-driven automatic weighting heuristic from upstream is retained.
+The 2026-09-10 Plan 66P branch prototype unifies paper-level UI / MCP / REST ranking as `S + 0.05*11/(10+rankK50)`. S is real MaxSim retained from an independent scoped scan; K50 combines Quick/BM25 ranks with equal weights and k=10. Eligibility precedes top-K; the semantic score table is not threshold-truncated; K-only semantic winners are hydrated on demand. Legacy weight settings do not affect this formula. Explicit Keyword/Semantic, multi-query aggregation and passage compatibility paths are not redesigned here. Truly missing vectors retain a zero-baseline compatibility behavior outside the validated offline quality conclusions. See the search architecture for formulas, fields and boundaries.
+
+Initial vector-cache decoding now yields on an approximately 8 ms budget, preserving normalization arithmetic and concurrent publication checks, with no schema, dependency or disk-file additions. Production fusion matches 1,080 frozen cells; K50 matches 180 Q/L cells. In one isolated 57,523-chunk cache component comparison, the maximum timer gap fell from 1.725 s to 0.763 s while total loading changed from 5.808 s to 6.344 s. This does not establish lower full UI latency.
+
+Additional real-window acceptance on 2026-09-10: the development proxy loaded this branch build against the existing Notes index and real cloud query embeddings. Mode switching, English short keywords, a Chinese research-relation query, full-title navigation, summary/note hover previews, opening a selected item and empty results were checked without blocking issues. This round does not cover Full PDF page navigation, HTTP transport or complete cold-start performance; the source strategy remains unchanged.
 
 ### 6.4 Queries and caching
 

@@ -71,6 +71,8 @@ export interface SearchOptions {
   minSimilarity?: number;
   libraryId?: number;
   excludeItemIds?: number[];
+  /** Internal scope eligibility, evaluated before MaxSim and top-K. */
+  candidateFilter?: (identity: { libraryKey: string; itemKey: string; itemId?: number }) => boolean;
   textSources?: TextSourceType[];
   returnAllChunks?: boolean;  // If true, return all matching chunks instead of MaxSim aggregation
 }
@@ -84,7 +86,7 @@ export interface SearchPartitionOptions {
 
 export type SearchPartitionCommonOptions = Omit<SearchOptions, 'topK' | 'textSources'>;
 
-const DEFAULT_OPTIONS: Required<Omit<SearchOptions, 'libraryId' | 'excludeItemIds' | 'textSources'>> = {
+const DEFAULT_OPTIONS: Required<Omit<SearchOptions, 'libraryId' | 'excludeItemIds' | 'textSources' | 'candidateFilter'>> = {
   topK: 20,
   minSimilarity: 0.7,
   returnAllChunks: false,
@@ -181,7 +183,8 @@ export class SearchEngine {
   /** Exact lexical search over ZotSeek's stored chunk text, without model I/O. */
   async searchIndexedText(
     query: string,
-    options: { topK?: number; libraryId?: number; textSources?: TextSourceType[] } = {}
+    options: { topK?: number; libraryId?: number; textSources?: TextSourceType[];
+      candidateFilter?: SearchOptions['candidateFilter'] } = {}
   ): Promise<IndexedTextMatch[]> {
     const store = this.getStore();
     if (!store.isReady()) await store.init();
@@ -189,6 +192,7 @@ export class SearchEngine {
       limit: options.topK,
       libraryId: options.libraryId,
       textSources: options.textSources,
+      candidateFilter: options.candidateFilter,
     });
   }
 
@@ -207,6 +211,7 @@ export class SearchEngine {
       minSimilarity: opts.minSimilarity,
       libraryId: opts.libraryId,
       excludeItemIds: opts.excludeItemIds,
+      candidateFilter: opts.candidateFilter,
       returnAllChunks: opts.returnAllChunks,
     });
     return partitions.get('default') ?? [];
@@ -319,6 +324,7 @@ export class SearchEngine {
     }
 
     for (const chunk of embeddings) {
+      if (opts.candidateFilter && !opts.candidateFilter(chunk)) continue;
       if (!chunk.embedding || chunk.embedding.length === 0) continue;
       let similarity: number | undefined;
       for (const partition of accumulators) {
@@ -358,7 +364,7 @@ export class SearchEngine {
       for (const partition of accumulators) {
         scoresByPartition.set(
           partition.options.key,
-          this.itemSimilaritiesToScoreTable(partition.itemResults, opts.minSimilarity),
+          this.itemSimilaritiesToScoreTable(partition.itemResults),
         );
       }
     }
@@ -786,11 +792,9 @@ export class SearchEngine {
 
   private itemSimilaritiesToScoreTable(
     itemResults: Map<number, ItemSimilarity>,
-    minSimilarity: number,
   ): SemanticScoreTable {
     const table: SemanticScoreTable = new Map();
     for (const item of itemResults.values()) {
-      if (item.maxSimilarity < minSimilarity) continue;
       const key = `${item.libraryKey}|${item.itemKey}`;
       const existing = table.get(key);
       if (existing && existing.similarity >= item.maxSimilarity) continue;
@@ -941,7 +945,7 @@ export class SearchEngine {
    * chunk's text from the store. Best-effort: failures leave chunkText
    * undefined (the UI simply shows no snippet for that row).
    */
-  private async populateChunkText(results: SearchResult[]): Promise<void> {
+  async populateChunkText(results: SearchResult[]): Promise<void> {
     if (results.length === 0) return;
 
     const store = this.getStore();

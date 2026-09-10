@@ -52,7 +52,7 @@ export interface HybridSearchResult {
 
   // Scores from different sources
   semanticScore: number | null;    // Cosine similarity (0-1)
-  keywordScore: number | null;     // Normalized keyword relevance
+  keywordScore: number | null;     // Q/L RRF in paper Hybrid; legacy relevance otherwise
 
   // Combined score (kept under the legacy field name for UI/API compatibility)
   rrfScore: number;
@@ -283,11 +283,23 @@ export class HybridSearchEngine {
     }
 
     const indexingMode = this.resolveIndexingMode(opts.indexingMode);
-    const policy = resolveProductHybridPolicy(indexingMode, 'hybrid');
+    const policy = opts.returnAllChunks
+      ? resolveProductHybridPolicy(indexingMode, 'hybrid') : 'identity-bounded-paper';
     this.logger.info(`Product hybrid policy: ${policy} (indexingMode=${indexingMode})`);
 
     const identityResults = await this.identityNavigationSearch(query, opts);
     if (identityResults.length > 0) return identityResults;
+
+    // The calibrated paper contract is global within the selected indexing
+    // mode. Passage mode keeps its existing independent location semantics.
+    if (!opts.returnAllChunks) {
+      const sources: TextSourceType[] | undefined = indexingMode === 'abstract'
+        ? ['summary', 'abstract', 'title_only']
+        : indexingMode === 'notes' ? METADATA_NOTE_SOURCES : undefined;
+      return this.fixedHybridSearch(query, {
+        ...opts, semanticTextSources: sources, keywordTextSources: sources,
+      });
+    }
 
     if (policy === 'abstract-identity-semantic') {
       return this.semanticOnlySearch(query, opts);
@@ -315,7 +327,7 @@ export class HybridSearchEngine {
     }
   }
 
-  /** H1: frozen RRF structure over semantic and T0 BM25 ranks. */
+  /** Paper MaxSim plus a fixed, bounded K50 bonus; no source slots. */
   private async fixedHybridSearch(
     query: string,
     opts: ResolvedHybridSearchOptions,
@@ -323,7 +335,7 @@ export class HybridSearchEngine {
   ): Promise<HybridSearchResult[]> {
     const [semanticPass, keywordResults] = await Promise.all([
       this.semanticSearchQueryWithScores(query, opts),
-      this.keywordSearchQuery(query, opts),
+      this.keywordSearchQuery(query, opts, !opts.returnAllChunks),
     ]);
     const semanticResults = semanticPass.results;
 
@@ -340,6 +352,24 @@ export class HybridSearchEngine {
 
     // Populate metadata for top results
     if (populateMetadata) {
+      // K-only candidates have a true semantic winner outside S50. Hydrate
+      // that winner, never attach its page to a different lexical snippet.
+      const missing = fusedResults.slice(0, opts.finalTopK)
+        .filter(result => result.semanticRank === null && result.semanticScore !== null)
+        .map(result => semanticPass.scores.get(stableRankingKey(result)))
+        .filter((entry): entry is NonNullable<typeof entry> => !!entry)
+        .map(entry => ({ ...entry, chunkIndex: entry.matchedChunkIndex }));
+      if (missing.length) {
+        await this.semanticSearch.populateChunkText(missing);
+        const hydrated = new Map(missing.map(entry => [stableRankingKey(entry), entry as SearchResult]));
+        for (const result of fusedResults.slice(0, opts.finalTopK)) {
+          const entry = hydrated.get(stableRankingKey(result));
+          if (!entry) continue;
+          result.chunkText = entry.chunkText;
+          result.sectionPaths = entry.sectionPaths;
+          result.pdfAttachmentKey = entry.pdfAttachmentKey;
+        }
+      }
       await this.populateItemMetadata(fusedResults.slice(0, opts.finalTopK));
     }
 
@@ -780,6 +810,7 @@ export class HybridSearchEngine {
         minSimilarity: opts.minSimilarity,
         libraryId: opts.libraryId,
         returnAllChunks: opts.returnAllChunks,
+        candidateFilter: this.candidateEligibility(opts),
       });
       return {
         results: await this.filterAndMapSemanticResults(
@@ -880,13 +911,51 @@ export class HybridSearchEngine {
       itemKey: r.itemKey,
       score: r.similarity,
       textSource: r.textSource,
-      chunkIndex: r.chunkIndex,
+      chunkIndex: r.chunkIndex ?? r.matchedChunkIndex,
       chunkText: r.chunkText,
       sectionPaths: r.sectionPaths,
       pdfAttachmentKey: r.pdfAttachmentKey,
       pageNumber: r.pageNumber,
       paragraphIndex: r.paragraphIndex,
     }));
+  }
+
+  /** Cache live eligibility once per identity for this query, not per chunk. */
+  private candidateEligibility(opts: ResolvedHybridSearchOptions) {
+    const answers = new Map<string, boolean>();
+    const excludeBooks = Zotero.Prefs.get('zotseek.excludeBooks', true) ?? true;
+    return (identity: { libraryKey: string; itemKey: string; itemId?: number }): boolean => {
+      const key = stableRankingKey(identity);
+      if (answers.has(key)) return answers.get(key)!;
+      // Missing snapshot identities remain explicit item_not_found hits. They
+      // cannot prove collection membership and must not leak into that scope.
+      const item = identity.itemId && identity.itemId > 0
+        ? Zotero.Items.get(identity.itemId) : undefined;
+      const liveIdentity = identityFromItem(item);
+      const missing = !item || item.deleted || !liveIdentity || stableRankingKey(liveIdentity) !== key;
+      const eligible = missing ? !opts.collectionId :
+        !!item.isRegularItem?.() && !(excludeBooks && item.itemType === 'book') &&
+        (opts.libraryId === undefined || item.libraryID === opts.libraryId) &&
+        (!opts.collectionId || !!Zotero.Collections.get(opts.collectionId)?.hasItem(item.id));
+      answers.set(key, eligible);
+      return eligible;
+    };
+  }
+
+  private fuseKeywordChannels(
+    quick: KeywordSearchHit[], lexical: KeywordSearchHit[], limit: number,
+  ): KeywordSearchHit[] {
+    const scores = new Map<string, KeywordSearchHit>();
+    for (const channel of [quick, lexical]) {
+      channel.slice(0, limit).forEach((hit, index) => {
+        const key = stableRankingKey(hit);
+        const score = (scores.get(key)?.score ?? 0) + 0.5 / (10 + index + 1);
+        // Lexical evidence carries the indexed passage and wins representation.
+        scores.set(key, { ...hit, score });
+      });
+    }
+    return [...scores.values()].sort((a, b) => b.score - a.score ||
+      stableRankingKey(a).localeCompare(stableRankingKey(b))).slice(0, limit);
   }
 
   /**
@@ -899,9 +968,11 @@ export class HybridSearchEngine {
    */
   private async keywordSearchQuery(
     query: string,
-    opts: ResolvedHybridSearchOptions
+    opts: ResolvedHybridSearchOptions,
+    fuseChannels = false,
   ): Promise<KeywordSearchHit[]> {
     try {
+      const eligibility = fuseChannels ? this.candidateEligibility(opts) : undefined;
       // Search ZotSeek's own stored chunks as well as Zotero metadata. This is
       // the reliable path for exact text inside child notes, because Zotero's
       // quicksearch does not consistently promote a matching note to its parent.
@@ -909,6 +980,7 @@ export class HybridSearchEngine {
         topK: opts.keywordTopK,
         libraryId: opts.libraryId,
         textSources: opts.keywordTextSources,
+        candidateFilter: eligibility,
       }).catch((error: any) => {
         this.logger.debug(`Indexed text search failed: ${error?.message || error}`);
         return [];
@@ -926,7 +998,7 @@ export class HybridSearchEngine {
       // Quick search searches title, creators, year, tags, etc.
       // This is the same search used in Zotero's search bar
       search.addCondition(
-        opts.keywordTextSources ? 'quicksearch-titleCreatorYear' : 'quicksearch-everything',
+        !fuseChannels && opts.keywordTextSources ? 'quicksearch-titleCreatorYear' : 'quicksearch-everything',
         'contains',
         query,
       );
@@ -993,6 +1065,8 @@ export class HybridSearchEngine {
           }
 
           if (excludeBooks && item.itemType === 'book') continue;
+
+          if (eligibility && !eligibility({ ...identityFromItem(item)!, itemId: item.id })) continue;
 
           let score = 0.5; // Base score
 
@@ -1077,6 +1151,9 @@ export class HybridSearchEngine {
 
       // Merge exact matches from the ZotSeek index. These hits already point
       // at the parent bibliographic item and carry the matched note passage.
+      const quickResults = [...scoredResults.values()].sort((a, b) => b.score - a.score ||
+        stableRankingKey(a).localeCompare(stableRankingKey(b))).slice(0, opts.keywordTopK);
+      if (fuseChannels) scoredResults.clear();
       const indexedMatches = await indexedTextPromise;
       const indexedItems = await getItemsBatch(
         indexedMatches
@@ -1131,7 +1208,9 @@ export class HybridSearchEngine {
           stableRankingKey(a).localeCompare(stableRankingKey(b)));
 
       // Return top K with normalized scores
-      return sortedResults.slice(0, opts.keywordTopK);
+      return fuseChannels
+        ? this.fuseKeywordChannels(quickResults, sortedResults, opts.keywordTopK)
+        : sortedResults.slice(0, opts.keywordTopK);
     } catch (error) {
       this.logger.error('Keyword search failed:', error);
       return [];
@@ -1139,19 +1218,9 @@ export class HybridSearchEngine {
   }
 
   /**
-   * Reciprocal Rank Fusion
-   *
-   * Combines results from multiple ranked lists using the formula:
-   * RRF(d) = Σ weight_i / (k + rank_i(d))
-   *
-   * Properties:
-   * - Doesn't need score normalization (works on ranks only)
-   * - Higher k = more emphasis on top ranks relative to lower ranks
-   * - Typical k = 60 (from original RRF paper by Cormack et al.)
-   *
-   * @param semanticResults - Results from semantic search, ordered by similarity
-   * @param keywordResults - Results from keyword search, ordered by relevance
-   * @param opts - Options including rrfK and semanticWeight
+   * Bounded lexical bonus over the independent S50/K50 union.
+   * Reuses real MaxSim outside S50; a missing K50 rank contributes no bonus.
+   * The 0.05 cap and rank decay are independent of legacy RRF options.
    */
   private boundedLexicalBonusFusion(
     semanticResults: SemanticSearchHit[],
@@ -1216,11 +1285,11 @@ export class HybridSearchEngine {
         keywordRank: keyword?.rank ?? null,
         source,
         ...(keyword?.itemStatus ? { itemStatus: keyword.itemStatus, itemId: undefined } : {}),
-        textSource: semantic?.textSource ?? keyword?.textSource ?? scoreEntry?.textSource,
-        chunkIndex: semantic?.chunkIndex,
-        chunkText: semantic?.chunkText ?? keyword?.chunkText,
-        sectionPaths: semantic?.sectionPaths ?? keyword?.sectionPaths,
-        pdfAttachmentKey: semantic?.pdfAttachmentKey ?? keyword?.pdfAttachmentKey,
+        textSource: semantic?.textSource ?? scoreEntry?.textSource ?? keyword?.textSource,
+        chunkIndex: semantic?.chunkIndex ?? scoreEntry?.matchedChunkIndex,
+        chunkText: semantic?.chunkText ?? (scoreEntry ? undefined : keyword?.chunkText),
+        sectionPaths: semantic?.sectionPaths ?? (scoreEntry ? undefined : keyword?.sectionPaths),
+        pdfAttachmentKey: semantic?.pdfAttachmentKey ?? (scoreEntry ? undefined : keyword?.pdfAttachmentKey),
         pageNumber: semantic?.pageNumber ?? scoreEntry?.pageNumber,
         paragraphIndex: semantic?.paragraphIndex ?? scoreEntry?.paragraphIndex,
       });

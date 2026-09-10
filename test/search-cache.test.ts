@@ -206,7 +206,7 @@ describe('library-scoped semantic search cache', () => {
 
     const pass = await engine.searchPartitionsWithScores('test', [
       { key: 'default', topK: 1, textSources: ['summary'] },
-    ], { minSimilarity: 0 });
+    ], { minSimilarity: 0.9 });
 
     assert.deepEqual(pass.resultsByPartition.get('default')?.map(result => result.itemKey), ['SCORE0001']);
     const scores = pass.scoresByPartition.get('default')!;

@@ -2,7 +2,7 @@
 
 > **说明（ZotSeek-U fork）：** 本文件是 fork 搜索/分块架构文档的**中文母本**；英文对照版见 [SEARCH_ARCHITECTURE_EN.md](SEARCH_ARCHITECTURE_EN.md)。搜索或索引行为变化时两份必须同步更新。文中的 ASCII 架构图与代码块刻意与英文版保持逐字一致，便于与源码对照。
 
-本文档完整说明 ZotSeek 的语义检索与 Hybrid 混合搜索是如何工作的。
+本文档说明 ZotSeek 的语义检索与 Hybrid 混合搜索。2026-09-10 分支中的文献级原型以“当前文献级 Hybrid”一节为准；历史实验图和旧 RRF 示例不代表当前默认算法。
 
 ---
 
@@ -43,7 +43,7 @@ Plan 62 已接入启动末尾与现有“检查并更新索引”入口。BM25 �
 
 ## 总览
 
-ZotSeek 的搜索由三层机制组成：**身份导航**（先在 Zotero 元数据上解析 DOI、标题、作者类查询）、**语义与关键词分支的受控分数融合**（Notes 模式以语义原始分为基线，关键词只提供有界加分；关键词分支由 T0 BM25 与 Zotero quicksearch 合并而成），以及 Full 模式专属的**来源感知分配**。用户可见的搜索模式（语义 / 关键词 / Hybrid）只是这三层机制的不同组合方式；底层机制与开销见[搜索方案](#搜索方案)，各管线的实现细节见[语义检索管线](#语义检索管线)与 [BM25 管线](#bm25-管线)。
+文献级 Hybrid 先做身份导航，再独立召回全范围语义与词法候选，使用真实语义分加最多 0.05 的词法奖励。三个索引模式共用公式，Full 不再拆来源配额。下图保留早期结构背景；当前准确数据流见“当前文献级 Hybrid”。
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -103,11 +103,11 @@ Hybrid 是产品默认入口，按三层执行：
 
 | 索引模式 | 默认内容策略 |
 |---------------|--------------------------|
-| `abstract` | 仅语义（semantic-only） |
-| `notes` | R1 Metadata + Notes 语义 + T0 BM25，语义基线 + 有界词法加分 |
-| `full` | Notes 有界融合 + PDF 语义候选，统一分数排序 |
+| `abstract` | 摘要范围 S50 ∪ K50，有界加分 |
+| `notes` | Metadata + Notes 范围 S50 ∪ K50，有界加分 |
+| `full` | 全范围 S50 ∪ K50，有界加分 |
 
-Full 模式的结果分配是来源感知的：Notes 与 PDF specialist 各自保留来源字段，然后按统一分数排序并按稳定身份去重。对 `topK=10` 不再承诺固定的 `2+8` 比例；passages 粒度沿用稳定身份与 chunk 去重规则。
+表格描述文献粒度。Full 的 S50 对所有来源做一次 MaxSim，不预留 Notes/PDF 席位；passages 暂留兼容路径，不能与文献级验收混同。下表查询例子仅为使用方向，不是准确率保证。
 
 | 查询类型 | 纯语义 | 纯关键词 | Hybrid |
 |------------|---------------|--------------|--------|
@@ -118,7 +118,7 @@ Full 模式的结果分配是来源感知的：Notes 与 PDF specialist 各自�
 
 ### 🧠 仅语义（Semantic Only）
 
-显式选择语义模式时**绕过默认策略**：不跑关键词分支、不做来源分配；身份导航仍会先行（`abstract` 模式的默认内容路径就是它）。
+显式选择语义模式时绕过 Hybrid 身份导航与融合，直接执行语义搜索。
 
 **最适合：**
 - 概念型查询："how does automation affect human decision making"
@@ -186,7 +186,7 @@ BM25 的成本主要落在三处：
 
 ### 什么是 Reciprocal Rank Fusion？
 
-RRF 是一种合并多个搜索系统排序列表的技术，不需要分数归一化，也不需要调参。
+RRF 根据各路名次合并列表，不需要把原始分数归一到同一尺度，但 k 与权重仍是设计参数。下图是旧版 S/K RRF 的教学示例；当前文献级 Hybrid 只在 Q/L 形成 K50 时使用 RRF。
 
 ```
                     RECIPROCAL RANK FUSION (RRF)
@@ -250,82 +250,46 @@ RRF 是一种合并多个搜索系统排序列表的技术，不需要分数归�
 
 > 图中右侧的 "KEYWORD BRANCH" 并不是单纯的元数据搜索：它由 **T0 BM25**（对本地已索引 chunk 文本）与 **Zotero quicksearch**（元数据 + 启发式重排）的命中按条目合并而成，合并规则见[查询分析](#查询分析)。
 
-### 三层默认管线
+### 当前文献级 Hybrid（Plan 66P，分支原型）
 
-Hybrid 默认入口的完整管线如下图。注意 Layer 3 只在 `full` 模式存在；`notes` 模式的 Layer 2 结果直接返回，`abstract` 模式在身份导航后只跑语义侧。
+明确身份导航未命中时，三个索引模式共用下列合同。S 是所选范围内所有有效向量块的文献 MaxSim；并不是先由关键词筛文献，再算语义。
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                   HYBRID DEFAULT PIPELINE (three layers)                    │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│                                 USER QUERY                                  │
-│                                      │                                      │
-│                                      ▼                                      │
-│    ┌────────────────────────────────────────────────────────────────────┐   │
-│    │LAYER 1 - IDENTITY NAVIGATION (metadata prepass)                    │   │
-│    │exact DOI / full title / distinctive title fragment                 │   │
-│    │(Latin >= 3 words & 12 chars, CJK >= 6 chars)                       │   │
-│    │author name -> author collection; candidates                        │   │
-│    │validated through the original Zotero Search gate                   │   │
-│    └────────────────────────────────────────────────────────────────────┘   │
-│                                      │  content query (no identity match)   │
-│                                      ▼                                      │
-│    │LAYER 2 - CONTROLLED SCORE FUSION                                  │   │
-│    │                                                                    │   │
-│    │  ┌────────────────────┐          ┌──────────────────────────┐      │   │
-│    │  │semantic list       │          │keyword branch            │      │   │
-│    │  │embeddings +        │          │T0 BM25 over chunk        │      │   │
-│    │  │MaxSim per paper    │          │text + Zotero             │      │   │
-│    │  │                    │          │quicksearch, merged       │      │   │
-│    │  │                    │          │per item                  │      │   │
-│    │  └────────────────────┘          └──────────────────────────┘      │   │
-│    │                                                                    │   │
-│    │semantic baseline + bounded lexical bonus                            │   │
-│    └─────────────────────────────────┬──────────────────────────────────┘   │
-│                                      │                                      │
-│                                      ▼                                      │
-│    ┌────────────────────────────────────────────────────────────────────┐   │
-│    │LAYER 3 - FULL MODE ONLY: SOURCE ALLOCATION                         │   │
-│    │Notes and PDF specialists share one score order;                    │   │
-│    │stable-identity deduplication decides the final list                │   │
-│    └────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│notes mode    = Layer 2 result directly (R1 semantic + T0 BM25)              │
-│abstract mode = identity navigation + semantic-only content                  │
-│explicit semantic / keyword selection bypasses Layer 2 fusion                │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+                         identity navigation
+                                |
+                    no identity navigation hit
+                      /                    \
+       global scoped semantic pass      Quick Q50 + BM25 L50
+             |          |                       |
+            S50     all-paper scores      equal RRF, k=10 -> K50
+             \          |                       /
+                      U = S50 union K50
+                                |
+                  S + 0.05 * 11/(10 + rankK50)
+                                |
+                   stable identity tie-break
+                                |
+               top results + matched-chunk hydration
 ```
 
-### 为什么选择 RRF？
+- Q50 沿用 Quick 的前 100 个原始匹配及启发式重排；使用 quicksearch-everything，Note 匹配映射到父文献。L50 按索引模式限制 chunk 来源；book/库/collection 资格在取 TopK 前检查，不重拟合 BM25 的 IDF 统计。
+- 索引模式限制 Semantic/BM25 的文本来源；Quick 仍使用 Zotero 自身的 everything 范围，因此不是仅在 ZotSeek 的摘要或 Notes chunks 中匹配。
+- K50 分数为 `0.5/(10+rankQ)+0.5/(10+rankL)`，缺失一路贡献为零。最终公式使用 K50 的名次，不使用 BM25 归一化分值。
+- S50 受 minSimilarity 控制；完整语义分数表不受该展示阈值或 S50 截断影响。K50 独占候选仍读取真实 MaxSim。λ 固定为 0.05，不随语言、库、问句长短或旧自动权重设置变化。
+- `abstract` 使用 summary/abstract/title_only；`notes` 再含 note；`full` 使用全部索引来源。Full 不拆 Notes/PDF 配额。默认两路各 50，可由内部 topK 选项调整；文献去重与并列按 libraryKey + itemKey。
+- 真正缺失有效向量时 semanticScore 保留 null，沿用零基值加词法奖励的兼容行为。这不是已通过离线效果验证的情形；完整向量覆盖是 66L 质量结论的边界。丢失条目以 item_not_found 返回；无法证明 collection 归属的失效身份不进入该 collection。
+- 分数字段 rrfScore 为兼容旧接口保留，实际存放上述融合分，可能超过 1；semanticScore 仍为真实余弦。keywordScore 在此路径是 Q/L RRF 分，不是概率。source=both 表示存在语义分且在 K50，不表示必然同时位于 S50/K50，也不是置信度。
+- K-only 文献先确定最佳语义块，再补齐该块的文字/Note 路径/PDF 来源和页码，禁止把词法片段配到另一块的页码。
 
-| 特性 | 收益 |
-|----------|---------|
-| **无需分数归一化** | 基于排名而非原始分数工作 |
-| **无需调参** | k=60 在各领域表现良好 |
-| **稳健** | 任何来源的头部结果都会被提升 |
-| **生产验证** | Elasticsearch、Vespa、Pinecone 均在使用 |
+显式 Keyword/Semantic 及多查询组合继续沿用各自现有行为。本次不把文献级实验外推为 passage 排序实验：passages/location 暂留兼容路径（Abstract 语义、Notes RRF、Full 分来源合并），UI 与 MCP 对相同粒度使用同一引擎。后续统一 passage 排序需独立设计与验收。
 
-Notes 与 Full 的 Notes specialist 不再把两路排名压成同一套 RRF 权重：它们保留语义 MaxSim 原始分，并对 `K50` 命中按 `0.05 × 11/(10 + keywordRank)` 加分，单条词法证据最多增加 0.05。语义分数表来自同一轮向量遍历，因此关键词命中即使不在语义 Top-50 也能读取自己的语义分数；候选集合仍严格限制为 `S50 ∪ K50`。Full 再将 Notes 和 PDF 分数放在同一排序中。
+UI 的“匹配”列保留语义相似度（无语义分时使用关键词展示分），并不显示文献融合分。因此 Hybrid 的百分比不必随结果顺序单调下降；例如较低语义分的结果可以因 K50 加分排在前面。2026-09-10 已在真实 Notes 搜索窗口确认三模式切换、研究关系问句、完整标题导航、来源预览、条目定位和空结果状态。此轮未重验 Full PDF 跳页及 HTTP 网络传输。
 
-### 结果指示符
+### 缓存响应性与验证边界
 
-| 图标 | 含义 | 解读 |
-|------|---------|----------------|
-| 🔗 | 双通道命中 | 高置信度——语义与关键词同时匹配 |
-| 🧠 | 仅语义 | 概念相关但措辞不同 |
-| 🔤 | 仅关键词 | 精确命中但语义检索未覆盖 |
+首次向量缓存解码每 16 块检查约 8 ms 时间预算，超预算用定时器让出事件循环。归一化运算顺序不变；generation/model/lifecycle 检查仍在发布前执行，并发搜索共享构建。它不是后台线程，也不保证整个加载过程无停顿。隔离 57,523 块实测最长计时器间隔由 1.725 s 降到 0.763 s，总加载由 5.808 s 变为 6.344 s；这些是单轮组件对比，不是完整 UI 延迟或稳定性能保证。
 
-### 来源感知分配（Full 模式）
-
-`full` 模式在 specialist 评分之后多做一步统一排序（`fullSourceAwareSearch()`）：
-
-1. Notes specialist（R1 语义基线 + T0 BM25 有界加分）与 PDF 语义 specialist 各自产出独立排名；两个语义 specialist 共享一次查询嵌入、一次向量缓存过滤和一次点积遍历。
-2. 两个 specialist 结果按统一分数排序并按稳定身份去重。
-3. 不再预留固定 Notes/PDF 位置；实际名次由分数决定。
-
-该契约沿用稳定身份、来源和页码字段；passages 粒度按稳定身份加 chunk 位置去重。
+冻结 66L 的 1,080 个单元通过生产融合函数重放；180 个有完整 Q/L 输入的单元通过 K50 重放。该结果验证公式接线，不重新证明跨库效果，也不包含真实检索候选的完全等价证明。
 
 
 ### 离线实测：四种索引内容 × 五种搜索方式
@@ -1356,7 +1320,7 @@ Schema v12 增加可空的 `chunks.pdf_attachment_key`。新的 Full 模式 PDF 
 
 ## 查询分析
 
-自动权重调节（`hybridSearch.autoAdjustWeights`，默认开启）仍保留用于兼容旧配置，但当前 bounded Hybrid 评分不再按查询动态改变语义/词法份额；语义原始分固定作为基线，词法最多增加 0.05。`abstract` 模式在身份导航后始终是纯语义。
+自动权重调节（`hybridSearch.autoAdjustWeights`，默认开启）保留用于兼容旧配置。三个索引模式的文献级 Hybrid 都使用固定 0.05 加分上限；下方旧查询权重示例不影响该公式。passages 兼容路径仍可能使用旧权重。
 
 元数据身份预检输出 Zotero Search、批量 `Zotero.Items.getAsync()` 加载、候选过滤、分类与最终结果准备的计时诊断，以及候选数和匹配类型。这些诊断不包含查询、creator 列表、DOI 或文档文本。
 

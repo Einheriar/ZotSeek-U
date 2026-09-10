@@ -534,8 +534,8 @@ export async function runSearchTool(args: SearchToolArgs): Promise<{ results: To
   if (libraryId !== undefined) {
     options.libraryId = libraryId;
   }
-  // UI, MCP and REST share the same indexing-mode-aware product policy and
-  // the same optional query-weight analysis inside the Notes H1 specialist.
+  // UI, MCP and REST share the same paper ranking. Legacy smart-search
+  // preferences do not change the fixed bounded bonus.
   const query = args.query.trim();
   const results =
     mode === 'hybrid' && prefAutoAdjustWeights()

@@ -2760,8 +2760,15 @@ export class VectorStoreSQLite {
     const idMap = bulkResolve(identities);
     const localLibraryIds = new Map<string, number | undefined>();
     const result: CachedEmbeddingRow[] = [];
+    let sliceStarted = Date.now();
 
     for (let i = 0; i < pks.length; i++) {
+      // Decoding is synchronous Gecko work. Yield between vectors without
+      // changing arithmetic; getAllCached still validates generation on publish.
+      if (i > 0 && i % 16 === 0 && Date.now() - sliceStarted >= 8) {
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+        sliceStarted = Date.now();
+      }
       const libraryKey = String(libraryKeys[i]);
       const itemKey = String(itemKeys[i]);
       const lookupKey = `${libraryKey}|${itemKey}`;
@@ -2857,7 +2864,8 @@ export class VectorStoreSQLite {
    */
   async searchText(
     query: string,
-    options: { limit?: number; libraryId?: number; textSources?: TextSourceType[] } = {}
+    options: { limit?: number; libraryId?: number; textSources?: TextSourceType[];
+      candidateFilter?: (identity: { libraryKey: string; itemKey: string; itemId?: number }) => boolean } = {}
   ): Promise<IndexedTextMatch[]> {
     if (this.closed) return [];
     await this.ensureInit();
@@ -2904,7 +2912,8 @@ export class VectorStoreSQLite {
   private searchLexicalCache(
     index: T0BM25Index,
     query: string,
-    options: { limit?: number; libraryId?: number; textSources?: TextSourceType[] }
+    options: { limit?: number; libraryId?: number; textSources?: TextSourceType[];
+      candidateFilter?: (identity: { libraryKey: string; itemKey: string; itemId?: number }) => boolean }
   ): IndexedTextMatch[] {
     const libraryKey = options.libraryId === undefined
       ? undefined
@@ -2914,6 +2923,9 @@ export class VectorStoreSQLite {
       limit: options.limit,
       libraryKey,
       textSources: options.textSources,
+      candidateFilter: options.candidateFilter
+        ? identity => options.candidateFilter!({ ...identity, itemId: localItemIDFromIdentity(identity) ?? undefined })
+        : undefined,
     }).map(hit => ({ ...hit, itemId: localItemIDFromIdentity(hit) ?? undefined }));
   }
 

@@ -474,8 +474,8 @@ export class ZotSeekDialogVTable {
   ): Promise<void> {
     this.setStatus(getString('search-finding', { mode: modeLabel }));
 
-    // Query analysis may tune the Notes H1 semantic/lexical share. It never
-    // changes Full's frozen Notes-head/PDF-tail result allocation.
+    // Paper Hybrid uses the same fixed bounded bonus as MCP/REST, including
+    // when the legacy smart-search preference is enabled.
     if (this.searchMode === 'hybrid' && this.autoAdjustWeights) {
       this.rawResults = await this.hybridSearch.smartSearch(query, {
         finalTopK: this.userTopK,

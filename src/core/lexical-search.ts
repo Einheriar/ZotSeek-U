@@ -21,6 +21,8 @@ export interface LexicalSearchOptions {
   limit?: number;
   libraryKey?: string;
   textSources?: TextSourceType[];
+  /** Result eligibility does not refit the frozen corpus IDF statistics. */
+  candidateFilter?: (identity: { libraryKey: string; itemKey: string; itemId?: number }) => boolean;
 }
 
 export interface LexicalMatch extends LexicalDocument {
@@ -414,6 +416,11 @@ export class T0BM25Index {
     }
 
     const ranked = [...bestByItem.values()]
+      .filter(({ doc }) => !options.candidateFilter || options.candidateFilter({
+        libraryKey: this.libraryStrings[this.libraryCodeCol[doc]],
+        itemKey: this.itemKeyCol[doc],
+        itemId: this.itemIdCol[doc],
+      }))
       .sort((left, right) => right.score - left.score || this.compareItems(left.doc, right.doc))
       .slice(0, options.limit ?? 50);
     const maxScore = ranked[0]?.score ?? 1;

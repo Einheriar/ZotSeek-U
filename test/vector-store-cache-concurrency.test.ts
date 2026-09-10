@@ -228,6 +228,53 @@ describe('Plan 40B cache publication and single-flight', () => {
     assert.equal(reads, 18, 'each active model needs one nine-column projection');
   });
 
+  test('yields during vector decoding and rejects publication invalidated by a timer', async () => {
+    const zotero = installIdentityAwareStub();
+    const store = makeStore();
+    let projectionReads = 0;
+    let version = 0;
+    zotero.DB = {
+      columnQueryAsync: async (sql: string) => {
+        if (/SELECT c\.item_pk\s/i.test(sql)) projectionReads++;
+        const value = /SELECT c\.item_pk\s/i.test(sql) ? 1
+          : /SELECT i\.library_key\s/i.test(sql) ? 'user'
+          : /SELECT i\.item_key\s/i.test(sql) ? 'OLD00001'
+          : /SELECT c\.embedding\s/i.test(sql) ? encodeFloat32(version ? [0, 5] : [3, 4])
+          : /SELECT c\.text_source\s/i.test(sql) ? 'summary'
+          : /SELECT i\.title\s/i.test(sql) ? 'Projected title' : 0;
+        return Array(48).fill(value);
+      },
+    };
+    const originalNow = Date.now;
+    let clock = originalNow();
+    // Deterministically exhaust a slice without CPU busy-waiting in the test.
+    Date.now = () => (clock += 9);
+    let decoded = 0;
+    let timerSawDecoding = false;
+    const decode = (store as any).base64ToFloat32Embedding.bind(store);
+    (store as any).base64ToFloat32Embedding = (value: string) => {
+      decoded++;
+      return decode(value);
+    };
+    try {
+      const timer = new Promise<void>(resolve => setTimeout(() => {
+        timerSawDecoding = decoded > 0 && decoded < 48;
+        version = 1;
+        (store as any).invalidateCache();
+        resolve();
+      }, 0));
+      const [left, right] = await Promise.all([store.getAllCached(), store.getAllCached()]);
+      await timer;
+      assert.equal(timerSawDecoding, true, 'event loop must run before decoding completes');
+      assert.equal(projectionReads, 2, 'one shared retry after invalidation');
+      assert.equal(left, right, 'concurrent callers publish the same replacement');
+      assert.equal(left.length, 48);
+      assert.ok(left.every(row => row.embedding[0] === 0 && row.embedding[1] === 1));
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
   test('shares one lexical corpus build between concurrent cold searches', async () => {
     const zotero = installIdentityAwareStub();
     const gate = deferred();

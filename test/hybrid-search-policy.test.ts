@@ -37,9 +37,9 @@ describe('HybridSearchEngine product dispatch', () => {
 
   test('dispatches hybrid by stable indexing mode', async () => {
     for (const [indexingMode, expected] of [
-      ['abstract', 'semantic'],
+      ['abstract', 'notes-h1'],
       ['notes', 'notes-h1'],
-      ['full', 'full-2+N'],
+      ['full', 'notes-h1'],
     ] as const) {
       const { engine, calls } = engineWithSpies();
       await engine.search('concept query', { mode: 'hybrid', indexingMode });

@@ -52,6 +52,7 @@ export interface IVectorStore {
     limit?: number;
     libraryId?: number;
     textSources?: import('./vector-store-sqlite').TextSourceType[];
+    candidateFilter?: (identity: { libraryKey: string; itemKey: string; itemId?: number }) => boolean;
   }): Promise<import('./vector-store-sqlite').IndexedTextMatch[]>;
   prepareLexicalIndex(): Promise<void>;
   deferLexicalPreparation(until: Promise<unknown>): void;
