@@ -183,6 +183,42 @@ describe('library-scoped semantic search cache', () => {
     assert.deepEqual(hydrationCalls.map(call => call.length), [2, 2]);
   });
 
+  test('retains a stable-identity score table without widening hydration', async () => {
+    const chunks = [
+      cachedChunk(1, 'SCORE0001', 1, [1, 0], 'summary'),
+      cachedChunk(2, 'SCORE0002', 1, [0.8, 0.6], 'summary'),
+      cachedChunk(3, 'SCORE0003', 1, [0.6, 0.8], 'summary'),
+    ];
+    const hydrated: number[] = [];
+    const store = {
+      isReady: () => true,
+      getAllCached: async () => chunks,
+      getChunkTexts: async (pairs: Array<{ itemPk: number; chunkIndex: number }>) => {
+        hydrated.push(pairs.length);
+        return new Map();
+      },
+    };
+    const engine = new SearchEngine({
+      isReady: () => true,
+      embedQuery: async () => ({ embedding: [1, 0] }),
+    } as any);
+    (engine as any).store = store;
+
+    const pass = await engine.searchPartitionsWithScores('test', [
+      { key: 'default', topK: 1, textSources: ['summary'] },
+    ], { minSimilarity: 0 });
+
+    assert.deepEqual(pass.resultsByPartition.get('default')?.map(result => result.itemKey), ['SCORE0001']);
+    const scores = pass.scoresByPartition.get('default')!;
+    assert.deepEqual([...scores.keys()], [
+      'user|SCORE0001', 'user|SCORE0002', 'user|SCORE0003',
+    ]);
+    assert.ok(Math.abs(scores.get('user|SCORE0001')!.similarity - 1) < 1e-6);
+    assert.ok(Math.abs(scores.get('user|SCORE0002')!.similarity - 0.8) < 1e-6);
+    assert.ok(Math.abs(scores.get('user|SCORE0003')!.similarity - 0.6) < 1e-6);
+    assert.deepEqual(hydrated, [1]);
+  });
+
   test('matches two legacy source searches while retaining each top-50 hydration window', async () => {
     const chunks = [
       ...Array.from({ length: 55 }, (_, index) =>

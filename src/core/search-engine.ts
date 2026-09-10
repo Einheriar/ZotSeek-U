@@ -40,6 +40,32 @@ export interface SearchResult {
   paragraphIndex?: number;     // 0-based paragraph index within page
 }
 
+/**
+ * Unhydrated document-level semantic score retained for a reusable search pass.
+ * The score table key is the stable (libraryKey, itemKey) identity.
+ */
+export interface SemanticScoreEntry {
+  itemPk: number;
+  libraryKey: string;
+  itemKey: string;
+  itemId?: number;
+  libraryId?: number;
+  title: string;
+  similarity: number;
+  textSource: TextSourceType;
+  matchedChunkIndex: number;
+  pageNumber?: number;
+  paragraphIndex?: number;
+}
+
+export type SemanticScoreTable = Map<string, SemanticScoreEntry>;
+
+/** Results and document scores from one semantic vector pass. */
+export interface SemanticSearchPass {
+  resultsByPartition: Map<string, SearchResult[]>;
+  scoresByPartition: Map<string, SemanticScoreTable>;
+}
+
 export interface SearchOptions {
   topK?: number;
   minSimilarity?: number;
@@ -197,6 +223,28 @@ export class SearchEngine {
     partitions: SearchPartitionOptions[],
     options: SearchPartitionCommonOptions = {},
   ): Promise<Map<string, SearchResult[]>> {
+    const pass = await this.searchPartitionsWithScoresInternal(query, partitions, options);
+    return pass.resultsByPartition;
+  }
+
+  /**
+   * Run the semantic search once and retain every eligible document's MaxSim
+   * score for a later ranking stage. Top results keep the same hydrated shape
+   * as searchPartitions(); score tables remain unhydrated.
+   */
+  async searchPartitionsWithScores(
+    query: string,
+    partitions: SearchPartitionOptions[],
+    options: SearchPartitionCommonOptions = {},
+  ): Promise<SemanticSearchPass> {
+    return this.searchPartitionsWithScoresInternal(query, partitions, options);
+  }
+
+  private async searchPartitionsWithScoresInternal(
+    query: string,
+    partitions: SearchPartitionOptions[],
+    options: SearchPartitionCommonOptions = {},
+  ): Promise<SemanticSearchPass> {
     const opts = { ...DEFAULT_OPTIONS, ...options };
 
     this.logger.info('Semantic search started');
@@ -217,7 +265,12 @@ export class SearchEngine {
       }
       seenKeys.add(partition.key);
     }
-    if (accumulators.length === 0) return new Map();
+    if (accumulators.length === 0) {
+      return {
+        resultsByPartition: new Map(),
+        scoresByPartition: new Map(),
+      };
+    }
 
     // Auto-initialize pipeline if needed (supports cold-start from API)
     if (!this.pipeline.isReady()) {
@@ -300,6 +353,15 @@ export class SearchEngine {
       return [partition.options.key, topResults] as const;
     }));
     const resultsByPartition = new Map<string, SearchResult[]>(partitionEntries);
+    const scoresByPartition = new Map<string, SemanticScoreTable>();
+    if (!opts.returnAllChunks) {
+      for (const partition of accumulators) {
+        scoresByPartition.set(
+          partition.options.key,
+          this.itemSimilaritiesToScoreTable(partition.itemResults, opts.minSimilarity),
+        );
+      }
+    }
 
     const searchTime = Date.now() - startTime;
     const counts = [...resultsByPartition.entries()]
@@ -309,7 +371,7 @@ export class SearchEngine {
       `Found partition results (${counts}) in ${searchTime}ms (single vector pass)`
     );
 
-    return resultsByPartition;
+    return { resultsByPartition, scoresByPartition };
   }
 
   /**
@@ -720,6 +782,33 @@ export class SearchEngine {
       });
     }
     return results;
+  }
+
+  private itemSimilaritiesToScoreTable(
+    itemResults: Map<number, ItemSimilarity>,
+    minSimilarity: number,
+  ): SemanticScoreTable {
+    const table: SemanticScoreTable = new Map();
+    for (const item of itemResults.values()) {
+      if (item.maxSimilarity < minSimilarity) continue;
+      const key = `${item.libraryKey}|${item.itemKey}`;
+      const existing = table.get(key);
+      if (existing && existing.similarity >= item.maxSimilarity) continue;
+      table.set(key, {
+        itemPk: item.itemPk,
+        libraryKey: item.libraryKey,
+        itemKey: item.itemKey,
+        itemId: item.itemId,
+        libraryId: item.libraryId,
+        title: item.title,
+        similarity: item.maxSimilarity,
+        textSource: item.textSource,
+        matchedChunkIndex: item.matchedChunkIndex,
+        pageNumber: item.pageNumber,
+        paragraphIndex: item.paragraphIndex,
+      });
+    }
+    return table;
   }
 
   /**
