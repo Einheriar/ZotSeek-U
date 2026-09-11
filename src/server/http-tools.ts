@@ -24,6 +24,10 @@ import {
   MIN_SIMILARITY_PERCENT_BOUNDS,
   normalizeMinSimilarityPercent,
 } from '../utils/numeric-preferences';
+import {
+  readZoteroStyleJournalMetrics,
+  type JournalMetrics,
+} from './zotero-style-adapter';
 
 declare const Zotero: any;
 
@@ -106,6 +110,8 @@ export interface ToolResultItem {
   links?: ResultLinks;
   /** Full bibliographic fields from the live Zotero item, when resolvable. */
   metadata?: BibliographicMetadata;
+  /** Optional journal enrichment read from Zotero Style's existing cache. */
+  journalMetrics?: JournalMetrics;
 }
 
 export interface SearchToolArgs {
@@ -169,6 +175,7 @@ export interface GetItemResult {
   relatedItems: Array<{ libraryKey: string; itemKey: string }>;
   attachments: ItemAttachmentResult[];
   links?: ResultLinks;
+  journalMetrics?: JournalMetrics;
   notes?: ItemNoteResult[];
   pdf?: PdfReadResult;
 }
@@ -379,7 +386,9 @@ async function mapHybridResult(r: HybridSearchResult): Promise<ToolResultItem> {
       ...scores,
     };
   }
-  const metadata = buildBibliographicMetadata(getLocalItem(r.itemId));
+  const item = getLocalItem(r.itemId);
+  const metadata = buildBibliographicMetadata(item);
+  const journalMetrics = await readZoteroStyleJournalMetrics(item);
   return {
     itemKey: r.itemKey,
     libraryKey,
@@ -392,11 +401,14 @@ async function mapHybridResult(r: HybridSearchResult): Promise<ToolResultItem> {
     matchedChunk: chunkOf(r),
     links: await buildLinks(libraryKey, r.itemKey, r.pageNumber, r.pdfAttachmentKey),
     metadata,
+    ...(journalMetrics ? { journalMetrics } : {}),
   };
 }
 
 async function mapSearchResult(r: SearchResult): Promise<ToolResultItem> {
-  const metadata = buildBibliographicMetadata(getLocalItem(r.itemId));
+  const item = getLocalItem(r.itemId);
+  const metadata = buildBibliographicMetadata(item);
+  const journalMetrics = await readZoteroStyleJournalMetrics(item);
   return {
     itemKey: r.itemKey,
     libraryKey: r.libraryKey || null,
@@ -409,6 +421,7 @@ async function mapSearchResult(r: SearchResult): Promise<ToolResultItem> {
     matchedChunk: chunkOf(r),
     links: await buildLinks(r.libraryKey || null, r.itemKey, r.pageNumber, r.pdfAttachmentKey),
     metadata,
+    ...(journalMetrics ? { journalMetrics } : {}),
   };
 }
 
@@ -765,6 +778,7 @@ export async function runGetItemTool(rawArgs: GetItemToolArgs): Promise<GetItemR
   }
 
   const metadata = buildBibliographicMetadata(item);
+  const journalMetrics = await readZoteroStyleJournalMetrics(item);
   if (!metadata) throw new Error('get_item: unable to read item metadata');
   const rawAttachments = pdfAttachmentsForItem(item);
   const indexedKey = rawAttachments.some(attachment => attachment.isPDFAttachment?.() === true)
@@ -805,6 +819,7 @@ export async function runGetItemTool(rawArgs: GetItemToolArgs): Promise<GetItemR
     relatedItems: readRelatedItems(item, libraryKey),
     attachments,
     links: await buildLinks(libraryKey, itemKey, undefined, selectedAttachment?.key),
+    ...(journalMetrics ? { journalMetrics } : {}),
   };
 
   if (args.include_notes) result.notes = readNotes(item);

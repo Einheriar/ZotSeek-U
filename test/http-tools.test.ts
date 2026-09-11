@@ -193,6 +193,16 @@ describe('get_item normalized read contract', () => {
         libraryId === 1 && key === 'PARENT01' ? parent : null,
     };
     zotero.Collections = { get: () => null };
+    zotero.ZoteroStyle = {
+      data: {
+        views: {
+          localStorage: {
+            cache: {},
+            get: () => ({ sciif: '6.25', sci: 'Q2' }),
+          },
+        },
+      },
+    };
 
     const response = await runGetItemTool({
       item_key: 'parent01',
@@ -201,6 +211,11 @@ describe('get_item normalized read contract', () => {
       pdf_pages: '1',
     });
     assert.equal(response.metadata.abstractNote, 'Full abstract');
+    assert.deepEqual(response.journalMetrics, {
+      provider: 'zotero-style',
+      impactFactor: 6.25,
+      sciQuartile: 'Q2',
+    });
     assert.deepEqual(response.tags, ['alpha', 'beta']);
     assert.equal(response.notes?.[0].text.includes('Reference A'), true);
     assert.deepEqual(response.notes?.[0].sectionPaths, [

@@ -59,6 +59,9 @@ const TOOL_DEFINITIONS = [
       'not probabilities. Keyword scores are equal Quick/BM25 RRF with k=10, not the normalized UI percentage. ' +
       'semanticScore is the unrounded cosine similarity and bm25Score is the unnormalized BM25 score; ' +
       'null means that component was not computed or did not match. These fields do not trigger extra searches. ' +
+      'When Zotero Style is loaded and already has valid cached data, resolvable items may also include ' +
+      'journalMetrics with impactFactor and JCR SCI sciQuartile (Q1-Q4). This optional enrichment is omitted ' +
+      'otherwise, never triggers a journal-data refresh, and never changes ranking. ' +
       'Use excerpts and source evidence to assess relevance, not scores as confidence. ' +
       'Identity navigation and ' +
       'passage paths retain their own score conventions. Compare scores only within the same query and policy.',
@@ -132,6 +135,7 @@ const TOOL_DEFINITIONS = [
     name: 'get_item',
     description:
       'Read one Zotero parent item by stable library_key + item_key. Returns a normalized metadata snapshot and attachment list; optionally includes complete, unfiltered Child Notes and exact PDF pages or a bounded leading PDF prefix. ' +
+      'When Zotero Style is loaded and its cache already contains valid data, the result may include optional journalMetrics with impactFactor and JCR SCI sciQuartile (Q1-Q4); no refresh is triggered. ' +
       'For a selected search hit, begin with its matched PDF page and necessary adjacent pages; request the bounded full prefix only when the question requires broader reading. ' +
       'Verify passages supporting key claims before issuing near-duplicate searches. ' +
       'PDF content is extracted text, not a faithful rendering: Greek letters, mathematical symbols, superscripts, subscripts, column order and tables may be incorrect. ' +
@@ -180,6 +184,7 @@ const TOOL_DEFINITIONS = [
       'embeddings. Identify the item by its 8-character Zotero item key. ' +
       'Each resolvable result includes structured bibliographic metadata for ' +
       'client-side citation formatting. ' +
+      'It may also include optional cached Zotero Style journalMetrics; this never changes similarity ranking. ' +
       'Results carry zotero:// deep links (links.select / links.openPdf; ' +
       'use the links.selectHttp / links.openPdfHttp variants when your ' +
       'client only linkifies http URLs).',

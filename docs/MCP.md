@@ -100,6 +100,11 @@ For `index_status`, `ready` is `true` when the index contains papers and the sel
   "semanticScore": 0.804321,
   "bm25Score": 12.7345,
   "source": "both",
+  "journalMetrics": {
+    "provider": "zotero-style",
+    "impactFactor": 8.9,
+    "sciQuartile": "Q1"
+  },
   "metadata": {
     "itemType": "journalArticle",
     "title": "Attention Is All You Need",
@@ -129,6 +134,7 @@ Notes on the shape:
 
 - `source` (`"both"` | `"semantic"` | `"keyword"`) is present on `search` results only — it reports which engine found the item.
 - `metadata` (present when the item resolves locally) is a normalized bibliographic snapshot read from the live Zotero item — `itemType`, typed `creators` (including institutional `name`), `date`/`year`, `publicationTitle`/`bookTitle`/`proceedingsTitle`, `volume`/`issue`/`pages`, `publisher`/`place`, `DOI`/`ISBN`/`ISSN`, `url`, and `abstractNote`. The `filter` parameters operate on these fields. It is omitted for items that can no longer be resolved locally.
+- `journalMetrics` is optional best-effort enrichment from Zotero Style's existing local journal cache. Style 6.x stores that cache by publication title under `rank` in `<Zotero data directory>/zoterostyle.json`; the adapter also retains a legacy in-memory-cache fallback for older releases. It checks the runtime global first and uses Zotero's Add-on Manager as a read-only fallback when extension compartments hide that global, so a disabled or uninstalled Style does not expose leftover file data. `provider` is the stable value `"zotero-style"`; `impactFactor` is a finite non-negative number read from Style's `sciif`, and `sciQuartile` is JCR SCI `Q1`–`Q4` read from `sci`. This is not a Zotero bibliographic field or a search score. It is included on resolvable `search` / `find_similar` results and `get_item` only when at least one valid metric exists. The whole object, or either metric within it, is omitted when Style is absent, disabled, has no cached data, or changes its internal storage. ZotSeek keeps a short-lived read snapshot to avoid reparsing the file for every result; it never reads Style credentials, calls EasyScholar, invokes Style's column data provider, or triggers a metric refresh while serving MCP/REST. Values can therefore be stale and never affect ranking or filtering.
 - Plan 62: BM25 prepares after startup maintenance and during the existing manual update action. Early keyword/Hybrid requests may wait for preparation. Ordinary additions, edits and deletions can leave BM25 session-stale until the next maintenance pass; metadata navigation remains live.
 - A stale hit whose Zotero item no longer exists returns `itemStatus: "item_not_found"` and `title: "Item not found"`, preserving `libraryKey`/`itemKey` and any cached matched snippet. `links` and live `metadata` are omitted. Do not treat that snippet as evidence that the item still exists. The same optional status applies to MCP and REST; live results keep their prior shape. UI labels are localized independently of the machine status.
 - `libraryKey` is `"user"` or `"group:<groupID>"`, or `null` for items that can no longer be resolved locally (e.g. indexed on another machine and not present in this library); a `null` `libraryKey` also means no `links` are emitted.
@@ -139,7 +145,7 @@ Notes on the shape:
 
 ### `get_item` result and PDF behavior
 
-`get_item` always returns stable identity, normalized bibliographic metadata (including abstract), tags, collections, related-item identities, attachments, and deep links. Each `attachments` entry carries `key`, `contentType`, `isPDF`, `filename`, `isIndexedPdfSource` (true for the exact PDF attachment a new Full-mode index was built from), and — for PDF attachments — direct `openPdf`/`openPdfHttp` deep links. `include_notes:true` adds all Child Notes sorted by `noteKey`; every Note contains complete visible `text`, live `sections` (`path`, `pathLevels`, `paragraphs`), and deduplicated `sectionPaths`. Read-side Notes do not apply ZotSeek's indexing exclusions for Basic Information or References.
+`get_item` always returns stable identity, normalized bibliographic metadata (including abstract), tags, collections, related-item identities, attachments, and deep links. It also returns the same optional cached Zotero Style `journalMetrics` as search results when available. Each `attachments` entry carries `key`, `contentType`, `isPDF`, `filename`, `isIndexedPdfSource` (true for the exact PDF attachment a new Full-mode index was built from), and — for PDF attachments — direct `openPdf`/`openPdfHttp` deep links. `include_notes:true` adds all Child Notes sorted by `noteKey`; every Note contains complete visible `text`, live `sections` (`path`, `pathLevels`, `paragraphs`), and deduplicated `sectionPaths`. Read-side Notes do not apply ZotSeek's indexing exclusions for Basic Information or References.
 
 PDF reading never reruns the main-PDF classifier. A supplied `pdf_attachment_key` must be a PDF child of the requested parent in the same library. Without it, ZotSeek uses the exact source persisted by a new Full index; if no exact source is available, `pdf.status` is `unresolved` and the caller can choose a key from `attachments`. `pages` accepts one physical page or one continuous range such as `3-5`, with at most 20 pages per request.
 

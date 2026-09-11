@@ -241,6 +241,8 @@ MCP 工具说明补充通用证据判断提醒：判断结果时保留用户的�
 
 2026-09-10 MCP 参数文档对齐：`search` 默认 `hybrid` / `papers` / 10 条，最多 100 条；MCP 固定语义候选门槛为 0，schema 不暴露 `min_similarity`，旧客户端发送该字段时忽略。UI 保持现有相似度偏好；REST 继续保留独立的 `minSimilarity` 参数和偏好默认。MCP/REST 结果保留最终 `score`，并提供原始 `semanticScore` 与未归一化 `bm25Score`，无对应计算或命中时为 `null`；Keyword 不为补字段运行语义检索。`get_item` 的 PDF 返回解析纯文本，可能有希腊字符、数学符号、上下标、分栏和表格错误，指导语要求 Agent 对关键证据核验。详见 MCP.md。重启 Zotero 加载新构建后，客户端需刷新工具定义。
 
+2026-09-11 Plan 73：MCP/REST 的 `search`、`find_similar` 与 `get_item` 可从已加载 Zotero Style 的现成期刊缓存增加可选 `journalMetrics`，其中 `impactFactor` 对应 `sciif`，`sciQuartile` 仅接受 JCR SCI `Q1`–`Q4`。Style 6.x 适配按期刊名只读数据目录中的 `zoterostyle.json` / `rank`，并为旧版保留内存缓存 fallback；扩展隔离导致运行时全局不可见时，使用 Zotero Add-on Manager 只读确认 Style 是否 active，一次请求中的多条结果共享短时读取快照。适配器不读取密钥、不调用 EasyScholar、不调用可能安排联网更新的 Style 列数据提供器；插件、缓存或有效值缺失时省略字段，第三方结构或文件读取异常不影响原调用。指标不进入 metadata、索引、筛选或排序。
+
 在上游 `search` / `find_similar` / `index_status` 基础上新增（完整用法见 [MCP.md](MCP.md)）：
 
 - **`get_item` 工具**：按 `library_key + item_key` 读取规范化书目、tags、collections、relatedItems 与附件清单；`include_notes: true` 返回全部 Child Notes 的完整未过滤文本（不应用索引侧的"基本信息"/References 排除规则）及实时 `sections` / `sectionPaths`；`include_pdf: "pages" | "full"` 支持指定附件，显式范围每次 ≤20 连续页，`full` 以 ≤20 页批次返回最多 100 页或约 300,000 字符的开头前缀。超限时返回 `partial`、`limitReason` 与 `nextPage`，MCP/REST 合同一致；PDF 读取优先 Zotero 全文缓存、缺页时批量 `PDFWorker` 兜底，不虚假承诺底层队列可取消；不暴露本机文件路径。REST 对应 `GET /zotseek/item`。
