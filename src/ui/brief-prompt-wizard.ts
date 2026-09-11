@@ -60,9 +60,13 @@ interface BriefApi {
   openBriefPromptDownloadLocation?(path: string): Promise<void> | void;
 }
 
-type Page = 'service' | 'template' | 'questions' | 'confirm' | 'result';
+type Page = 'intro' | 'service' | 'template' | 'questions' | 'confirm' | 'result';
 type Operation = 'idle' | 'testing' | 'generating';
-const PAGE_ORDER: readonly Page[] = ['service', 'template', 'questions', 'confirm', 'result'];
+const PAGE_ORDER: readonly Page[] = ['intro', 'service', 'template', 'questions', 'confirm', 'result'];
+// Banner step indicator entries in display order. The result page counts as
+// "confirm done" so every step shows completed there.
+const STEP_ORDER: readonly Exclude<Page, 'result'>[] =
+  ['intro', 'service', 'template', 'questions', 'confirm'];
 
 function debug(message: string, error?: unknown): void {
   try {
@@ -172,7 +176,22 @@ class BriefPromptWizardController {
     // This checkbox authorizes only this window's narrow test/customization
     // disclosure and must not inherit legacy paper-generation consent.
     element<any>('zotseek-brief-wizard-consent').checked = false;
-    this.setPage(this.status.connectionVerified ? 'template' : 'service');
+    this.initChoiceCards();
+    // The guide always opens on the intro page; it carries no form or request.
+    this.setPage('intro');
+  }
+
+  // Radio inputs inside choice labels do not toggle a card class on their own;
+  // keep the selected-card highlight in sync with the checked radio.
+  private initChoiceCards(): void {
+    for (const id of ['zotseek-brief-wizard-template-personalized', 'zotseek-brief-wizard-template-bundled']) {
+      element<HTMLInputElement>(id).addEventListener('change', () => {
+        element('zotseek-brief-wizard-choice-personalized').classList
+          .toggle('zs-selected', element<HTMLInputElement>('zotseek-brief-wizard-template-personalized').checked);
+        element('zotseek-brief-wizard-choice-bundled').classList
+          .toggle('zs-selected', element<HTMLInputElement>('zotseek-brief-wizard-template-bundled').checked);
+      });
+    }
   }
 
   private async refreshStatus(): Promise<void> {
@@ -200,22 +219,34 @@ class BriefPromptWizardController {
     for (const candidate of PAGE_ORDER) {
       visible('zotseek-brief-wizard-' + candidate + '-page', candidate === page);
     }
-    const steps = ['service', 'template', 'questions', 'confirm'];
-    const step = page === 'result' ? 4 : steps.indexOf(page) + 1;
-    setText('zotseek-brief-wizard-progress', getString('brief-wizard-progress', {
-      current: step,
-      total: 4,
-    }));
+    // Keep the user's window size; each newly selected page starts at its top.
+    const pages = document.querySelector<HTMLElement>('.zs-wizard-pages');
+    if (pages) pages.scrollTop = 0;
+    this.renderSteps(page);
     const back = element<any>('zotseek-brief-wizard-back');
-    if (page === 'service' || page === 'result') back.setAttribute('disabled', 'true');
+    if (page === 'intro' || page === 'result') back.setAttribute('disabled', 'true');
     else back.removeAttribute('disabled');
     setText('zotseek-brief-wizard-next', getString(page === 'confirm'
       ? 'brief-wizard-generate'
       : page === 'result' ? 'brief-wizard-finish' : 'brief-wizard-next'));
     setText('zotseek-brief-wizard-status',
-      page !== 'result' && this.status?.setup.status === 'damaged'
+      page !== 'result' && page !== 'intro' && this.status?.setup.status === 'damaged'
         ? getString('brief-wizard-setup-damaged')
         : '');
+  }
+
+  private renderSteps(page: Page): void {
+    const stepsBox = document.getElementById('zotseek-brief-wizard-steps');
+    if (!stepsBox) return;
+    const activeIndex = page === 'result' ? STEP_ORDER.length : STEP_ORDER.indexOf(page);
+    for (const step of Array.from(stepsBox.querySelectorAll<HTMLElement>('.zs-wizard-step'))) {
+      const index = STEP_ORDER.indexOf(step.dataset.step as typeof STEP_ORDER[number]);
+      const state = index < activeIndex ? 'done' : index === activeIndex ? 'active' : '';
+      if (state) step.dataset.state = state;
+      else delete step.dataset.state;
+      const dot = step.querySelector<HTMLElement>('.zs-step-dot');
+      if (dot) dot.textContent = state === 'done' ? '✓' : String(index + 1);
+    }
   }
 
   private setBusy(busy: boolean): void {
@@ -228,7 +259,7 @@ class BriefPromptWizardController {
       const node = element<any>(id);
       if (busy) node.setAttribute('disabled', 'true');
       else if (id === 'zotseek-brief-wizard-back'
-          && (this.page === 'service' || this.page === 'result')) {
+          && (this.page === 'intro' || this.page === 'result')) {
         node.setAttribute('disabled', 'true');
       } else node.removeAttribute('disabled');
     }
@@ -330,6 +361,10 @@ class BriefPromptWizardController {
 
   private async next(): Promise<void> {
     if (!this.api || this.operation !== 'idle') return;
+    if (this.page === 'intro') {
+      this.setPage('service');
+      return;
+    }
     if (this.page === 'result') {
       window.close();
       return;
@@ -384,7 +419,8 @@ class BriefPromptWizardController {
 
   private back(): void {
     if (this.operation !== 'idle') return;
-    if (this.page === 'template') this.setPage('service');
+    if (this.page === 'service') this.setPage('intro');
+    else if (this.page === 'template') this.setPage('service');
     else if (this.page === 'questions') this.setPage('template');
     else if (this.page === 'confirm') this.setPage('questions');
   }

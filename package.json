@@ -1,6 +1,6 @@
 {
   "name": "zotseek",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "ZotSeek-U - Semantic Search for Zotero using local AI embeddings",
   "author": "Jos\u00e9 Fernandes",
   "license": "MIT",
