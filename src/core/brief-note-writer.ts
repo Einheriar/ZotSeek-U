@@ -9,6 +9,7 @@ import type { BriefSourceEvidence } from './brief-source-builder';
 import type { StableIdentity } from './identity-resolver';
 
 export const BRIEF_NOTE_TITLE = '简报';
+const ZOTERO_NOTE_SCHEMA_VERSION = 9;
 
 export interface BriefNoteHandle {
   /** Zotero Note wrappers expose additional runtime fields used by tests/UI. */
@@ -150,7 +151,11 @@ export class BriefNoteWriter {
       coverage: input.evidence.coverage,
       promptSlot: input.promptSlot,
     };
-    const html = appendBriefNoteProvenance(`<h1>${BRIEF_NOTE_TITLE}</h1>\n${body}`, provenance);
+    const noteBody = appendBriefNoteProvenance(`<h1>${BRIEF_NOTE_TITLE}</h1>\n${body}`, provenance);
+    // Zotero adds the outer `zotero-note znv*` storage wrapper itself. The
+    // inner schema root is still required for the editor outline to recognize
+    // each generated heading as a separate TOC entry.
+    const html = `<div data-schema-version="${ZOTERO_NOTE_SCHEMA_VERSION}">\n${noteBody}\n</div>`;
     const first = await this.check(input, 'before-create');
     checkCancelled(input);
     let note: BriefNoteHandle | null = null;

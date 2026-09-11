@@ -277,7 +277,7 @@ MCP 工具说明补充通用证据判断提醒：判断结果时保留用户的�
 - 标题/摘要迫选分类器区分 `review` / `standard` 两类文献（稳定机器值，模糊样本默认 `standard`），分类调用独立预算。
 - 调度器：单篇手动任务 FIFO 并发 1；合集任务三篇一批、批内并行；两模式互斥。
 - 提示词存储：随包内置"标准论文"与"综述"双模板（`prompts/standard-article-brief.md`、`prompts/review-article-brief.md`），支持 profile 目录原子覆盖导入（UTF-8 / 256KiB 校验）。
-- 简报 Note 携带 HTML 注释形式的来源 provenance。
+- 简报 Note 携带 HTML 注释形式的来源 provenance；写入内容使用 Zotero 富文本笔记的 `data-schema-version="9"` 内层根节点，外层 `zotero-note znv*` 存储包装仍由 Zotero 添加。安全 Markdown 渲染器将每个顶层块分别换行输出，以符合 Better Notes 按 HTML 行识别 H1–H6 的目录解析方式，使自动生成的标题能被逐级识别。
 
 ### 13.2 进行中的闭环设计 [进行中]
 

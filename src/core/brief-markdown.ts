@@ -155,7 +155,10 @@ export function markdownToSafeHtml(markdown: string): string {
     paragraph.push(line);
   }
   flushCode(); flushTable(); flushParagraph(); flushList(); flushQuote();
-  const html = output.join('');
+  // Keep each top-level block on its own line. Zotero renders adjacent block
+  // tags either way, while Better Notes builds its outline by splitting Note
+  // HTML on newlines before recognizing H1-H6 entries.
+  const html = output.join('\n');
   if (!html.replace(/<[^>]*>/gu, '').trim()) throw new BriefMarkdownError('Brief Markdown produced empty HTML.');
   return html;
 }

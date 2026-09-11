@@ -3,6 +3,7 @@ import { describe, test } from 'node:test';
 import { markdownToSafeHtml } from '../src/core/brief-markdown';
 import { BriefSourceBuilder } from '../src/core/brief-source-builder';
 import { BriefNoteWriter } from '../src/core/brief-note-writer';
+import { parseBriefNoteProvenance } from '../src/core/brief-note-provenance';
 import {
   BriefGenerationRunner,
   estimateBriefGeneration,
@@ -38,6 +39,22 @@ describe('brief core pipeline', () => {
     assert.match(html, /<code>adjusted p &lt; \.01 and n &gt; 20<\/code>/);
     assert.match(html, /kept text/);
     assert.doesNotMatch(html, /<span|onclick/iu);
+  });
+
+  test('writes every top-level Markdown block on its own line for Better Notes outlines', () => {
+    const html = markdownToSafeHtml(
+      '## Basic information\n\n- Title\n- Authors\n\n## Question\n\n### Gap\n\nA finding.',
+    );
+    assert.deepEqual(html.split('\n'), [
+      '<h2>Basic information</h2>',
+      '<ul>',
+      '<li>Title</li>',
+      '<li>Authors</li>',
+      '</ul>',
+      '<h2>Question</h2>',
+      '<h3>Gap</h3>',
+      '<p>A finding.</p>',
+    ]);
   });
 
   test('uses exact PDF pages and enforces non-whitespace Unicode threshold', async () => {
@@ -346,6 +363,11 @@ describe('brief core pipeline', () => {
     });
     assert.equal(created.length, 1);
     assert.equal((result as any).committed, true);
-    assert.match((result as any).value, /<h1>简报<\/h1>/);
+    const noteHtml = String((result as any).value);
+    assert.match(noteHtml, /^<div data-schema-version="9">\n<h1>简报<\/h1>/);
+    assert.match(noteHtml, /\n<h2>Result<\/h2>\n<p>A finding\.<\/p>\n/);
+    assert.match(noteHtml, /<!-- zotseek-brief-provenance [\s\S]+ -->\n<\/div>$/);
+    assert.doesNotMatch(noteHtml, /class="zotero-note\s+znv\d+"/);
+    assert.equal(parseBriefNoteProvenance(noteHtml)?.pdfAttachmentKey, 'PDF1');
   });
 });

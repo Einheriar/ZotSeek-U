@@ -277,7 +277,7 @@ The brief feature's server-side core, settings/item entry points, and Plan 57 P7
 - A title/abstract forced-choice classifier distinguishes `review` / `standard` papers (stable machine values; ambiguous samples default to `standard`) with its own call budget.
 - Scheduler: single-paper manual tasks run FIFO with concurrency 1; collection tasks run in batches of three papers with intra-batch parallelism; the two modes are mutually exclusive.
 - Prompt store: bundled "standard paper" and "review" templates (`prompts/standard-article-brief.md`, `prompts/review-article-brief.md`) with atomic override import into the profile directory (UTF-8 / 256KiB validation).
-- Brief notes carry source provenance as HTML comments.
+- Brief notes carry source provenance as HTML comments. Written content uses Zotero's inner `data-schema-version="9"` rich-note root, while Zotero remains responsible for the outer `zotero-note znv*` storage wrapper. The safe Markdown renderer emits each top-level block on its own line to match Better Notes' line-based H1-H6 outline parser, so generated headings remain distinct outline entries.
 
 ### 13.2 In-progress closed-loop design [In progress]
 
