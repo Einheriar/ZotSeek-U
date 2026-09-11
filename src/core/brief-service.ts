@@ -49,6 +49,8 @@ import {
 import { BriefNoteWriter } from './brief-note-writer';
 import {
   briefPromptStore,
+  BriefPromptStoreError,
+  type BriefPromptDownloadResult,
   type BriefPromptSlot,
   type StoredBriefPrompt,
 } from './brief-prompt-store';
@@ -91,6 +93,12 @@ export interface BriefRuntimeStatus {
   config: ReturnType<typeof getBriefGenerationConfigSnapshot>;
   setup: BriefSetupSnapshot;
   prompts: Record<BriefPromptSlot, BriefRuntimePromptStatus>;
+}
+
+export interface BriefBundledPromptSetupResult {
+  setup: 'bundled';
+  status: 'enabled';
+  downloads: BriefPromptDownloadResult;
 }
 
 interface BriefModelCacheEntry {
@@ -552,8 +560,18 @@ export class BriefService {
     return prompts;
   }
 
-  async useBundledPrompts(): Promise<Record<BriefPromptSlot, StoredBriefPrompt>> {
-    return await this.resetPrompts();
+  async useBundledPrompts(): Promise<BriefBundledPromptSetupResult> {
+    if (this.isBusy()) throw new Error('Another literature-brief task is still running.');
+    const save = await briefPromptStore.saveBundledPair();
+    if (save.status !== 'enabled') {
+      const fileError = Object.values(save.downloads.files)
+        .find(file => typeof file.error === 'string')?.error;
+      throw new BriefPromptStoreError(
+        save.error || save.downloads.error || fileError || 'Could not download and enable the bundled prompt pair.',
+      );
+    }
+    markBriefSetupChoice('bundled');
+    return { setup: 'bundled', status: 'enabled', downloads: save.downloads };
   }
 
   private sourceBuilder(): BriefSourceBuilder {

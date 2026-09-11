@@ -68,6 +68,12 @@ export interface BriefPromptSaveResult {
   downloads: BriefPromptDownloadResult;
   publication?: BriefPromptPublishResult;
 }
+export interface BriefBundledPromptSaveResult {
+  status: 'enabled' | 'downloaded_not_enabled' | 'failed' | 'cancelled';
+  downloads: BriefPromptDownloadResult;
+  prompts?: Record<BriefPromptSlot, StoredBriefPrompt>;
+  error?: string;
+}
 
 export class BriefPromptStoreError extends Error {
   readonly code = 'BRIEF_PROMPT_STORE_ERROR' as const;
@@ -268,6 +274,27 @@ export class BriefPromptStore {
     const downloads = await this.downloadPair(pair, options); if (downloads.status === 'cancelled') return { status: 'cancelled', downloads }; if (downloads.status !== 'downloaded') return { status: 'failed', downloads }; if (isCancelled(options.signal)) return { status: 'cancelled', downloads };
     try { const publication = await this.publishPair(pair, options); return { status: 'enabled', downloads, publication }; }
     catch (error: any) { const publication: BriefPromptPublishResult = { status: error instanceof BriefPromptOperationCancelledError ? 'cancelled' : 'failed', error: error instanceof Error ? error.message : 'Could not publish the prompt profile.' }; return { status: publication.status === 'cancelled' ? 'cancelled' : 'downloaded_not_enabled', downloads, publication }; }
+  }
+  /** Download packaged defaults before making them the active prompt source. */
+  async saveBundledPair(options: { signal?: { readonly aborted?: boolean } } = {}): Promise<BriefBundledPromptSaveResult> {
+    const bundled = await this.loadBundledRequired();
+    const downloads = await this.downloadPair({
+      standard: bundled.standard.content,
+      review: bundled.review.content,
+    }, options);
+    if (downloads.status === 'cancelled') return { status: 'cancelled', downloads };
+    if (downloads.status !== 'downloaded') return { status: 'failed', downloads };
+    if (isCancelled(options.signal)) return { status: 'cancelled', downloads };
+    try {
+      const prompts = await this.resetToBundled();
+      return { status: 'enabled', downloads, prompts };
+    } catch (error: any) {
+      return {
+        status: 'downloaded_not_enabled',
+        downloads,
+        error: error instanceof Error ? error.message : 'Could not enable the bundled prompt pair.',
+      };
+    }
   }
   /** Validate and atomically copy one external prompt into its managed slot. */
   async importFromFile(slot: BriefPromptSlot, sourcePath: string): Promise<StoredBriefPrompt> {

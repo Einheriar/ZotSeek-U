@@ -16,8 +16,14 @@ interface BriefPromptCustomizationForm {
 
 type BriefPromptFile = { path?: string; filePath?: string };
 interface BriefPromptCustomizationResult {
+  setup?: 'bundled';
+  status?: 'enabled';
   outputPath?: string;
   files?: Array<BriefPromptFile> | Record<string, string | BriefPromptFile>;
+  downloads?: {
+    directory?: string;
+    files?: Array<BriefPromptFile> | Record<string, string | BriefPromptFile>;
+  };
   save?: {
     status?: 'enabled' | 'downloaded_not_enabled' | 'failed' | 'cancelled';
     downloads?: {
@@ -46,7 +52,7 @@ interface BriefStatus {
 
 interface BriefPromptWizardArgs {
   input: { initialLanguage?: string; reconfigurePrompts?: boolean };
-  output: BriefPromptCustomizationResult | { setup?: string } | null;
+  output: BriefPromptCustomizationResult | { setup: string } | null;
 }
 
 interface BriefApi {
@@ -54,7 +60,7 @@ interface BriefApi {
   updateBriefSettings(input: BriefStatus['config']['settings']): Promise<void> | void;
   discoverBriefModels(force?: boolean): Promise<BriefModelSuggestion[]>;
   testBriefConnection(): Promise<boolean>;
-  useBundledBriefPrompts(): Promise<unknown>;
+  useBundledBriefPrompts(): Promise<BriefPromptCustomizationResult>;
   customizeBriefPrompts(form: BriefPromptCustomizationForm): Promise<BriefPromptCustomizationResult>;
   cancelBriefPromptCustomization?(): Promise<void> | void;
   openBriefPromptDownloadLocation?(path: string): Promise<void> | void;
@@ -113,9 +119,10 @@ function visible(id: string, show: boolean): void {
 }
 
 function outputPath(result: BriefPromptCustomizationResult): string | null {
-  const direct = [result.outputPath, result.save?.downloads?.directory];
-  for (const value of direct) if (typeof value === 'string' && value.trim()) return value.trim();
-  const sources = [result.files, result.save?.downloads?.files].filter(Boolean);
+  if (typeof result.outputPath === 'string' && result.outputPath.trim()) {
+    return result.outputPath.trim();
+  }
+  const sources = [result.files, result.downloads?.files, result.save?.downloads?.files].filter(Boolean);
   for (const files of sources) {
     const values = Array.isArray(files)
       ? files
@@ -125,6 +132,8 @@ function outputPath(result: BriefPromptCustomizationResult): string | null {
       if (typeof value === 'string' && value.trim()) return value.trim();
     }
   }
+  const directories = [result.downloads?.directory, result.save?.downloads?.directory];
+  for (const value of directories) if (typeof value === 'string' && value.trim()) return value.trim();
   return null;
 }
 
@@ -389,13 +398,24 @@ class BriefPromptWizardController {
         this.operation = 'generating';
         this.setBusy(true);
         try {
-          await this.api.useBundledBriefPrompts();
-          if (this.args) this.args.output = { setup: 'bundled' };
+          const result = await this.api.useBundledBriefPrompts();
+          if (result.setup !== 'bundled' || result.status !== 'enabled') {
+            throw new Error(result.status || 'invalid_result');
+          }
+          if (this.args) this.args.output = result;
+          const path = outputPath(result);
+          if (path) {
+            const pathNode = element<any>('zotseek-brief-wizard-path');
+            pathNode.setAttribute('value', path);
+            pathNode.setAttribute('data-path', path);
+            pathNode.textContent = path;
+            visible('zotseek-brief-wizard-result-path-box', true);
+          }
           setText('zotseek-brief-wizard-result-message', getString('brief-wizard-bundled-success'));
           this.setPage('result');
         } catch (error) {
           debug('built-in choice failed', error);
-          setText('zotseek-brief-wizard-status', getString('brief-wizard-failed'));
+          setText('zotseek-brief-wizard-status', getString('brief-wizard-bundled-failed'));
         } finally {
           this.operation = 'idle';
           this.setBusy(false);

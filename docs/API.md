@@ -228,7 +228,7 @@ The following helpers are also exposed on `Zotero.ZotSeek.api`. The brief featur
 | `updateBriefSettings(settings)` | Save `{ modelName, maxInputTokens, maxOutputTokens, thinkingEnabled }` for the active Cloud provider and invalidate its previous connection verification. |
 | `discoverBriefModels(force?)` | Return model suggestions discovered with the active provider and shared credential. Pass `true` to bypass the in-memory cache. Suggestions are advisory; OpenAI/Custom list entries are not capability proof. |
 | `testBriefConnection()` | Make the brief-specific generation probe and bind successful verification to the current provider, credential revision, endpoint, and generation configuration. External callers must first disclose that fixed test text is sent and that a small charge may result. |
-| `useBundledBriefPrompts()` | Explicitly activate the bundled standard/review pair and mark prompt setup complete. |
+| `useBundledBriefPrompts()` | Download the bundled standard/review pair with non-overwriting names, then activate it and mark setup complete only after both files succeed. Returns `setup`, `status`, and download metadata without prompt bodies. |
 | `cancelBriefJobs()` | Cancel active/queued manual and collection brief work, prompt customization, and in-flight generation requests. |
 | `customizeBriefPrompts(form)` | Generate and publish a prompt pair from `{ domain, outputLanguage, readingHabits? }`; returns save/download metadata but not prompt bodies. External callers must first disclose that the bundled templates and form responses are sent and may incur charges. |
 | `cancelBriefPromptCustomization()` | Cancel the active prompt-customization request without changing an already published pair. |

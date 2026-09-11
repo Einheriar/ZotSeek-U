@@ -195,6 +195,37 @@ describe('brief prompt store', () => {
     assert.equal((await store.loadRequired()).review.content, '# next review');
   });
 
+  test('downloads packaged defaults before activating them and preserves custom prompts on download failure', async () => {
+    await store.publishPair({ standard: '# custom standard', review: '# custom review' });
+
+    memory.setDownloadDirectory('/downloads');
+    const originalMove = memory.environment.move;
+    memory.environment.move = async (source, destination, options) => {
+      if (/zotseek-brief-review-.*\.md$/.test(destination)) throw new Error('review download failed');
+      await originalMove(source, destination, options);
+    };
+    const failed = await store.saveBundledPair();
+    assert.equal(failed.status, 'failed');
+    assert.equal(failed.downloads.files.standard.status, 'downloaded');
+    assert.equal(failed.downloads.files.review.status, 'failed');
+    assert.equal((await store.loadRequired()).standard.content, '# custom standard');
+
+    memory.environment.move = originalMove;
+    const saved = await store.saveBundledPair();
+    assert.equal(saved.status, 'enabled');
+    assert.equal(saved.downloads.status, 'downloaded');
+    assert.equal((await store.loadRequired()).standard.source, 'bundled');
+    assert.equal((await store.loadRequired()).review.source, 'bundled');
+    assert.equal(
+      new TextDecoder().decode(memory.files.get(saved.downloads.files.standard.path || '')),
+      '# Bundled standard prompt',
+    );
+    assert.equal(
+      new TextDecoder().decode(memory.files.get(saved.downloads.files.review.path || '')),
+      '# Bundled review prompt',
+    );
+  });
+
   test('cancellation before the active-record commit does not enable a partial pair', async () => {
     const controller = new AbortController();
     let writes = 0;
