@@ -131,12 +131,12 @@ const TOOL_DEFINITIONS = [
   {
     name: 'get_item',
     description:
-      'Read one Zotero parent item by stable library_key + item_key. Returns a normalized metadata snapshot and attachment list; optionally includes complete, unfiltered Child Notes and exact PDF pages or full text. ' +
-      'For a selected search hit, begin with its matched PDF page and necessary adjacent pages; request full text when the question requires it. ' +
+      'Read one Zotero parent item by stable library_key + item_key. Returns a normalized metadata snapshot and attachment list; optionally includes complete, unfiltered Child Notes and exact PDF pages or a bounded leading PDF prefix. ' +
+      'For a selected search hit, begin with its matched PDF page and necessary adjacent pages; request the bounded full prefix only when the question requires broader reading. ' +
       'Verify passages supporting key claims before issuing near-duplicate searches. ' +
       'PDF content is extracted text, not a faithful rendering: Greek letters, mathematical symbols, superscripts, subscripts, column order and tables may be incorrect. ' +
       'Do not guess missing symbols or treat extraction artifacts as the paper\'s claims. Distinguish the source\'s direct claims, studies reported by a review, and your own inference; identify background or insufficient evidence and cite material actually read. ' +
-      'PDF reads use the exact attachment selected during Full indexing when available, prefer Zotero\'s full-text cache, and fall back to one batched PDFWorker call. Read-only and local.',
+      'PDF reads use the exact attachment selected during Full indexing when available and prefer Zotero\'s full-text cache. Explicit pages use one PDFWorker batch; full reads use batches of at most 20 pages and return at most 100 pages or about 300,000 text characters. A limited result has status=partial, complete=false, limitReason, and nextPage for a follow-up pages request. Read-only and local.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -158,7 +158,7 @@ const TOOL_DEFINITIONS = [
           type: 'string',
           enum: ['none', 'pages', 'full'],
           default: 'none',
-          description: 'Read no PDF text, a page range, or the complete exact PDF attachment',
+          description: 'Read no PDF text, a page range, or a bounded leading prefix of the exact PDF attachment',
         },
         pdf_pages: {
           type: 'string',
@@ -212,6 +212,17 @@ const TOOL_DEFINITIONS = [
 
 type EndpointResponse = [number, string, string];
 
+function hasRequestId(message: any): boolean {
+  return Object.prototype.hasOwnProperty.call(message, 'id');
+}
+
+function isJsonRpcResponse(message: any): boolean {
+  return !!message && typeof message === 'object' && !Array.isArray(message) &&
+    message.jsonrpc === '2.0' && hasRequestId(message) &&
+    (Object.prototype.hasOwnProperty.call(message, 'result') ||
+      Object.prototype.hasOwnProperty.call(message, 'error'));
+}
+
 function rpcError(id: any, code: number, message: string): object {
   return { jsonrpc: '2.0', id: id ?? null, error: { code, message } };
 }
@@ -256,13 +267,10 @@ async function callTool(id: any, params: any): Promise<EndpointResponse> {
   return ok(id, toolText(payload));
 }
 
-export async function handleMcpRequest(requestData: any): Promise<EndpointResponse> {
-  const headers = requestData?.headers || {};
-  if (!isAllowedOrigin(headers['origin'])) {
-    return err(403, null, -32600, 'Forbidden: non-local Origin');
-  }
-
-  const msg = requestData?.data;
+async function handleMcpMessage(msg: any, inBatch = false): Promise<EndpointResponse> {
+  // Responses acknowledge a prior server request. This stateless server never
+  // sends such requests, but accepting them keeps the HTTP transport valid.
+  if (isJsonRpcResponse(msg)) return [202, 'text/plain', ''];
   if (
     !msg || typeof msg !== 'object' || Array.isArray(msg) ||
     msg.jsonrpc !== '2.0' || typeof msg.method !== 'string'
@@ -271,6 +279,13 @@ export async function handleMcpRequest(requestData: any): Promise<EndpointRespon
   }
 
   const { id, method, params } = msg;
+  const notification = !hasRequestId(msg);
+
+  // MCP initialization establishes the protocol contract for a connection and
+  // must remain a standalone request rather than one member of a batch.
+  if (inBatch && method === 'initialize') {
+    return err(200, id, -32600, 'initialize must not be sent in a JSON-RPC batch');
+  }
 
   // Notifications (no response body expected). 202 per the MCP spec.
   // Zotero's responseCodes table has no 202 entry, so the status line's
@@ -281,6 +296,7 @@ export async function handleMcpRequest(requestData: any): Promise<EndpointRespon
   }
 
   try {
+    let response: EndpointResponse;
     switch (method) {
       case 'initialize': {
         const requested = params?.protocolVersion;
@@ -288,7 +304,7 @@ export async function handleMcpRequest(requestData: any): Promise<EndpointRespon
           typeof requested === 'string' && SUPPORTED_PROTOCOL_VERSIONS.includes(requested)
             ? requested
             : LATEST_PROTOCOL_VERSION;
-        return ok(id, {
+        response = ok(id, {
           protocolVersion,
           capabilities: { tools: { listChanged: false } },
           serverInfo: {
@@ -296,19 +312,55 @@ export async function handleMcpRequest(requestData: any): Promise<EndpointRespon
             version: Zotero.ZotSeek?.info?.version || 'unknown',
           },
         });
+        break;
       }
       case 'ping':
-        return ok(id, {});
+        response = ok(id, {});
+        break;
       case 'tools/list':
-        return ok(id, { tools: TOOL_DEFINITIONS });
+        response = ok(id, { tools: TOOL_DEFINITIONS });
+        break;
       case 'tools/call':
-        return callTool(id, params);
+        response = await callTool(id, params);
+        break;
       default:
-        return err(200, id, -32601, `Method not found: ${method}`);
+        response = err(200, id, -32601, `Method not found: ${method}`);
+        break;
     }
+    return notification ? [202, 'text/plain', ''] : response;
   } catch (e: any) {
-    return err(200, id, -32603, e?.message || 'Internal error');
+    return notification
+      ? [202, 'text/plain', '']
+      : err(200, id, -32603, e?.message || 'Internal error');
   }
+}
+
+export async function handleMcpRequest(requestData: any): Promise<EndpointResponse> {
+  const headers = requestData?.headers || {};
+  if (!isAllowedOrigin(headers['origin'])) {
+    return err(403, null, -32600, 'Forbidden: non-local Origin');
+  }
+  if (String(requestData?.method || 'POST').toUpperCase() === 'GET') {
+    return [405, 'text/plain', 'Method Not Allowed'];
+  }
+
+  const data = requestData?.data;
+  if (!Array.isArray(data)) return handleMcpMessage(data);
+  if (data.length === 0) return err(400, null, -32600, 'Invalid empty JSON-RPC batch');
+
+  // Batching was removed in 2025-06-18. A missing version header uses the
+  // 2025-03-26 compatibility contract, which requires receiving batches.
+  const protocolVersion = headers['mcp-protocol-version'];
+  if (protocolVersion === '2025-06-18') {
+    return err(400, null, -32600, 'JSON-RPC batching is not supported in MCP 2025-06-18');
+  }
+
+  const handled = await Promise.all(data.map(message => handleMcpMessage(message, true)));
+  const responses = handled
+    .filter(([status, , body]) => status !== 202 && !!body)
+    .map(([, , body]) => JSON.parse(body));
+  if (responses.length === 0) return [202, 'text/plain', ''];
+  return [200, 'application/json', JSON.stringify(responses)];
 }
 
 /**
@@ -318,7 +370,7 @@ export async function handleMcpRequest(requestData: any): Promise<EndpointRespon
  */
 export function ZotSeekMCPEndpoint(this: any) {}
 ZotSeekMCPEndpoint.prototype = {
-  supportedMethods: ['POST'],
+  supportedMethods: ['POST', 'GET'],
   supportedDataTypes: ['application/json'],
   permitBookmarklet: false,
   init: handleMcpRequest,

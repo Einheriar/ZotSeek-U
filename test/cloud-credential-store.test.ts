@@ -127,10 +127,11 @@ describe('cloud credential store', () => {
     );
   });
 
-  test('bumps isolated revisions and invalidates the brief only for Bailian', async () => {
+  test('bumps isolated revisions and invalidates only the matching brief provider', async () => {
     const previousZotero = (globalThis as any).Zotero;
     const values = new Map<string, unknown>([
       ['zotseek.cloud.brief.connectionVerified', true],
+      ['zotseek.cloud.brief.connectionVerified.openai', true],
     ]);
     (globalThis as any).Zotero = {
       Prefs: {
@@ -145,15 +146,19 @@ describe('cloud credential store', () => {
       await store.set('openai-key', 'openai');
       assert.equal(values.get('zotseek.cloud.credentialRevision.openai'), 1);
       assert.equal(values.get('zotseek.cloud.brief.connectionVerified'), true);
+      assert.equal(values.get('zotseek.cloud.brief.connectionVerified.openai'), false);
 
+      values.set('zotseek.cloud.brief.connectionVerified.openai', true);
       await store.set('bailian-key', 'alibaba-bailian');
       assert.equal(values.get('zotseek.cloud.credentialRevision.alibaba-bailian'), 1);
       assert.equal(values.get('zotseek.cloud.credentialRevision.openai'), 1);
       assert.equal(values.get('zotseek.cloud.brief.connectionVerified'), false);
+      assert.equal(values.get('zotseek.cloud.brief.connectionVerified.openai'), true);
 
       await store.clear('openai');
       assert.equal(values.get('zotseek.cloud.credentialRevision.openai'), 2);
       assert.equal(values.get('zotseek.cloud.credentialRevision.alibaba-bailian'), 1);
+      assert.equal(values.get('zotseek.cloud.brief.connectionVerified.openai'), false);
     } finally {
       if (previousZotero === undefined) delete (globalThis as any).Zotero;
       else (globalThis as any).Zotero = previousZotero;

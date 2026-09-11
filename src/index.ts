@@ -19,6 +19,7 @@ import { searchEngine, SearchResult } from './core/search-engine';
 import { textExtractor, ExtractedText, ExtractedChunks } from './core/text-extractor';
 import { ZoteroAPI } from './utils/zotero-api';
 import {
+  allocateFullModeChunkCounts,
   assessChunkStrategyState,
   CHUNK_STRATEGY_VERSION,
   getIndexingMode,
@@ -66,6 +67,7 @@ import { initServerManager, shutdownServerManager } from './server/server-manage
 import { registerModelsResourceSubstitution, verifyModelsResourceSubstitution } from './core/model-download';
 import { tokenizerService } from './core/tokenizer-service';
 import { shouldClearLegacyDefaultChunkPreference } from './core/model-input-policy';
+import { normalizeMaxChunksPerPaper } from './utils/numeric-preferences';
 import {
   getLastServerModelConfigLoadResult,
   getSelectedServerModelConfigurationIssue,
@@ -112,6 +114,8 @@ import {
 } from './utils/index-exclusion';
 import {
   briefService,
+  summarizeBriefJobUsage,
+  type BriefGenerationPreparation,
   type BriefGenerationRequest,
   type BriefJobResult,
 } from './core/brief-service';
@@ -146,6 +150,7 @@ const BRIEF_SKIP_REASON_LABELS: Readonly<Record<string, string>> = {
   existing_note: 'brief-skip-reason-existing-note',
   'existing-note': 'brief-skip-reason-existing-note',
   no_main_pdf: 'brief-skip-reason-no-main-pdf',
+  garbled_text: 'brief-skip-reason-garbled-text',
 };
 
 /**
@@ -349,6 +354,29 @@ class ZotSeekPlugin {
     this.logger.debug('Plugin initialized with ZoteroToolkit logging');
   }
 
+  private isIndexOperationBusy(): boolean {
+    return this.indexOperationActive || this.indexing || autoIndexManager.hasActiveIndexOperation();
+  }
+
+  private tryBeginIndexOperation(showAlert = true): symbol | null {
+    if (this.indexOperationActive || this.indexing) {
+      if (showAlert) this.showAlert(getString('indexing-alreadyInProgress'));
+      return null;
+    }
+    const token = autoIndexManager.tryBeginExplicitOperation();
+    if (!token) {
+      if (showAlert) this.showAlert(getString('indexing-alreadyInProgress'));
+      return null;
+    }
+    this.indexOperationActive = true;
+    return token;
+  }
+
+  private endIndexOperation(token: symbol): void {
+    this.indexOperationActive = false;
+    autoIndexManager.endExplicitOperation(token);
+  }
+
   setInfo(info: PluginInfo): void {
     this.info = info;
     this.logger.info(`Plugin version: ${info.version}`);
@@ -395,6 +423,8 @@ class ZotSeekPlugin {
       'zotseek.cloud.autoIndex': false,
       'zotseek.cloud.consentVersion': 0, // legacy global consent, read as the Bailian fallback
       'zotseek.brief.enabled': false,
+      'zotseek.brief.setup.version': 0,
+      'zotseek.brief.setup.choice': '',
       'zotseek.cloud.brief.modelName': 'deepseek-v4-flash-0731',
       'zotseek.cloud.brief.maxInputTokens': 1000000,
       'zotseek.cloud.brief.maxOutputTokens': 16384,
@@ -1164,7 +1194,7 @@ class ZotSeekPlugin {
    * Public method to clear the index (called from preferences pane)
    */
   public async clearIndex(): Promise<void> {
-    if (this.indexOperationActive || this.indexing) {
+    if (this.isIndexOperationBusy()) {
       this.showAlert(getString('indexing-alreadyInProgress'));
       return;
     }
@@ -1180,6 +1210,9 @@ class ZotSeekPlugin {
     );
 
     if (!confirmed) return;
+
+    const operationToken = this.tryBeginIndexOperation();
+    if (!operationToken) return;
 
     // Create stable progress window for clearing
     const progressWindow = new StableProgressWindow({
@@ -1208,6 +1241,8 @@ class ZotSeekPlugin {
       this.logger.error(`Failed to clear index: ${error}`);
       progressWindow.error(`Failed to clear index: ${error.message || error}`, true);
       this.showAlert(`Failed to clear index: ${error.message || error}`);
+    } finally {
+      this.endIndexOperation(operationToken);
     }
   }
 
@@ -1248,7 +1283,7 @@ class ZotSeekPlugin {
    * This ensures the new indexing mode setting is applied
    */
   public async rebuildIndex(): Promise<void> {
-    if (this.indexOperationActive || this.indexing) {
+    if (this.isIndexOperationBusy()) {
       this.showAlert(getString('indexing-alreadyInProgress'));
       return;
     }
@@ -1340,6 +1375,9 @@ class ZotSeekPlugin {
       if (!confirmed) return;
     }
 
+    const operationToken = this.tryBeginIndexOperation();
+    if (!operationToken) return;
+
     // A strategy migration cannot mix old/new chunks. Clear only the active
     // model so unrelated model partitions remain intact.
     const progressWindow = new StableProgressWindow({
@@ -1366,12 +1404,14 @@ class ZotSeekPlugin {
 
         // The exact scope was resolved and, when requested, confirmed before
         // deletion. indexItems records it for pause/failure recovery.
-        await this.indexItems(target.items, target.bulkScope);
+        await this.indexItems(target.items, target.bulkScope, false, operationToken);
       }
     } catch (error: any) {
       this.logger.error(`Failed to rebuild index: ${error}`);
       progressWindow.error(`Failed to rebuild index: ${error.message || error}`, true);
       this.showAlert(`Failed to rebuild index: ${error.message || error}`);
+    } finally {
+      this.endIndexOperation(operationToken);
     }
   }
 
@@ -1577,7 +1617,7 @@ class ZotSeekPlugin {
    * Index selected items for semantic search
    */
   private async onIndexSelected(): Promise<void> {
-    if (this.indexOperationActive || this.indexing) {
+    if (this.isIndexOperationBusy()) {
       this.showAlert(getString('indexing-alreadyInProgress'));
       return;
     }
@@ -1602,9 +1642,27 @@ class ZotSeekPlugin {
     await this.indexItems(selectedItems, scope);
   }
 
-  private async ensureBriefGenerationReady(): Promise<boolean> {
+  private openBriefSetupWizard(): void {
+    const Z = getZotero();
+    const mainWindow = Z?.getMainWindow?.();
+    mainWindow?.openDialog?.(
+      'chrome://zotseek/content/briefPromptWizard.xhtml',
+      '',
+      'chrome,dialog,modal,centerscreen,resizable=yes',
+      {
+        input: {
+          initialLanguage: String(
+            Services?.locale?.appLocaleAsBCP47 || Z?.locale || '',
+          ),
+        },
+        output: null,
+      },
+    );
+  }
+
+  private async ensureBriefGenerationReady(allowManualQueue = false): Promise<boolean> {
     try {
-      const status = await briefService.getStatus();
+      let status = await briefService.getStatus();
       if (!status.enabled) {
         this.showAlert(getString('brief-disabled'));
         return false;
@@ -1612,22 +1670,18 @@ class ZotSeekPlugin {
       // Manual jobs are FIFO and may accept another distinct item while the
       // current item is running.  Collection and prompt jobs remain mutually
       // exclusive with every new entry point.
-      if (status.busy && status.busyMode !== 'manual') {
+      if (status.busy && !(allowManualQueue && status.busyMode === 'manual')) {
         this.showAlert(getString('brief-busy'));
         return false;
+      }
+      if (status.setup.status !== 'ready') {
+        this.openBriefSetupWizard();
+        status = await briefService.getStatus();
+        if (status.setup.status !== 'ready') return false;
       }
       if (!status.providerSupported || !status.hasCredential || !status.connectionVerified) {
         this.showAlert(getString('brief-connection-required'));
         return false;
-      }
-      if (!status.consentCurrent) {
-        const accepted = Services.prompt.confirm(
-          getZotero()?.getMainWindow() || null,
-          getString('pref-brief-consent-title'),
-          getString('pref-brief-consent-message'),
-        );
-        if (!accepted) return false;
-        briefService.recordConsent();
       }
       return true;
     } catch (error: any) {
@@ -1736,7 +1790,71 @@ class ZotSeekPlugin {
   private showBriefSummary(results: readonly BriefJobResult[]): void {
     const counts = { success: 0, failed: 0, skipped: 0, cancelled: 0 };
     for (const result of results) counts[result.status]++;
-    this.showAlert(getString('brief-summary-message', counts), getString('brief-summary-title'));
+    const lines = [getString('brief-summary-message', counts)];
+    const usage = summarizeBriefJobUsage(results);
+    if (usage) {
+      const format = (value: number) => value.toLocaleString();
+      lines.push('', getString('brief-usage-heading'));
+      if (usage.promptTokens !== undefined) {
+        lines.push(getString('brief-usage-input', { tokens: format(usage.promptTokens) }));
+      }
+      if (usage.completionTokens !== undefined) {
+        lines.push(getString('brief-usage-output', { tokens: format(usage.completionTokens) }));
+      }
+      if (usage.reasoningTokens !== undefined) {
+        lines.push(getString('brief-usage-reasoning', { tokens: format(usage.reasoningTokens) }));
+      }
+      lines.push(usage.totalTokens !== undefined
+        ? getString('brief-usage-total', { tokens: format(usage.totalTokens) })
+        : getString('brief-usage-total-unavailable'));
+      lines.push(getString('brief-usage-requests', {
+        reported: usage.reportedRequests,
+        total: usage.requestCount,
+      }));
+      if (!usage.complete) {
+        lines.push(getString('brief-usage-incomplete', {
+          count: usage.unreportedRequests,
+        }));
+      }
+    }
+    this.showAlert(lines.join('\n'), getString('brief-summary-title'));
+  }
+
+  private confirmBriefGeneration(
+    preparations: readonly Extract<BriefGenerationPreparation, { status: 'ready' }>[],
+  ): boolean {
+    if (preparations.length === 0) return false;
+    const first = preparations[0];
+    const consistent = preparations.every(preparation =>
+      preparation.provider === first.provider
+      && preparation.model === first.model
+      && preparation.estimate.maxOutputTokensPerRequest
+        === first.estimate.maxOutputTokensPerRequest
+    );
+    if (!consistent) {
+      this.showAlert(getString('brief-preparation-changed'));
+      return false;
+    }
+    const inputTokens = preparations.reduce(
+      (sum, preparation) => sum + preparation.estimate.inputTokens,
+      0,
+    );
+    const minimumRequests = preparations.reduce(
+      (sum, preparation) => sum + preparation.estimate.minimumRequests,
+      0,
+    );
+    return Services.prompt.confirm(
+      getZotero()?.getMainWindow() || null,
+      getString('brief-generation-confirm-title'),
+      getString('brief-generation-confirm-message', {
+        count: preparations.length,
+        provider: first.providerLabel,
+        model: first.model,
+        inputTokens: inputTokens.toLocaleString(),
+        outputTokens: first.estimate.maxOutputTokensPerRequest.toLocaleString(),
+        requests: minimumRequests,
+      }),
+    );
   }
 
   private async onGenerateSelectedBrief(): Promise<void> {
@@ -1767,17 +1885,23 @@ class ZotSeekPlugin {
       getString('brief-existing-note-title'),
       getString('brief-existing-note-message'),
     )) return;
-    if (!await this.ensureBriefGenerationReady()) return;
+    if (!await this.ensureBriefGenerationReady(true)) return;
 
     const key = `${identity.libraryKey}|${identity.itemKey}`;
     const title = resolved.parent.getField?.('title') || identity.itemKey;
-    this.startBriefProgress(new Map([[key, title]]));
     try {
-      const result = await briefService.enqueueManual({
+      const preparation = await briefService.prepareGeneration({
         key,
         target: resolved.target,
         allowExistingNotes: hasNotes,
       });
+      if (preparation.status !== 'ready') {
+        this.showBriefSummary([preparation.result]);
+        return;
+      }
+      if (!this.confirmBriefGeneration([preparation])) return;
+      this.startBriefProgress(new Map([[key, title]]));
+      const result = await briefService.enqueueManual(preparation.request);
       this.showBriefSummary([result]);
     } catch (error: any) {
       // A duplicate/manual-queue race must not close the window belonging to
@@ -1844,14 +1968,33 @@ class ZotSeekPlugin {
         return;
       }
       if (!await this.ensureBriefGenerationReady()) return;
-      if (!Services.prompt.confirm(
-        Z?.getMainWindow?.() || null,
-        getString('brief-collection-confirm-title'),
-        getString('brief-collection-confirm-message', { count: billableCount }),
-      )) return;
+      const preparations: Extract<BriefGenerationPreparation, { status: 'ready' }>[] = [];
+      const immediateResults: BriefJobResult[] = [];
+      const scheduledRequests: BriefGenerationRequest[] = [];
+      for (const request of requests) {
+        if (request.skipReason) {
+          scheduledRequests.push(request);
+          continue;
+        }
+        const preparation = await briefService.prepareGeneration(request);
+        if (preparation.status === 'ready') {
+          preparations.push(preparation);
+          scheduledRequests.push(preparation.request);
+        } else immediateResults.push(preparation.result);
+      }
+      if (preparations.length === 0) {
+        const existingResults = scheduledRequests.map(request => ({
+          key: request.key,
+          status: 'skipped' as const,
+          reason: request.skipReason,
+        }));
+        this.showBriefSummary([...existingResults, ...immediateResults]);
+        return;
+      }
+      if (!this.confirmBriefGeneration(preparations)) return;
       this.startBriefProgress(titles);
-      const results = await briefService.runCollection(requests);
-      this.showBriefSummary(results);
+      const results = await briefService.runCollection(scheduledRequests);
+      this.showBriefSummary([...results, ...immediateResults]);
     } catch (error: any) {
       this.briefProgressWindow?.error(getString('brief-start-failed', {
         error: error?.message || error,
@@ -1866,7 +2009,7 @@ class ZotSeekPlugin {
    * Reference: https://windingwind.github.io/doc-for-zotero-plugin-dev/main/collection-operations.html
    */
   private async onIndexCollection(): Promise<void> {
-    if (this.indexOperationActive || this.indexing) {
+    if (this.isIndexOperationBusy()) {
       this.showAlert(getString('indexing-alreadyInProgress'));
       return;
     }
@@ -1988,7 +2131,7 @@ class ZotSeekPlugin {
    */
 
   private async onIndexLibrary(skipConfirmation = false): Promise<void> {
-    if (this.indexOperationActive || this.indexing) {
+    if (this.isIndexOperationBusy()) {
       this.showAlert(getString('indexing-alreadyInProgress'));
       return;
     }
@@ -2033,6 +2176,9 @@ class ZotSeekPlugin {
       return;
     }
 
+    const operationToken = this.tryBeginIndexOperation();
+    if (!operationToken) return;
+
     try {
       await this.ensureStoreReady();
       if (!this.vectorStore) return;
@@ -2058,6 +2204,8 @@ class ZotSeekPlugin {
     } catch (error: any) {
       this.logger.error(`Failed to remove from index: ${error?.message || error}`);
       showQuickNotification(getString('indexing-removeFailed'), 'fail');
+    } finally {
+      this.endIndexOperation(operationToken);
     }
   }
 
@@ -2124,13 +2272,12 @@ class ZotSeekPlugin {
     items: any[],
     scope?: BulkScope,
     forceFull = false,
+    reservedOperationToken?: symbol,
   ): Promise<import('./core/auto-index-manager').StartupCheckResult | null> {
     if (!this.ensureOperationalModel(true)) return null;
-    if (this.indexOperationActive) {
-      this.showAlert(getString('indexing-alreadyInProgress'));
-      return null;
-    }
-    this.indexOperationActive = true;
+    const ownsOperation = reservedOperationToken === undefined;
+    const operationToken = reservedOperationToken ?? this.tryBeginIndexOperation();
+    if (!operationToken) return null;
     try {
       if (!await this.ensureChunkStrategyWritable(true, true)) return null;
       await this.ensureStoreReady();
@@ -2159,6 +2306,7 @@ class ZotSeekPlugin {
         fullIndexCallback: candidates => this.indexItemsCandidates(candidates, recoverableScope),
         noteIndexCallback: candidates => this.indexNoteChangesSilent(candidates),
         forceFull,
+        operationToken,
       });
       // The existing explicit update action includes refreshing its keyword index.
       await this.vectorStore?.prepareLexicalIndex();
@@ -2196,7 +2344,7 @@ class ZotSeekPlugin {
       this.showAlert(getString('indexing-failed', { error: error?.message || error }));
       return null;
     } finally {
-      this.indexOperationActive = false;
+      if (ownsOperation) this.endIndexOperation(operationToken);
     }
   }
 
@@ -2888,7 +3036,9 @@ class ZotSeekPlugin {
         })
         .filter((identity): identity is { libraryKey: string; itemKey: string } => identity !== null);
       const statusMap = await this.vectorStore!.getIndexStatusByIdentity(statusIdentities);
-      const maxChunks = Math.max(1, Number(Z.Prefs.get('zotseek.maxChunksPerPaper', true) ?? 100));
+      const maxChunks = normalizeMaxChunksPerPaper(
+        Z.Prefs.get('zotseek.maxChunksPerPaper', true),
+      );
 
       const plans: Array<{
         extracted: ExtractedChunks;
@@ -2919,26 +3069,24 @@ class ZotSeekPlugin {
         const allPDF = preserved.filter(chunk =>
           !['summary', 'abstract', 'title_only'].includes(chunk.textSource));
         const allNotes = extracted.chunks.filter(chunk => chunk.type === 'note');
-        const remainingSlots = Math.max(0, maxChunks - preservedSummary.length);
-        let noteCount = 0;
-        let pdfCount = 0;
-        if (allNotes.length > 0 && allPDF.length > 0) {
-          noteCount = Math.min(Math.ceil(remainingSlots / 2), allNotes.length);
-          pdfCount = Math.min(remainingSlots - noteCount, allPDF.length);
-          let unused = remainingSlots - noteCount - pdfCount;
-          const extraNotes = Math.min(unused, allNotes.length - noteCount);
-          noteCount += extraNotes;
-          unused -= extraNotes;
-          pdfCount += Math.min(unused, allPDF.length - pdfCount);
-        } else if (allNotes.length > 0) {
-          noteCount = Math.min(remainingSlots, allNotes.length);
-        } else {
-          pdfCount = Math.min(remainingSlots, allPDF.length);
-        }
-        const noteChunks = allNotes.slice(0, noteCount);
-        const preservedPDF = allPDF.slice(0, pdfCount);
+        const allocation = allocateFullModeChunkCounts({
+          summary: preservedSummary.length,
+          notes: allNotes.length,
+          pdf: allPDF.length,
+        }, maxChunks);
+        const noteChunks = allNotes.slice(0, allocation.noteCount);
+        const preservedPDF = allPDF.slice(0, allocation.pdfCount);
 
-        plans.push({ extracted, libraryKey, preservedSummary, preservedPDF, noteChunks });
+        plans.push({
+          extracted: {
+            ...extracted,
+            wasTruncated: extracted.wasTruncated || allocation.wasTruncated,
+          },
+          libraryKey,
+          preservedSummary: preservedSummary.slice(0, allocation.summaryCount),
+          preservedPDF,
+          noteChunks,
+        });
         noteChunks.forEach((chunk, index) => {
           textsForEmbedding.push({
             id: `startup-note:${extracted.itemId}:${index}`,
@@ -2995,6 +3143,10 @@ class ZotSeekPlugin {
         const combined = [...preservedSummary, ...newNotes, ...preservedPDF];
         const contentHash = hashChunkContent(combined.map(chunk => chunk.chunkText || ''));
         const status = statusMap.get(`${libraryKey}|${extracted.itemKey}`);
+        const indexedPages = new Set<number>();
+        for (const chunk of preservedPDF) {
+          if (chunk.pageNumber != null) indexedPages.add(chunk.pageNumber);
+        }
         const normalized = combined.map((chunk, chunkIndex): PaperEmbedding => ({
           ...chunk,
           itemId: extracted.itemId,
@@ -3007,8 +3159,11 @@ class ZotSeekPlugin {
           modelId: indexingModelId,
           indexedAt: now,
           contentHash,
+          // A previously truncated Full index may have omitted PDF chunks that
+          // Note-only extraction cannot recover. Keep that conservative marker;
+          // AutoIndexManager routes its next Note change through a full rebuild.
           wasTruncated: status?.wasTruncated || extracted.wasTruncated,
-          pagesIndexed: status?.pagesIndexed ?? 0,
+          pagesIndexed: indexedPages.size,
           pagesTotal: status?.pagesTotal ?? 0,
         }));
 
@@ -3302,18 +3457,20 @@ class ZotSeekPlugin {
    * confirms the background re-index prompt.
    */
   public async reindexForActiveModel(): Promise<void> {
-    if (this.indexOperationActive || this.indexing) {
+    if (this.isIndexOperationBusy()) {
       this.logger.debug('reindexForActiveModel: indexing already in progress, skipping');
       return;
     }
     if (!this.ensureOperationalModel(true)) return;
 
+    const operationToken = this.tryBeginIndexOperation(false);
+    if (!operationToken) {
+      this.logger.debug('reindexForActiveModel: reconciliation already in progress, skipping');
+      return;
+    }
+
     const activeModelId = getActiveModelId();
     const zoteroItems: any[] = [];
-    // Reserve the operation while resolving coverage; the shared entry owns
-    // the lock once the exact missing-item scope has been handed off.
-    this.indexOperationActive = true;
-    this.indexing = true;
     try {
       if (!await this.ensureChunkStrategyWritable(true)) return;
       await this.ensureStoreReady();
@@ -3327,21 +3484,18 @@ class ZotSeekPlugin {
         if (!item || isItemExcludedFromIndex(item, exclusionPolicy)) continue;
         zoteroItems.push(item);
       }
+      // Never broaden a missing-coverage request to the whole library, or let a
+      // model switch during asynchronous discovery redirect paid embedding.
+      if (getActiveModelId() !== activeModelId || zoteroItems.length === 0) return;
+      // Keep the same reservation through reconciliation so a startup check
+      // cannot enter between coverage discovery and the first write.
+      await this.indexItems(zoteroItems, undefined, false, operationToken);
     } catch (error: any) {
       this.logger.error(`reindexForActiveModel failed: ${error?.message || error}`);
       this.showAlert(getString('indexing-failed', { error: error?.message || error }));
-      return;
     } finally {
-      this.indexOperationActive = false;
-      this.indexing = false;
+      this.endIndexOperation(operationToken);
     }
-
-    // Never broaden a missing-coverage request to the whole library, or let a
-    // model switch during asynchronous discovery redirect paid embedding.
-    if (getActiveModelId() !== activeModelId || zoteroItems.length === 0) return;
-    // Reconciliation persists fingerprints after successful atomic writes,
-    // enabling subsequent mode-only transitions to reuse Summary vectors.
-    await this.indexItems(zoteroItems);
   }
   // Public API for other plugins/scripts
   public api = {
@@ -3364,7 +3518,10 @@ class ZotSeekPlugin {
     checkForIndexUpdates: () => this.checkForIndexUpdates(),
     refreshChunkStrategyState: (showNotice?: boolean) => this.refreshChunkStrategyState(showNotice),
     getBriefStatus: () => briefService.getStatus(),
+    updateBriefSettings: (settings: any) => briefService.updateSettings(settings),
+    discoverBriefModels: (force?: boolean) => briefService.discoverModels(force === true),
     testBriefConnection: () => briefService.testConnection(),
+    useBundledBriefPrompts: () => briefService.useBundledPrompts(),
     cancelBriefJobs: () => briefService.cancelAll(),
     customizeBriefPrompts: async (form: any) => {
       const result = await briefService.customizePrompts(form);

@@ -7,6 +7,7 @@
  */
 
 import { assertLoopbackUrl } from './loopback-url';
+import { embeddingVectorValidationError } from './embedding-validation';
 
 declare const Zotero: any;
 
@@ -32,6 +33,7 @@ function getAbortControllerCtor(): any | null {
 export interface ServerClientConfig {
   baseUrl: string;
   serverModelName: string;
+  dimensions: number;
   apiKey?: string;
 }
 
@@ -46,12 +48,24 @@ export class ServerUnavailableError extends Error {
   }
 }
 
+export class ServerEmbeddingResponseError extends Error {
+  code = 'SERVER_INVALID_RESPONSE' as const;
+  constructor(detail: string) {
+    super(`Local inference server returned an invalid embedding response (${detail}).`);
+    this.name = 'ServerEmbeddingResponseError';
+  }
+}
+
 // Backoff between retry attempts (network error, timeout or 5xx only).
 const RETRY_DELAYS_MS = [2000, 5000, 15000];
 const REQUEST_TIMEOUT_MS = 30000;
 
 export class ServerEmbeddingClient {
-  constructor(private cfg: ServerClientConfig) {}
+  constructor(private cfg: ServerClientConfig) {
+    if (!Number.isSafeInteger(cfg.dimensions) || cfg.dimensions <= 0) {
+      throw new Error('Local Server embedding dimensions must be a positive integer.');
+    }
+  }
 
   private headers(): Record<string, string> {
     const h: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -127,12 +141,25 @@ export class ServerEmbeddingClient {
         });
         const data = Array.isArray(json?.data) ? [...json.data] : [];
         if (data.length !== texts.length) {
-          const err: any = new Error(`server returned ${data.length} embeddings for ${texts.length} inputs`);
-          err.status = 500; // treat as transient server misbehaviour
-          throw err;
+          throw new ServerEmbeddingResponseError(
+            `received ${data.length} embeddings for ${texts.length} inputs`,
+          );
         }
-        data.sort((a: any, b: any) => (a.index ?? 0) - (b.index ?? 0));
-        return data.map((d: any) => d.embedding as number[]);
+        const ordered: number[][] = new Array(texts.length);
+        const seen = new Set<number>();
+        for (const entry of data) {
+          const index = entry?.index;
+          if (!Number.isSafeInteger(index) || index < 0 || index >= texts.length || seen.has(index)) {
+            throw new ServerEmbeddingResponseError(
+              'embedding indexes are missing, duplicated, or out of range',
+            );
+          }
+          const detail = embeddingVectorValidationError(entry?.embedding, this.cfg.dimensions);
+          if (detail) throw new ServerEmbeddingResponseError(`item ${index}: ${detail}`);
+          seen.add(index);
+          ordered[index] = entry.embedding;
+        }
+        return ordered;
       } catch (e: any) {
         // Loopback-validation errors must propagate untouched (never
         // retried, never wrapped as "unavailable"): validation errors carry
@@ -140,6 +167,7 @@ export class ServerEmbeddingClient {
         if (e?.code === 'LOOPBACK_REJECTED') {
           throw e;
         }
+        if (e instanceof ServerEmbeddingResponseError) throw e;
         const status = e?.status;
         if (typeof status === 'number' && status >= 400 && status < 500) {
           throw new Error(

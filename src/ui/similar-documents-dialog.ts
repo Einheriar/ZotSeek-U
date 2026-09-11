@@ -11,6 +11,10 @@ import { getZotero } from '../utils/zotero-helper';
 import { getString } from '../utils/locale';
 import { exportItemsToNewCollection } from './collection-export';
 import { showServerModelConfigurationPromptIfNeeded } from './server-model-prompt';
+import {
+  normalizeMinSimilarityPercent,
+  normalizeSearchTopK,
+} from '../utils/numeric-preferences';
 
 class SimilarDocumentsDialog {
   private logger: Logger;
@@ -158,10 +162,8 @@ class SimilarDocumentsDialog {
       // Read result-limit preferences (set from the preferences pane)
       const topKPref = Z?.Prefs?.get('zotseek.topK', true);
       const minSimPref = Z?.Prefs?.get('zotseek.minSimilarityPercent', true);
-      const topK = (typeof topKPref === 'number' && topKPref > 0) ? Math.floor(topKPref) : 20;
-      const minSimilarity = (typeof minSimPref === 'number' && minSimPref >= 0 && minSimPref <= 100)
-        ? minSimPref / 100
-        : 0.3;
+      const topK = normalizeSearchTopK(topKPref);
+      const minSimilarity = normalizeMinSimilarityPercent(minSimPref) / 100;
 
       // findSimilar always excludes the source item from results internally,
       // so no excludeSelf flag is needed.

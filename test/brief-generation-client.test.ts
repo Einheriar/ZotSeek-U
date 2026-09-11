@@ -6,10 +6,12 @@ import {
   BriefGenerationRequestError,
   BriefGenerationTruncatedError,
   BriefGenerationUnavailableError,
+  createBriefGenerationTaskContext,
   parseBriefRetryAfter,
 } from '../src/core/brief-generation-client';
 
 const config = {
+  provider: 'alibaba-bailian' as const,
   baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
   modelName: 'deepseek-v4-flash-0731',
   apiKey: 'secret-key-not-for-logs',
@@ -48,6 +50,32 @@ function success(overrides: Record<string, unknown> = {}) {
 }
 
 describe('brief generation client', () => {
+  test('task cancellation falls back to the Zotero window without a global AbortController', () => {
+    const globals = globalThis as any;
+    const previousController = globals.AbortController;
+    const previousZotero = globals.Zotero;
+    try {
+      globals.AbortController = undefined;
+      globals.Zotero = { getMainWindow: () => ({ AbortController: previousController }) };
+      const context = createBriefGenerationTaskContext();
+      assert.equal(context.cancelled, false);
+      context.throwIfCancelled();
+      let aborts = 0;
+      context.signal.addEventListener('abort', () => { aborts++; });
+      context.cancel();
+      context.cancel();
+      assert.equal(context.cancelled, true);
+      assert.equal(context.signal.aborted, true);
+      assert.equal(aborts, 1);
+      assert.throws(() => context.throwIfCancelled(), BriefGenerationCancelledError);
+      globals.Zotero = { getMainWindow: () => null };
+      assert.throws(() => createBriefGenerationTaskContext(), /cancellation is unavailable/);
+    } finally {
+      globals.AbortController = previousController;
+      globals.Zotero = previousZotero;
+    }
+  });
+
   test('uses the dedicated Chat Completions contract with thinking enabled', async () => {
     let request: any;
     const client = new BriefGenerationClient(config, {
@@ -93,15 +121,33 @@ describe('brief generation client', () => {
   });
 
   test('rejects a length finish reason instead of accepting a partial brief', async () => {
+    const usageEvents: any[] = [];
     const client = new BriefGenerationClient(config, {
       fetch: async () => response(200, success({
         choices: [{ finish_reason: 'length', message: { content: 'partial' } }],
       })),
     });
     await assert.rejects(
-      () => client.generate([{ role: 'user', content: 'evidence' }], 0),
+      () => client.generate([{ role: 'user', content: 'evidence' }], {
+        retries: 0,
+        onUsage: usage => usageEvents.push(usage),
+      }),
       BriefGenerationTruncatedError,
     );
+    assert.equal(usageEvents.length, 1);
+    assert.equal(usageEvents[0]?.totalTokens, 140);
+  });
+
+  test('reports a successful response with missing usage as an unreported attempt', async () => {
+    const usageEvents: any[] = [];
+    const client = new BriefGenerationClient(config, {
+      fetch: async () => response(200, success({ usage: undefined })),
+    });
+    await client.generate([{ role: 'user', content: 'evidence' }], {
+      retries: 0,
+      onUsage: usage => usageEvents.push(usage),
+    });
+    assert.deepEqual(usageEvents, [undefined]);
   });
 
   test('does not retry deterministic errors and never exposes provider text', async () => {
@@ -126,6 +172,7 @@ describe('brief generation client', () => {
   test('retries 429 using a bounded Retry-After delay', async () => {
     let attempts = 0;
     const delays: number[] = [];
+    const usageEvents: any[] = [];
     const client = new BriefGenerationClient(config, {
       sleep: async ms => { delays.push(ms); },
       fetch: async () => {
@@ -135,9 +182,15 @@ describe('brief generation client', () => {
           : response(200, success());
       },
     });
-    const result = await client.generate([{ role: 'user', content: 'evidence' }], 1);
+    const result = await client.generate([{ role: 'user', content: 'evidence' }], {
+      retries: 1,
+      onUsage: usage => usageEvents.push(usage),
+    });
     assert.equal(result.content, 'generated brief');
     assert.deepEqual(delays, [2000]);
+    assert.equal(usageEvents.length, 2);
+    assert.equal(usageEvents[0], undefined);
+    assert.equal(usageEvents[1]?.totalTokens, 140);
     assert.equal(parseBriefRetryAfter('999'), 60000);
   });
 
@@ -251,15 +304,97 @@ describe('brief generation client', () => {
     );
   });
 
-  test('rejects empty messages and unexpected response models', async () => {
+  test('rejects empty messages and accepts provider-resolved model aliases', async () => {
     const client = new BriefGenerationClient(config, {
       fetch: async () => response(200, success({ model: 'unexpected-model' })),
     });
     await assert.rejects(() => client.generate([], 0), /non-empty text/);
-    await assert.rejects(
-      () => client.generate([{ role: 'user', content: 'evidence' }], 0),
-      /unexpected brief generation model/,
+    assert.equal(
+      (await client.generate([{ role: 'user', content: 'evidence' }], 0)).model,
+      'unexpected-model',
     );
+  });
+
+  test('uses OpenAI Responses and parses output text', async () => {
+    let request: any;
+    const client = new BriefGenerationClient({
+      ...config,
+      provider: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      modelName: 'gpt-test',
+      thinkingEnabled: false,
+    }, {
+      fetch: async (url, init) => {
+        request = { url, init };
+        return response(200, {
+          id: 'resp-test',
+          status: 'completed',
+          model: 'gpt-test-2026-01-01',
+          output: [{ content: [{ type: 'output_text', text: 'openai brief' }] }],
+          usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+        });
+      },
+    });
+    const result = await client.generate([{ role: 'user', content: 'evidence' }], 0);
+    const body = JSON.parse(request.init.body);
+    assert.equal(request.url, 'https://api.openai.com/v1/responses');
+    assert.equal(body.max_output_tokens, config.maxOutputTokens);
+    assert.equal(body.messages, undefined);
+    assert.equal(result.content, 'openai brief');
+    assert.equal(result.usage?.promptTokens, 10);
+  });
+
+  test('uses Gemini generateContent and parses candidates', async () => {
+    let request: any;
+    const client = new BriefGenerationClient({
+      ...config,
+      provider: 'google-gemini-api',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+      modelName: 'gemini-test',
+      thinkingEnabled: false,
+    }, {
+      fetch: async (url, init) => {
+        request = { url, init };
+        return response(200, {
+          modelVersion: 'gemini-test-001',
+          candidates: [{ finishReason: 'STOP', content: { parts: [{ text: 'gemini brief' }] } }],
+          usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5, totalTokenCount: 15 },
+        });
+      },
+    });
+    const result = await client.generate([
+      { role: 'system', content: 'instructions' },
+      { role: 'user', content: 'evidence' },
+    ], 0);
+    const body = JSON.parse(request.init.body);
+    assert.equal(
+      request.url,
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-test:generateContent',
+    );
+    assert.equal(request.init.headers['x-goog-api-key'], config.apiKey);
+    assert.equal(body.systemInstruction.parts[0].text, 'instructions');
+    assert.equal(result.content, 'gemini brief');
+  });
+
+  test('uses Custom Chat Completions without Bailian thinking parameters', async () => {
+    let request: any;
+    const client = new BriefGenerationClient({
+      ...config,
+      provider: 'custom-openai-compatible',
+      baseUrl: 'https://gateway.example.test/v1/',
+      modelName: 'vendor-luna-chat',
+      thinkingEnabled: false,
+    }, {
+      fetch: async (url, init) => {
+        request = { url, init };
+        return response(200, success({ model: 'vendor-luna-chat' }));
+      },
+    });
+    await client.generate([{ role: 'user', content: 'evidence' }], 0);
+    const body = JSON.parse(request.init.body);
+    assert.equal(request.url, 'https://gateway.example.test/v1/chat/completions');
+    assert.equal(body.enable_thinking, undefined);
+    assert.equal(body.model, 'vendor-luna-chat');
   });
 
   test('rejects a null response message as a deterministic protocol error', async () => {

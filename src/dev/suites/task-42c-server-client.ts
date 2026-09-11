@@ -5,7 +5,7 @@ selfTest.register('task-42c-server-client', async () => {
   return [
     await scenario('embed against a closed port throws ServerUnavailableError', async () => {
       const client = new ServerEmbeddingClient({
-        baseUrl: 'http://127.0.0.1:9', serverModelName: 'whatever',
+        baseUrl: 'http://127.0.0.1:9', serverModelName: 'whatever', dimensions: 1,
       });
       try {
         await client.embed(['test'], 0); // retries=0: fail fast for the test
@@ -18,7 +18,7 @@ selfTest.register('task-42c-server-client', async () => {
     }),
     await scenario('non-loopback baseUrl is rejected before any network I/O', async () => {
       const client = new ServerEmbeddingClient({
-        baseUrl: 'http://example.com:1234', serverModelName: 'whatever',
+        baseUrl: 'http://example.com:1234', serverModelName: 'whatever', dimensions: 1,
       });
       try {
         await client.embed(['test'], 0);

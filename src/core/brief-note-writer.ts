@@ -8,7 +8,7 @@ import { markdownToSafeHtml } from './brief-markdown';
 import type { BriefSourceEvidence } from './brief-source-builder';
 import type { StableIdentity } from './identity-resolver';
 
-export const BRIEF_NOTE_TITLE = 'ZotSeek 文献简报';
+export const BRIEF_NOTE_TITLE = '简报';
 
 export interface BriefNoteHandle {
   /** Zotero Note wrappers expose additional runtime fields used by tests/UI. */

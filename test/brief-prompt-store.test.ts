@@ -96,6 +96,12 @@ describe('brief prompt store', () => {
 
   test('imports language-independent overrides into separate managed files', async () => {
     const standard = await store.importFromFile('standard', '/imports/standard.md');
+    const mixedPair = await store.loadRequired();
+    assert.equal(mixedPair.standard.source, 'custom');
+    assert.equal(mixedPair.standard.content, '# 中文提示词');
+    assert.equal(mixedPair.review.source, 'bundled');
+    assert.equal(mixedPair.review.content, '# Bundled review prompt');
+
     const review = await store.importFromFile('review', '/imports/review.txt');
     assert.equal(standard.path, '/profile/zotseek-brief-prompts/standard.md');
     assert.equal(standard.source, 'custom');

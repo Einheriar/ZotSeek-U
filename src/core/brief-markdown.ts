@@ -30,15 +30,20 @@ function safeHref(value: string): string | null {
   return escapeHtml(url);
 }
 
+// Raw HTML is outside the supported Markdown subset. Match only syntactically
+// plausible tags so scientific comparisons such as `p < .05 and n > 30` are
+// preserved and escaped instead of being mistaken for markup.
+const RAW_HTML_TAG = /<!--[\s\S]*?-->|<\/?[A-Za-z][A-Za-z0-9:-]*(?:\s[^<>]*?)?\s*\/?>|<![A-Za-z][^<>]*>|<\?[A-Za-z][^<>]*\?>/gu;
+
 function inline(value: string): string {
-  // Remove raw tags, including event attributes and embedded scripts.  They
-  // are not part of the supported Markdown subset.
-  let text = value.replace(/<[^>]*>/gu, '');
   const code: string[] = [];
-  text = text.replace(/`([^`\n]*)`/gu, (_, body: string) => {
+  // Protect inline code first. Raw markup inside code is inert display text,
+  // while raw markup outside code remains unsupported and is stripped.
+  let text = value.replace(/`([^`\n]*)`/gu, (_, body: string) => {
     code.push(`<code>${escapeHtml(body)}</code>`);
     return `\u0000${code.length - 1}\u0000`;
   });
+  text = text.replace(RAW_HTML_TAG, '');
   text = escapeHtml(text);
   text = text.replace(/!\[([^\]]*)\]\([^)]*\)/gu, '$1');
   text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/gu, (_, label: string, href: string) => {

@@ -106,6 +106,48 @@ describe('brief generation scheduler', () => {
     ]);
   });
 
+  test('preserves a runner failure value so final usage remains reportable', async () => {
+    const value = {
+      status: 'failed' as const,
+      reason: 'generation_failed',
+      usage: {
+        requestCount: 2,
+        reportedRequests: 1,
+        unreportedRequests: 1,
+        totalTokens: 42,
+        complete: false,
+      },
+    };
+    const scheduler = new BriefGenerationScheduler<typeof value>();
+    const [outcome] = await scheduler.runCollection([
+      { key: 'failed-with-usage', run: async () => value },
+    ]);
+    assert.equal(outcome.status, 'failed');
+    assert.equal(outcome.value, value);
+    assert.equal(outcome.value?.usage.totalTokens, 42);
+  });
+
+  test('preserves a billable runner skip so its usage remains reportable', async () => {
+    const value = {
+      status: 'skipped' as const,
+      reason: 'garbled_text',
+      usage: {
+        requestCount: 1,
+        reportedRequests: 1,
+        unreportedRequests: 0,
+        totalTokens: 17,
+        complete: true,
+      },
+    };
+    const scheduler = new BriefGenerationScheduler<typeof value>();
+    const [outcome] = await scheduler.runCollection([
+      { key: 'skipped-with-usage', run: async () => value },
+    ]);
+    assert.equal(outcome.status, 'skipped');
+    assert.equal(outcome.value, value);
+    assert.equal(outcome.value?.usage.totalTokens, 17);
+  });
+
   test('keeps manual and collection modes mutually exclusive', async () => {
     const scheduler = new BriefGenerationScheduler<void>();
     const manualGate = deferred<void>();

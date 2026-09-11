@@ -11,6 +11,16 @@ import {
   isCanonicalIndexingMode,
   normalizeCurrentIndexingMode,
 } from '../utils/indexing-mode';
+import {
+  MAX_CHUNKS_PER_PAPER_BOUNDS,
+  MIN_SIMILARITY_PERCENT_BOUNDS,
+  SEARCH_TOP_K_BOUNDS,
+  normalizeMaxChunksPerPaper,
+  normalizeMinSimilarityPercent,
+  normalizeSearchTopK,
+  parseIntegerPreferenceInput,
+  type IntegerPreferenceBounds,
+} from '../utils/numeric-preferences';
 import { autoIndexManager } from '../core/auto-index-manager';
 import {
   getAllModels,
@@ -77,6 +87,10 @@ import {
 import { confirmCloudDisclosure, promptForCloudApiKey } from './cloud-model-prompt';
 import { briefService } from '../core/brief-service';
 import type { BriefPromptSlot } from '../core/brief-prompt-store';
+import {
+  type BriefModelSuggestion,
+} from '../core/brief-model-discovery';
+import { attachBriefModelAutocomplete, type BriefModelAutocomplete } from './brief-model-autocomplete';
 
 declare const Services: any;
 declare const Zotero: any;
@@ -86,6 +100,10 @@ let modelSwitchInProgress = false;
 
 /** Prevent a slower credential read from repainting a newer provider selection. */
 let cloudSettingsRenderGeneration = 0;
+let briefModelSuggestions: BriefModelSuggestion[] = [];
+let briefModelDiscoveryGeneration = 0;
+let briefModelSuggestionProvider = '';
+const briefModelAutocompletes = new WeakMap<Document, BriefModelAutocomplete>();
 
 /**
  * Returns true when the preferences document is still alive and usable.
@@ -629,6 +647,38 @@ function briefPromptSummary(prompt: any): string {
   });
 }
 
+function renderBriefModelSuggestions(doc: any): void {
+  briefModelAutocompletes.get(doc)?.refresh();
+}
+
+async function loadBriefModelSuggestions(doc: any, force = false): Promise<void> {
+  const provider = getCloudModelSettings().provider;
+  if (!force && briefModelSuggestionProvider === provider && briefModelSuggestions.length > 0) {
+    renderBriefModelSuggestions(doc);
+    return;
+  }
+  const generation = ++briefModelDiscoveryGeneration;
+  setBriefSettingsStatus(doc, getString('pref-brief-models-loading'));
+  try {
+    const suggestions = await briefService.discoverModels(force);
+    if (generation !== briefModelDiscoveryGeneration
+        || getCloudModelSettings().provider !== provider || !docAlive(doc)) return;
+    briefModelSuggestions = suggestions;
+    briefModelSuggestionProvider = provider;
+    renderBriefModelSuggestions(doc);
+    setBriefSettingsStatus(doc, suggestions.length > 0
+      ? getString('pref-brief-models-loaded', { count: suggestions.length })
+      : getString('pref-brief-models-empty'));
+  } catch (error: any) {
+    if (generation !== briefModelDiscoveryGeneration || !docAlive(doc)) return;
+    // Discovery is advisory. Manual model IDs and connection tests remain available.
+    renderBriefModelSuggestions(doc);
+    setBriefSettingsStatus(doc, getString('pref-brief-models-failed', {
+      error: error?.message || error,
+    }));
+  }
+}
+
 async function renderBriefSettings(doc: any): Promise<void> {
   try {
     const status = await briefService.getStatus();
@@ -652,7 +702,10 @@ async function renderBriefSettings(doc: any): Promise<void> {
     if (model) model.value = status.config.settings.modelName;
     if (maxInput) maxInput.value = String(status.config.settings.maxInputTokens);
     if (maxOutput) maxOutput.value = String(status.config.settings.maxOutputTokens);
-    if (thinking) thinking.checked = status.config.settings.thinkingEnabled;
+    if (thinking) {
+      thinking.checked = status.config.settings.thinkingEnabled;
+      thinking.disabled = status.provider !== 'alibaba-bailian';
+    }
 
     const standard = doc.getElementById('zotseek-brief-standard-prompt-status');
     const review = doc.getElementById('zotseek-brief-review-prompt-status');
@@ -671,6 +724,8 @@ async function renderBriefSettings(doc: any): Promise<void> {
       setBriefSettingsStatus(doc, getString('pref-brief-invalid-settings', {
         error: status.config.error || '',
       }));
+    } else if (status.setup.status === 'damaged') {
+      setBriefSettingsStatus(doc, getString('brief-wizard-setup-damaged'));
     } else if (!status.busy) {
       setBriefSettingsStatus(doc, '');
     }
@@ -678,9 +733,7 @@ async function renderBriefSettings(doc: any): Promise<void> {
     const test = doc.getElementById('zotseek-brief-test') as any;
     const create = doc.getElementById('zotseek-brief-create-prompts') as any;
     if (test) test.disabled = status.busy || !status.providerSupported || !status.hasCredential;
-    if (create) {
-      create.disabled = status.busy || !status.enabled || !status.connectionVerified;
-    }
+    if (create) create.disabled = status.busy || !status.enabled;
   } catch (error: any) {
     setBriefStatus(doc, getString('pref-brief-status-failed', {
       error: error?.message || error,
@@ -726,6 +779,27 @@ async function pickBriefPromptFile(doc: any, slot: BriefPromptSlot): Promise<voi
   if (result !== picker.returnOK || !picker.file?.path) return;
   await briefService.importPrompt(slot, picker.file.path);
   await renderBriefSettings(doc);
+}
+
+async function openBriefSetupWizard(doc: any, reconfigurePrompts = false): Promise<boolean> {
+  const args = {
+    input: {
+      initialLanguage: String(
+        Services?.locale?.appLocaleAsBCP47 || getZotero()?.locale || '',
+      ),
+      reconfigurePrompts,
+    },
+    output: null,
+  };
+  (doc.defaultView as any)?.openDialog?.(
+    'chrome://zotseek/content/briefPromptWizard.xhtml',
+    '',
+    'chrome,dialog,modal,centerscreen,resizable=yes',
+    args,
+  );
+  await renderBriefSettings(doc);
+  const status = await briefService.getStatus();
+  return status.setup.status === 'ready';
 }
 
 async function renderManageModels(doc: any): Promise<void> {
@@ -952,9 +1026,13 @@ class PreferencesManager {
     const prefs = {
       indexingMode: normalizeCurrentIndexingMode(Z.Prefs.get('zotseek.indexingMode', true)),
       defaultSearchMode,
-      maxChunksPerPaper: Z.Prefs.get('zotseek.maxChunksPerPaper', true) ?? 100,
-      topK: Z.Prefs.get('zotseek.topK', true) ?? 20,
-      minSimilarity: Z.Prefs.get('zotseek.minSimilarityPercent', true) ?? 70,
+      maxChunksPerPaper: normalizeMaxChunksPerPaper(
+        Z.Prefs.get('zotseek.maxChunksPerPaper', true),
+      ),
+      topK: normalizeSearchTopK(Z.Prefs.get('zotseek.topK', true)),
+      minSimilarity: normalizeMinSimilarityPercent(
+        Z.Prefs.get('zotseek.minSimilarityPercent', true),
+      ),
       excludeBooks: Z.Prefs.get('zotseek.excludeBooks', true) ?? true,
       excludeTag: Z.Prefs.get('zotseek.excludeTag', true) || 'zotseek-exclude',
       autoIndex: Z.Prefs.get('zotseek.autoIndex', true) ?? false,
@@ -1238,21 +1316,11 @@ class PreferencesManager {
         cloudProvider.value = previous.provider;
         return;
       }
-      // Literature briefs only work against Bailian: warn before the switch is
-      // persisted so an accidental change cannot silently disable the feature.
-      if (previous.provider === 'alibaba-bailian' && newProvider !== 'alibaba-bailian') {
-        const confirmed = Services.prompt.confirm(
-          doc.defaultView || null,
-          getString('pref-cloudBriefSwitchTitle'),
-          getString('pref-cloudBriefSwitchMessage'),
-        );
-        if (!confirmed) {
-          cloudProvider.value = previous.provider;
-          return;
-        }
-      }
       const preview = doc.getElementById('zotseek-cloud-key-preview');
       if (preview) preview.textContent = '';
+      briefModelSuggestions = [];
+      briefModelSuggestionProvider = '';
+      briefModelDiscoveryGeneration++;
       briefService.cancelAll();
       setCloudProvider(newProvider);
       await renderCloudSettings(doc);
@@ -1362,6 +1430,9 @@ class PreferencesManager {
       briefService.setEnabled(briefEnabled.checked === true);
       if (briefEnabled.checked !== true) {
         setBriefSettingsStatus(doc, getString('pref-brief-cancelling'));
+      } else {
+        await renderBriefSettings(doc);
+        await openBriefSetupWizard(doc);
       }
       await renderBriefSettings(doc);
     });
@@ -1375,6 +1446,10 @@ class PreferencesManager {
       cloudGroup?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
     });
 
+    briefModelAutocompletes.get(doc)?.destroy();
+    briefModelAutocompletes.set(doc, attachBriefModelAutocomplete(doc,
+      'zotseek-brief-model', () => briefModelSuggestions));
+
     for (const id of [
       'zotseek-brief-model',
       'zotseek-brief-max-input',
@@ -1386,19 +1461,24 @@ class PreferencesManager {
       });
     }
 
+    const briefModel = doc.getElementById('zotseek-brief-model') as HTMLInputElement | null;
+    briefModel?.addEventListener('focus', () => { void loadBriefModelSuggestions(doc); });
+    doc.getElementById('zotseek-brief-refresh-models')?.addEventListener('command', () => {
+      void loadBriefModelSuggestions(doc, true);
+    });
+
     const briefTest = doc.getElementById('zotseek-brief-test') as any;
     briefTest?.addEventListener('command', async () => {
       if (!saveBriefSettingsFromUI(doc)) return;
-      if (!briefService.hasCurrentConsent()) {
-        const accepted = confirmCloudDisclosure(
-          Services.prompt,
-          doc.defaultView || null,
-          getString('pref-brief-consent-title'),
-          getString('pref-brief-consent-message'),
-        );
-        if (!accepted) return;
-        briefService.recordConsent();
-      }
+      const accepted = confirmCloudDisclosure(
+        Services.prompt,
+        doc.defaultView || null,
+        getString('pref-brief-test-consent-title'),
+        getString('pref-brief-test-consent-message', {
+          provider: getCloudProviderLabel(getCloudModelSettings().provider),
+        }),
+      );
+      if (!accepted) return;
       briefTest.disabled = true;
       setBriefStatus(doc, getString('pref-brief-testing'));
       try {
@@ -1417,25 +1497,8 @@ class PreferencesManager {
     createPrompts?.addEventListener('command', async () => {
       try {
         const status = await briefService.getStatus();
-        if (!status.enabled || !status.connectionVerified) {
-          setBriefStatus(doc, getString('pref-brief-connection-required'));
-          return;
-        }
-        const args = {
-          input: {
-            initialLanguage: String(
-              Services?.locale?.appLocaleAsBCP47 || (Z as any)?.locale || '',
-            ),
-          },
-          output: null,
-        };
-        (doc.defaultView as any)?.openDialog?.(
-          'chrome://zotseek/content/briefPromptWizard.xhtml',
-          '',
-          'chrome,dialog,modal,centerscreen,resizable=yes',
-          args,
-        );
-        await renderBriefSettings(doc);
+        if (!status.enabled) return;
+        await openBriefSetupWizard(doc, true);
       } catch (error: any) {
         setBriefSettingsStatus(doc, getString('pref-brief-status-failed', {
           error: error?.message || error,
@@ -1489,20 +1552,30 @@ class PreferencesManager {
 
     // Number inputs
     const numberInputs = [
-      { id: 'zotseek-pref-maxChunksPerPaper', pref: 'zotseek.maxChunksPerPaper' },
-      { id: 'zotseek-pref-topK', pref: 'zotseek.topK' },
-      { id: 'zotseek-pref-minSimilarity', pref: 'zotseek.minSimilarityPercent' }
+      {
+        id: 'zotseek-pref-maxChunksPerPaper',
+        pref: 'zotseek.maxChunksPerPaper',
+        bounds: MAX_CHUNKS_PER_PAPER_BOUNDS,
+      },
+      { id: 'zotseek-pref-topK', pref: 'zotseek.topK', bounds: SEARCH_TOP_K_BOUNDS },
+      {
+        id: 'zotseek-pref-minSimilarity',
+        pref: 'zotseek.minSimilarityPercent',
+        bounds: MIN_SIMILARITY_PERCENT_BOUNDS,
+      },
     ];
 
-    for (const { id, pref } of numberInputs) {
+    for (const { id, pref, bounds } of numberInputs) {
       const input = doc.getElementById(id) as HTMLInputElement;
       if (input) {
         input.addEventListener('change', () => {
-          const value = parseInt(input.value, 10);
-          if (!isNaN(value)) {
-            Z.Prefs.set(pref, value, true);
-            this.logger.debug(`${pref} changed to: ${value}`);
+          const value = parseIntegerPreferenceInput(input.value, bounds);
+          if (!input.checkValidity() || value === null) {
+            input.reportValidity();
+            return;
           }
+          Z.Prefs.set(pref, value, true);
+          this.logger.debug(`${pref} changed to: ${value}`);
         });
       }
     }
@@ -1510,16 +1583,16 @@ class PreferencesManager {
     const maxTokensInput = doc.getElementById('zotseek-pref-maxTokens') as HTMLInputElement | null;
     if (maxTokensInput) {
       maxTokensInput.addEventListener('change', () => {
-        const parsed = parseInt(maxTokensInput.value, 10);
-        if (!Number.isFinite(parsed)) {
-          refreshModelInputPolicy(doc);
-          return;
-        }
         const model = getModel(getActiveModelId());
         const hardLimit = model
           ? resolveModelInputPolicy(model).maxInputTokens ?? 8192
           : 8192;
-        const requested = Math.max(50, Math.min(hardLimit, parsed));
+        const bounds: IntegerPreferenceBounds = { min: 50, max: hardLimit, defaultValue: hardLimit };
+        const requested = parseIntegerPreferenceInput(maxTokensInput.value, bounds);
+        if (!maxTokensInput.checkValidity() || requested === null) {
+          maxTokensInput.reportValidity();
+          return;
+        }
         Z.Prefs.set('zotseek.maxTokens', requested, true);
         refreshModelInputPolicy(doc);
         this.logger.debug(`zotseek.maxTokens override changed to: ${requested}`);

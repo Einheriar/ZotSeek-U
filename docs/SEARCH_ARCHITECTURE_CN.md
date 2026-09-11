@@ -588,6 +588,8 @@ Match 列显示合并分数以及各查询的分解分数：
 
 `getChunkTexts()` 针对可见行的 `matchedChunkIndex`，在活动模型范围内、以 `topK` 为界，并行发起单列查询获取 `chunk_text`、可选的 `section_paths` 与 `pdf_attachment_key`，遵循 Zotero 8 单列查询约定。把这些展示/溯源字段排除在全量向量缓存之外，其内存成本就不会随全库索引增长。`chunk_text` 自 schema v6 起存储；schema v11 增加结构化 Child Note 路径，schema v12 增加精确 PDF 来源。
 
+激活带页码的搜索结果时，UI 把 `pdf_attachment_key` 一并传到阅读器入口，并只打开同一父条目、同一文库中的该 PDF。仅对没有该字段的旧索引结果使用 `getBestAttachment()` 兼容回退；已有精确来源但附件已删除或失配时不会静默打开另一份 PDF。
+
 UI（`SearchResultsTable`）将 `chunkText` 渲染为行悬停时的浮动提示，围绕第一个命中的查询词开窗并高亮这些词（仅 keyword/hybrid 模式）。
 
 ### 父子检索模式
@@ -803,12 +805,16 @@ Summary/PDF 的 token 与字符上限在同一个最终输入上检查，使用�
 Full 索引使用版本化的 `zotseek-pdf-main-text-indexing-v1` 管线：
 
 1. 枚举同级 PDF 附件，并通过 Zotero PDFWorker 提取每个物理页，保留空白页槽位，使后续页码不会移位。
+
+   独立的 MCP/REST 与 Brief `readPdfAttachment` 批量读取路径在分段数量不匹配时，串行逐页重读异常批次，恢复真实空白页位置；不猜测或补造页边界。原因是 worker 整体 `trim()` 可吞掉首尾空白页分页符。这不改变本节索引逐页提取、分块或清洗策略。
 2. 从标题、文件名、首页结构、包含关系和解析器状态等证据中选择唯一的高置信度主附件。补充材料与未知附件主动弃权；它们不会通过 best-attachment 或首个可读附件的回退重新进入。
 3. 应用 References v2 区域过滤，随后是重复页眉页脚过滤。两者都返回派生页与被忽略块的台账；源 PDFWorker 页面从不被原地修改。
 4. 把书目标题加入 PDF 嵌入上下文，然后在同一物理页内贪心装箱兼容的相邻短段落。装箱绝不跨页、绝不跨过滤边界或粗粒度章节类型。
 5. 执行活动模型的精确带前缀 token 预算、字符上限，以及共享的 Summary/Note/PDF `maxChunksPerPaper` 配额。
 
 Full 模式按严格来源顺序分配该共享配额：先保留所有放得下的 Summary chunk，其次最多 30 个 Note chunk，PDF chunk 只使用剩余名额。30-chunk Note 上限只在合并 Full 模式来源时生效；Metadata + Notes 模式仍可使用 Summary 之后剩余的全部名额。如果 Notes 超过 Full 模式上限，即使没有 PDF 去消耗剩余总容量，该条目也会报告为截断。
+
+Full 模式的完整提取和 Child Note 增量替换共用同一个配额分配器，因而 Summary / Note / PDF 的保留数量与 `wasTruncated` 判定不会随入口变化。若现有 Full 条目已标记为截断，后续 Note 内容变化会改走整条目重建并重新提取 PDF；这是为了让 Note 增减后释放或占用的名额能由 PDF 正确回填，同时重新计算页数覆盖与截断状态。
 
 ### 索引模式增量切换
 
@@ -1199,11 +1205,14 @@ Active model: "multilingual-e5-base"
 所有驱动或约束索引工作的读取路径都通过 `item_models` 做到模型感知：
 
 - **`isIndexedByIdentity(libraryKey, itemKey, modelId)`**——供自动索引和手动"Index Library"使用。只有当 `item_models` 中存在活动 `model_id` 的行时，条目才算被覆盖。结果是"Index Library"为活动模型尚未覆盖的条目补齐索引，而不是跳过所有曾被索引过的条目。
+- **`needsReindexByIdentity(libraryKey, itemKey, contentHash, modelId)`**——把新 hash 与指定模型的 `item_models.content_hash` 比较。共享的 `items.content_hash` 只用于旧 schema/迁移兼容，不能把模型 A 的新内容错误地当成模型 B 已经更新。
 - **`getItemChunksByIdentity(libraryKey, itemKey, modelId)`** 与 **`getChunkByPk(itemPk, chunkIndex, modelId)`**——供 `find_similar`/"查找相关文献"使用。它们按 `model_id` 过滤 `chunks`，因此源条目的 embedding 和所有候选 embedding 来自同一模型的向量空间。切换活动模型会改变相似度计算所在的分区。
 
 两个模型感知的触发器可以重新索引库，两者都保留其他模型的 embedding：
 1. 切换到新模型后立即显示的提示。
 2. 工具栏 / 右键 **Index Library** 操作。
+
+进程内 ChromeWorker 崩溃时，所有同时失败的 embedding 调用共享一次恢复任务和同一个替代 Worker。旧 Worker 的迟到事件先按实例身份过滤，不能再把新 Worker 标为失败或完成新任务；reset / destroy 会取消尚未完成的初始化，因此恢复过程也不能在生命周期结束后复活 Worker。
 
 ### Local Server 嵌入
 
@@ -1249,7 +1258,7 @@ Issue #42 在进程内 ChromeWorker 之外为 `ModelConfig` 增加了第二个 `
 
 **输入上限：**`maxInputTokens` 和 `recommendedChunkTokens` 是单个模型对象中的必需字段。它们驱动与内置模型相同的模型输入策略和用户覆盖钳制。通用 OpenAI 兼容 server 不暴露标准 tokenizer API，因此 server 计数保持估算，ZotSeek 不会静默截断最终请求。配置的预算是高级用户契约；服务仍拥有确定的 tokenizer 和任何最终上下文上限错误。
 
-**失败语义：**`ServerEmbeddingClient.embed()` 对网络错误、超时和 5xx 响应以 2s、5s、15s 的有界退避重试；4xx 响应立即失败（这是重试无法解决的配置问题）。重试预算耗尽后，客户端抛出 `ServerUnavailableError`，它从 `embedChunks()` 传播到调用方的外层 catch 并干净地停止运行，与取消的方式相同。这里刻意**没有**回退到进程内 ONNX 模型：在运行中途静默切换 runtime 会在同一个 `model_id` 下混合两个不同的向量空间。server 恢复后，更新索引会从与任何中断运行相同的检查点机制续传。
+**失败语义：**`ServerEmbeddingClient.embed()` 对网络错误、超时和 5xx 响应以 2s、5s、15s 的有界退避重试；4xx 响应立即失败（这是重试无法解决的配置问题）。每个成功 HTTP 响应仍须具有完整且唯一的 `index` 集合，并为每个输入返回恰好等于配置维度、只含有限数且非全零的数组；无效的 200 响应立即以 `SERVER_INVALID_RESPONSE` 拒绝，不会重试或写入。重试预算耗尽后，客户端抛出 `ServerUnavailableError`，它从 `embedChunks()` 传播到调用方的外层 catch 并干净地停止运行，与取消的方式相同。这里刻意**没有**回退到进程内 ONNX 模型：在运行中途静默切换 runtime 会在同一个 `model_id` 下混合两个不同的向量空间。server 恢复后，更新索引会从与任何中断运行相同的检查点机制续传。
 
 **模型与维度守卫：**`initServerClient()` 首先要求 `GET /v1/models` 列出配置的 `serverModelName`，然后调用 `client.probe()`（单文本 `/v1/embeddings` 请求）并把返回向量长度与模板的 `dimensions` 比较。任何不匹配都会在嵌入任何 chunk 之前抛出。用户必须加载指定模型或修正模板；变更的模型或维度应获得新的 `server:` id 和新的索引 pass。
 
@@ -1257,11 +1266,13 @@ Issue #42 在进程内 ChromeWorker 之外为 `ModelConfig` 增加了第二个 `
 
 ### Cloud 嵌入
 
-Cloud 是第三个独立的 `ModelConfig.runtime`，组织为 provider/模型目录（Plan 56）。批准的四个 provider 是：`alibaba-bailian`、`openai`、`google-gemini-api`，以及 `custom-openai-compatible` 逃生舱。内置 provider 从注册目录解析每个模型事实（模型名、维度、输入上限、角色契约、批量默认值、chunk profile、adapter 版本）；用户不能向内置 provider 输入任意模型名，与目录不匹配的存储旧值会被标记为未配置，而不是被静默替换。内置目录注册了 Bailian `qwen3.7-text-embedding`（1024d，128k 输入）、OpenAI `text-embedding-3-small`（1536d，固定 2000-token 推荐）与 `text-embedding-3-large`（3072d），以及 Google `gemini-embedding-001`（其 128–3072 范围中的 768d，2048-token 输入）。比率封顶 profile 以 `min(cap, floor(maxInputTokens × 0.85))` 派生推荐值，软下限 25%；Bailian 与 Custom provider 封顶 4000，Gemini 的上限使其推荐值为 1740。Custom 没有捏造的模型 profile：Base URL、模型、维度和最大输入 token 保持空白直到用户提供；推荐的 chunk 值只在有有效最大值之后才出现。在没有本地 provider tokenizer 的情况下，Cloud 使用上述保守多语言估算来应用该推荐；估算器版本是 Cloud 专属索引策略指纹的一部分，因此新旧 chunk 边界不会静默混合。ZotSeek 直接发送 HTTP，不依赖 provider SDK。菜单持久化 `cloud-slot`；provider、模型名和维度派生当前向量空间身份，为 Bailian 默认保留 `cloud:alibaba-bailian:qwen3.7-text-embedding:1024`。
+Cloud 是第三个独立的 `ModelConfig.runtime`，组织为 provider/模型目录（Plan 56）。批准的四个 provider 是：`alibaba-bailian`、`openai`、`google-gemini-api`，以及 `custom-openai-compatible` 逃生舱。内置 provider 从注册目录解析每个模型事实（模型名、维度、输入上限、角色契约、批量默认值、chunk profile、adapter 版本）；用户不能向内置 provider 输入任意模型名，与目录不匹配的存储旧值会被标记为未配置，而不是被静默替换。内置目录注册了 Bailian `qwen3.7-text-embedding`（1024d，128k 输入）、OpenAI `text-embedding-3-small`（1536d，固定 2000-token 推荐）与 `text-embedding-3-large`（3072d），以及 Google `gemini-embedding-001`（其 128–3072 范围中的 768d，2048-token 输入）。比率封顶 profile 以 `min(cap, floor(maxInputTokens × 0.85))` 派生推荐值，软下限 25%；Bailian 与 Custom provider 封顶 4000，Gemini 的上限使其推荐值为 1740。Custom 没有捏造的模型 profile：Base URL、模型、维度和最大输入 token 保持空白直到用户提供；推荐的 chunk 值只在有有效最大值之后才出现。在没有本地 provider tokenizer 的情况下，Cloud 使用上述保守多语言估算来应用该推荐；估算器版本是 Cloud 专属索引策略指纹的一部分，因此新旧 chunk 边界不会静默混合。ZotSeek 直接发送 HTTP，不依赖 provider SDK。菜单持久化 `cloud-slot`；内置 provider 由 provider、模型名和维度派生向量空间身份，为 Bailian 默认保留 `cloud:alibaba-bailian:qwen3.7-text-embedding:1024`。Custom 的身份还包含规范化 endpoint 的 16 位十六进制指纹；数据库不会保存原始主机或路径，而相同模型名/维度指向不同 endpoint 时也绝不会复用向量分区。
 
 内置 provider 的请求 URL 是固定的。Bailian 通过机器值区域偏好（`cn` 或 `intl`；旧 `zotseek.cloud.baseUrl` 偏好迁移到区域选择）在两个官方区域端点中选择；OpenAI 与 Gemini 端点硬编码在各自 adapter 中。只有 Custom（OpenAI 兼容）provider 接受用户 Base URL，它必须是 HTTPS、不得携带凭据、查询参数或片段，并按 OpenAI SDK 惯例与 `/embeddings` 拼接。Custom provider 复用 OpenAI 请求/响应格式，但刻意不发送 `dimensions` 参数（许多兼容网关拒绝未知参数）；其配置的维度只用于校验响应。它是单槽位、拥有自己的偏好命名空间与凭据，也是唯一接受自由模型名的 provider。
 
-每个 provider 在一个共享传输客户端之后有专用请求 adapter。Bailian adapter 保留原生 DashScope `text-embedding` 请求（`/api/v1/services/embeddings/text-embedding/text-embedding`、`parameters.text_type`、`output_type=dense`），而持久化的共享 Base URL 保持在 `/compatible-mode/v1`，因为文献简报客户端用它做 chat completion——且简报生成刻意只支持 Bailian：把 embedding provider 从 Bailian 切走会提示确认并清除简报连接状态。OpenAI adapter 以 Bearer 认证 POST `{model, input, dimensions}`，对查询和文档种类发送相同请求体（无任务角色、无文本前缀）。Gemini adapter 以 `x-goog-api-key` POST `batchEmbedContents`，每个文本一个请求，把 `taskType`（`RETRIEVAL_QUERY`/`RETRIEVAL_DOCUMENT`）和 `outputDimensionality` 直接放在每个请求上，与 Google SDK 及已验证的 768 维运行时响应一致（`gemini-embedcontent-v2`）。Cloud 角色是 provider API 参数而非 E5 式字符串前缀；adapter 版本、document 侧角色和每 provider 输出契约是文档索引策略指纹的一部分，而 query 角色只影响未来查询。
+每个 provider 在一个共享传输客户端之后有专用请求 adapter。Bailian adapter 保留原生 DashScope `text-embedding` 请求（`/api/v1/services/embeddings/text-embedding/text-embedding`、`parameters.text_type`、`output_type=dense`），而持久化的共享 Base URL 保持在 `/compatible-mode/v1`。OpenAI adapter 以 Bearer 认证 POST `{model, input, dimensions}`，对查询和文档种类发送相同请求体（无任务角色、无文本前缀）。Gemini adapter 以 `x-goog-api-key` POST `batchEmbedContents`，每个文本一个请求，把 `taskType`（`RETRIEVAL_QUERY`/`RETRIEVAL_DOCUMENT`）和 `outputDimensionality` 直接放在每个请求上，与 Google SDK 及已验证的 768 维运行时响应一致（`gemini-embedcontent-v2`）。Cloud 角色是 provider API 参数而非 E5 式字符串前缀；adapter 版本、document 侧角色和每 provider 输出契约是文档索引策略指纹的一部分，而 query 角色只影响未来查询。
+
+文献简报跟随设置页最后保存的 Cloud provider，并复用该 provider 的凭据和 endpoint；当前 Embedding 即使选择本地或 loopback server，也不妨碍简报使用已保存的 Cloud provider。简报生成模型独立于 Embedding 模型并按 provider 保存，使用单一自由输入框和模型发现联想；Bailian/Gemini 候选可按能力元数据筛选，OpenAI/Custom `/models` 候选仅作未验证建议，最终都必须通过简报自己的连接测试。生成 adapter 分别使用 Bailian/Custom Chat Completions、OpenAI Responses API 和 Gemini `generateContent`。外发授权与连接验证都按 provider 隔离；切换数据接收方后必须分别授权，provider 凭据、endpoint 或对应生成配置变化只撤销该 provider 的简报验证。
 
 共享客户端执行每个 profile 配置的批量大小：Bailian 默认 20 输入，OpenAI 与 Gemini 为 10，未配置的 Custom 端点在用户提供其契约之前保守地从 1 开始。它恢复 provider 响应顺序（Bailian `text_index`、OpenAI `index`、Gemini 输入顺序），只接受恰好等于配置有限维度的非零向量。网络错误、429 和 5xx 响应使用有界重试；确定性 4xx 响应立即失败。provider 响应体被缩减为有界的安全错误码，因此文本、查询和凭据永远不会被复制进日志或用户错误。连接探针以两个独立请求提交一个固定 document 字符串和一个固定 query 字符串，并要求两者返回相同维度。
 
@@ -1305,6 +1316,8 @@ Schema v9 扩展数据库以同时保存多个模型的 embedding：
 每条目状态列（`was_truncated`、`pages_indexed`、`pages_total`）在 v7/v8 中位于 `items` 表，现在移到 `item_models`，因为它们本质上是按（条目，模型）的：一篇论文在一个模型下可能完整索引，在另一个模型下因 chunk 数不同而截断。`items` 表失去这些列；查询改为查 `item_models` 的活动模型。
 
 **迁移 v8 → v9：**现有 `chunks` 行的 `model_id` 从 `items.model_id` 列（记录该条目最后使用的模型）回填。`items` 中带每条目状态列的行，按该条目记录的模型迁移到 `item_models`。迁移开始前会先写备份 `zotseek.sqlite.v8.bak`。
+
+**历史搁浅库恢复：**启动不只相信 `schema_version`，还核对迁移关键结构。若物理布局仍有 v3 `embeddings` 表，或 `items` 尚无 v8 的 `library_key`，但元数据已被历史版本提前写成较高版本，存储层会把迁移起点降到能够由结构确认的 v3、v6 或 v7，然后依次重放幂等迁移。现行 v8+ 布局不走这条降级路径；v8/v9 的既有备份与事务边界保持不变，因此失败后可由原库重试。
 
 ### Child Note 路径（Schema v11）
 
@@ -1408,6 +1421,8 @@ Keyword 模式在合并后取前 `keywordTopK`。Hybrid 模式在合并后形成
 | `indexingMode` | `"notes"` | `"abstract"`、`"notes"` 或 `"full"` |
 | `maxTokens` | 模型感知 | 推荐正文 token 数，被模型策略钳制 |
 | `maxChunksPerPaper` | `100` | 每篇论文最大 chunk 数 |
+
+这些数字偏好在 UI 提交时要求非空、整数且位于控件范围内；核心仍防御历史或外部写入值。`maxChunksPerPaper` 被统一截断并钳制到 1–200，非数值回退 100；提取、Full 来源分配、Note 增量替换与新鲜度指纹共享该结果。`maxTokens` 小于 50 或非数值时回退活动模型推荐值，搜索结果数和相似度百分比分别钳制到 5–100 与 0–100。
 
 ### chunk 尺寸取舍（历史参考）
 

@@ -218,7 +218,23 @@ const bytes = await Zotero.ZotSeek.api.getReclaimableBytes();
 
 **Returns:** `Promise<number>`
 
-> LLM literature-brief helpers (`getBriefStatus`, `testBriefConnection`, `cancelBriefJobs`, `customizeBriefPrompts`, `cancelBriefPromptCustomization`, `openBriefPromptDownloadLocation`) are also exposed on `api`, but the brief feature is still being completed; treat them as experimental until documented.
+### Experimental literature-brief helpers
+
+The following helpers are also exposed on `Zotero.ZotSeek.api`. The brief feature is still undergoing real-Zotero and provider acceptance, so integrations should treat these contracts as experimental.
+
+| Method | Purpose |
+|--------|---------|
+| `getBriefStatus()` | Return the active Cloud provider, provider-specific generation configuration/verification, setup state, and prompt metadata. Prompt bodies and credentials are not returned. The legacy `consentCurrent` field is deprecated and never authorizes a generation operation. |
+| `updateBriefSettings(settings)` | Save `{ modelName, maxInputTokens, maxOutputTokens, thinkingEnabled }` for the active Cloud provider and invalidate its previous connection verification. |
+| `discoverBriefModels(force?)` | Return model suggestions discovered with the active provider and shared credential. Pass `true` to bypass the in-memory cache. Suggestions are advisory; OpenAI/Custom list entries are not capability proof. |
+| `testBriefConnection()` | Make the brief-specific generation probe and bind successful verification to the current provider, credential revision, endpoint, and generation configuration. External callers must first disclose that fixed test text is sent and that a small charge may result. |
+| `useBundledBriefPrompts()` | Explicitly activate the bundled standard/review pair and mark prompt setup complete. |
+| `cancelBriefJobs()` | Cancel active/queued manual and collection brief work, prompt customization, and in-flight generation requests. |
+| `customizeBriefPrompts(form)` | Generate and publish a prompt pair from `{ domain, outputLanguage, readingHabits? }`; returns save/download metadata but not prompt bodies. External callers must first disclose that the bundled templates and form responses are sent and may incur charges. |
+| `cancelBriefPromptCustomization()` | Cancel the active prompt-customization request without changing an already published pair. |
+| `openBriefPromptDownloadLocation(path)` | Reveal the containing folder for a downloaded prompt file path. |
+
+Paper generation itself is intentionally not exposed through this experimental API. ZotSeek's first-party UI performs a fresh, transaction-scoped confirmation before every single-paper action or collection batch. It prepares PDF evidence and a rough token estimate locally before confirmation; the old persistent consent value cannot suppress this prompt.
 
 ## Example: Plugin integration
 

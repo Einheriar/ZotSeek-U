@@ -8,6 +8,8 @@
  * Bailian, OpenAI, Gemini and Custom (OpenAI-compatible) share one code path.
  */
 
+import { embeddingVectorValidationError } from './embedding-validation';
+
 declare const Zotero: any;
 
 export type CloudEmbeddingKind = 'query' | 'document';
@@ -128,12 +130,10 @@ function abortControllerCtor(explicit?: any): any | null {
 
 /** Shared vector validation: every provider's output passes the same gate. */
 function assertValidEmbeddingVector(embedding: unknown, dimensions: number): void {
-  if (!Array.isArray(embedding)
-    || embedding.length !== dimensions
-    || embedding.some((value: unknown) => typeof value !== 'number' || !Number.isFinite(value))
-    || embedding.every((value: number) => value === 0)) {
+  const detail = embeddingVectorValidationError(embedding, dimensions);
+  if (detail) {
     throw new CloudEmbeddingRequestError(
-      `Cloud provider returned an invalid embedding; expected ${dimensions} finite values.`,
+      `Cloud provider returned an invalid embedding; expected ${dimensions} finite values (${detail}).`,
       502,
     );
   }

@@ -1,6 +1,7 @@
 /** Secure storage for Cloud BYOK credentials. Never falls back to prefs or plaintext files. */
 
 import { invalidateBriefConnectionVerification } from './brief-generation-config';
+import type { CloudProviderId } from './cloud-model-config';
 
 declare const Components: any;
 declare const ChromeUtils: any;
@@ -36,9 +37,8 @@ function bumpCloudCredentialRevision(provider: string): void {
   } catch {
     // Test environments and early startup may not expose preferences yet.
   }
-  if (provider === 'alibaba-bailian') {
-    try { invalidateBriefConnectionVerification(); } catch { /* preferences unavailable */ }
-  }
+  try { invalidateBriefConnectionVerification(provider as CloudProviderId); }
+  catch { /* preferences unavailable */ }
 }
 
 /**

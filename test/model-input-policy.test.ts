@@ -25,8 +25,21 @@ describe('model input policy resolution', () => {
   });
 
   test('rejects invalid preference values', () => {
-    for (const value of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, '800']) {
+    for (const value of [0, -1, 49, Number.NaN, Number.POSITIVE_INFINITY, '800']) {
       assert.equal(normalizeRequestedChunkTokens(value), undefined);
+    }
+    assert.equal(normalizeRequestedChunkTokens(50), 50);
+    assert.equal(normalizeRequestedChunkTokens(100.9), 100);
+  });
+
+  test('uses the model recommendation and matching fingerprint for invalid overrides', () => {
+    const model = getModel('multilingual-e5-base')!;
+    const expected = resolveModelInputPolicy(model);
+    for (const value of [0, -1, 49, Number.NaN, Number.POSITIVE_INFINITY, '450']) {
+      const actual = resolveModelInputPolicy(model, value);
+      assert.equal(actual.effectiveChunkTokens, expected.effectiveChunkTokens);
+      assert.equal(actual.usesUserOverride, false);
+      assert.equal(modelInputPolicyFingerprint(actual), modelInputPolicyFingerprint(expected));
     }
   });
 

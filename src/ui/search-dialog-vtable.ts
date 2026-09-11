@@ -20,6 +20,10 @@ import {
 } from '../utils/indexing-mode';
 import { showServerModelConfigurationPromptIfNeeded } from './server-model-prompt';
 import {
+  normalizeMinSimilarityPercent,
+  normalizeSearchTopK,
+} from '../utils/numeric-preferences';
+import {
   addItemsToCollection as sharedAddItemsToCollection,
   populateCollectionMenu as sharedPopulateCollectionMenu,
   exportItemsToNewCollection,
@@ -42,6 +46,7 @@ export class ZotSeekDialogVTable {
   private isSearching: boolean = false;
   private searchTimeout: number | null = null;
   private lastQuery: string = '';
+  private queuedInitialSearch = false;
   private autoSearchDelay: number = 500; // milliseconds to wait after typing stops
 
   // Hybrid search
@@ -92,14 +97,10 @@ export class ZotSeekDialogVTable {
         this.autoAdjustWeights = Z.Prefs.get('extensions.zotero.zotseek.hybridSearch.autoAdjustWeights', true) !== false;
 
         // Load result-limit preferences set from the preferences pane
-        const topKPref = Z.Prefs.get('zotseek.topK', true);
-        if (typeof topKPref === 'number' && topKPref > 0) {
-          this.userTopK = Math.floor(topKPref);
-        }
-        const minSimPref = Z.Prefs.get('zotseek.minSimilarityPercent', true);
-        if (typeof minSimPref === 'number' && minSimPref >= 0 && minSimPref <= 100) {
-          this.userMinSimilarity = minSimPref / 100;
-        }
+        this.userTopK = normalizeSearchTopK(Z.Prefs.get('zotseek.topK', true));
+        this.userMinSimilarity = normalizeMinSimilarityPercent(
+          Z.Prefs.get('zotseek.minSimilarityPercent', true),
+        ) / 100;
         this.logger.info(`Result limits: topK=${this.userTopK}, minSimilarity=${this.userMinSimilarity}`);
 
         // Load indexing mode to determine if granularity toggle should be shown
@@ -303,6 +304,8 @@ export class ZotSeekDialogVTable {
         setGranularity: (g: 'section' | 'location') => this.setGranularity(g),
         getGranularity: () => this.granularity,
         performSearch: () => this.performSearch(),  // For triggering search from opener
+        setInitialSearch: (query: string, excludeItemId?: number) =>
+          this.setInitialSearch(query, excludeItemId),
         setExcludeItemId: (id: number | undefined) => { this.excludeItemId = id; },  // For excluding current paper
         addQueryField: () => this.addQueryField(),  // For adding another query
         removeQueryField: (index?: number) => this.removeQueryField(index),  // For removing a query
@@ -346,6 +349,32 @@ export class ZotSeekDialogVTable {
       this.logger.error('Stack trace:', errorStack);
       this.setStatus(`Failed to initialize dialog: ${errorMessage}`);
     }
+  }
+
+  /** Apply a request from an opener to the already-initialized first tab. */
+  public setInitialSearch(query: string, excludeItemId?: number): void {
+    this.excludeItemId = excludeItemId;
+    this.queuedInitialSearch = false;
+    // Exclusion is not part of the ordinary query cache key. An opener request
+    // must therefore re-run even when its text matches the previous search.
+    this.lastQuery = '';
+    const input = this.window?.document?.getElementById('zotseek-query-1') as HTMLInputElement | null;
+    if (!input) {
+      this.logger.warn('Cannot apply initial search: primary query input is unavailable');
+      return;
+    }
+    input.value = query;
+    if (query.trim()) {
+      if (this.isSearching) this.queuedInitialSearch = true;
+      else void this.performSearch();
+    }
+  }
+
+  /** Run the latest opener request after an older in-flight search settles. */
+  private runQueuedInitialSearch(): void {
+    if (!this.queuedInitialSearch) return;
+    this.queuedInitialSearch = false;
+    void this.performSearch();
   }
 
   /**
@@ -461,6 +490,7 @@ export class ZotSeekDialogVTable {
         searchBtn.disabled = false;
         searchBtn.textContent = getString('search-searchLabel');
       }
+      this.runQueuedInitialSearch();
     }
   }
 
@@ -1102,7 +1132,7 @@ export class ZotSeekDialogVTable {
       const hybridResult = result as HybridSearchResult;
       const pageNumber = exactPage || hybridResult.pageNumber;
 
-      this.openItem(localId, pageNumber);
+      this.openItem(localId, pageNumber, hybridResult.pdfAttachmentKey);
     }
   }
 
@@ -1130,7 +1160,7 @@ export class ZotSeekDialogVTable {
       const exactPage = this.resultsTable?.getExactPage(localId);
       const hybridResult = result as HybridSearchResult;
       const pageNumber = exactPage || hybridResult.pageNumber;
-      this.openItem(localId, pageNumber);
+      this.openItem(localId, pageNumber, hybridResult.pdfAttachmentKey);
     } else {
       // Multiple selection: select all in Zotero library (skip orphans)
       const itemIds = results
@@ -1148,14 +1178,18 @@ export class ZotSeekDialogVTable {
   /**
    * Open an item in Zotero, optionally to a specific page
    */
-  private async openItem(itemId: number, pageNumber?: number): Promise<void> {
+  private async openItem(
+    itemId: number,
+    pageNumber?: number,
+    pdfAttachmentKey?: string,
+  ): Promise<void> {
     try {
       // Select the item in the library
       this.zoteroAPI.selectItem(itemId);
 
       // If we have a page number, open PDF to that page
       if (pageNumber) {
-        await this.zoteroAPI.openPDFToPage(itemId, pageNumber);
+        await this.zoteroAPI.openPDFToPage(itemId, pageNumber, pdfAttachmentKey);
         this.logger.info(`Opened item ${itemId} to page ${pageNumber}`);
       }
 
@@ -1496,6 +1530,7 @@ export class ZotSeekDialogVTable {
     this.enrichedData.clear();
     this.window = null;
     this.lastQuery = '';
+    this.queuedInitialSearch = false;
     this.excludeItemId = undefined;  // Reset excluded item
     this.queryCount = 1;  // Reset to single query mode
     this.combineOperator = 'and';  // Reset operator

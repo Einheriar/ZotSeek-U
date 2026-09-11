@@ -11,6 +11,7 @@ import {
   estimatePageForRange,
   countParagraphsUpTo,
   chunkNoteTexts,
+  allocateFullModeChunkCounts,
   combineFullModeChunks,
   assessChunkStrategyState,
   CHUNK_STRATEGY_VERSION,
@@ -248,6 +249,33 @@ describe('preference reading', () => {
     assert.equal(opts.maxChunks, 100);
   });
 
+  test('normalizes legacy or externally-written chunk limits before extraction', () => {
+    assert.equal(getChunkOptionsFromPrefs(fakeZotero({
+      'zotseek.maxChunksPerPaper': 0,
+    })).maxChunks, 1);
+    assert.equal(getChunkOptionsFromPrefs(fakeZotero({
+      'zotseek.maxChunksPerPaper': -5,
+    })).maxChunks, 1);
+    assert.equal(getChunkOptionsFromPrefs(fakeZotero({
+      'zotseek.maxChunksPerPaper': 4.9,
+    })).maxChunks, 4);
+    assert.equal(getChunkOptionsFromPrefs(fakeZotero({
+      'zotseek.maxChunksPerPaper': 999,
+    })).maxChunks, 200);
+  });
+
+  test('a legacy zero chunk limit consistently becomes one chunk in every mode', () => {
+    const options = getChunkOptionsFromPrefs(fakeZotero({
+      'zotseek.maxChunksPerPaper': 0,
+    }));
+    const longText = paragraphs(20);
+    for (const mode of ['abstract', 'notes', 'full'] as const) {
+      const result = chunkDocumentEx('T', longText, longText, mode, options);
+      assert.equal(result.chunks.length, 1, `${mode} should use the normalized shared cap`);
+      assert.equal(result.wasTruncated, true);
+    }
+  });
+
   test('recognises all indexing modes', () => {
     assert.equal(getIndexingMode(fakeZotero({ 'zotseek.indexingMode': 'abstract' })), 'abstract');
     assert.equal(getIndexingMode(fakeZotero({ 'zotseek.indexingMode': 'notes' })), 'notes');
@@ -414,6 +442,21 @@ describe('faithful production chunk boundaries (Plan 55)', () => {
       assert.equal(bodies.join(' ').replace(/\s+/g, ' ').trim(), source.replace(/\s+/g, ' ').trim());
       assert.ok(result.chunks.every(chunk => count(chunk.embedText ?? chunk.text) <= options.maxTokens));
     }
+  });
+
+  test('exposes the same allocation for incremental Full Note replacement', () => {
+    assert.deepEqual(
+      allocateFullModeChunkCounts({ summary: 1, notes: 80, pdf: 100 }, 100),
+      { maxChunks: 100, summaryCount: 1, noteCount: 30, pdfCount: 69, wasTruncated: true },
+    );
+    assert.deepEqual(
+      allocateFullModeChunkCounts({ summary: 1, notes: 5, pdf: 100 }, 20),
+      { maxChunks: 20, summaryCount: 1, noteCount: 5, pdfCount: 14, wasTruncated: true },
+    );
+    assert.deepEqual(
+      allocateFullModeChunkCounts({ summary: 2, notes: 5, pdf: 5 }, 0),
+      { maxChunks: 1, summaryCount: 1, noteCount: 0, pdfCount: 0, wasTruncated: true },
+    );
   });
 
   test('retains an unfinished oversized PDF tail in estimated and measured paths', () => {

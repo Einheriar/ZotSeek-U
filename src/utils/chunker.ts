@@ -12,6 +12,7 @@
 
 import type { NoteSection, StructuredNoteText } from './note-text';
 import { normalizeCurrentIndexingMode } from './indexing-mode';
+import { normalizeMaxChunksPerPaper } from './numeric-preferences';
 
 export type ChunkType = 'summary' | 'methods' | 'findings' | 'content' | 'note';
 
@@ -1326,6 +1327,45 @@ export interface FullModeChunkSources {
 
 const FULL_MODE_NOTE_CHUNK_LIMIT = 30;
 
+export interface FullModeChunkAllocation {
+  maxChunks: number;
+  summaryCount: number;
+  noteCount: number;
+  pdfCount: number;
+  wasTruncated: boolean;
+}
+
+/**
+ * Allocate the shared Full-mode quota without depending on a concrete chunk
+ * representation. Full rebuilds and Note-only replacements must use this same
+ * policy or the stored source mix will change based on which event ran last.
+ */
+export function allocateFullModeChunkCounts(
+  sourceCounts: { summary: number; notes: number; pdf: number },
+  requestedMaxChunks: number,
+): FullModeChunkAllocation {
+  const maxChunks = Number.isFinite(requestedMaxChunks)
+    ? Math.max(1, Math.floor(requestedMaxChunks))
+    : DEFAULT_OPTIONS.maxChunks;
+  const availableSummary = Math.max(0, Math.floor(sourceCounts.summary));
+  const availableNotes = Math.max(0, Math.floor(sourceCounts.notes));
+  const availablePDF = Math.max(0, Math.floor(sourceCounts.pdf));
+  const summaryCount = Math.min(maxChunks, availableSummary);
+  const remainingSlots = Math.max(0, maxChunks - summaryCount);
+  const noteCount = Math.min(FULL_MODE_NOTE_CHUNK_LIMIT, remainingSlots, availableNotes);
+  const pdfCount = Math.min(Math.max(0, remainingSlots - noteCount), availablePDF);
+  return {
+    maxChunks,
+    summaryCount,
+    noteCount,
+    pdfCount,
+    wasTruncated:
+      summaryCount < availableSummary ||
+      noteCount < availableNotes ||
+      pdfCount < availablePDF,
+  };
+}
+
 /**
  * Combine metadata, note, and PDF chunks under one per-item chunk limit.
  * Metadata is kept first, followed by at most 30 Note chunks. PDF chunks use
@@ -1336,18 +1376,12 @@ export function combineFullModeChunks(
   options: ChunkOptions = {}
 ): ChunkResult {
   const opts = { ...DEFAULT_OPTIONS, ...options };
-  const maxChunks = Math.max(1, opts.maxChunks);
-  const summaryChunks = sources.summaryChunks.slice(0, maxChunks);
-  const remainingSlots = Math.max(0, maxChunks - summaryChunks.length);
-  const noteCount = Math.min(
-    FULL_MODE_NOTE_CHUNK_LIMIT,
-    remainingSlots,
-    sources.noteChunks.length,
-  );
-  const pdfCount = Math.min(
-    Math.max(0, remainingSlots - noteCount),
-    sources.pdfChunks.length,
-  );
+  const allocation = allocateFullModeChunkCounts({
+    summary: sources.summaryChunks.length,
+    notes: sources.noteChunks.length,
+    pdf: sources.pdfChunks.length,
+  }, opts.maxChunks);
+  const summaryChunks = sources.summaryChunks.slice(0, allocation.summaryCount);
 
   const selected: Chunk[] = [
     ...summaryChunks.map(chunk => ({
@@ -1357,14 +1391,14 @@ export function combineFullModeChunks(
       startChar: undefined,
       endChar: undefined,
     })),
-    ...sources.noteChunks.slice(0, noteCount).map(chunk => ({
+    ...sources.noteChunks.slice(0, allocation.noteCount).map(chunk => ({
       ...chunk,
       pageNumber: undefined,
       paragraphIndex: undefined,
       startChar: undefined,
       endChar: undefined,
     })),
-    ...sources.pdfChunks.slice(0, pdfCount).map(chunk => ({ ...chunk })),
+    ...sources.pdfChunks.slice(0, allocation.pdfCount).map(chunk => ({ ...chunk })),
   ];
 
   selected.forEach((chunk, index) => {
@@ -1381,9 +1415,7 @@ export function combineFullModeChunks(
   return {
     chunks: selected,
     wasTruncated:
-      summaryChunks.length < sources.summaryChunks.length ||
-      noteCount < sources.noteChunks.length ||
-      pdfCount < sources.pdfChunks.length ||
+      allocation.wasTruncated ||
       !!sources.notesWereTruncated ||
       !!sources.pdfWasTruncated,
     pagesIndexed: indexedPages.size,
@@ -1400,7 +1432,7 @@ export function getChunkOptionsFromPrefs(Zotero: any): ChunkOptions {
 
   return {
     maxTokens: typeof maxTokens === 'number' ? maxTokens : DEFAULT_OPTIONS.maxTokens,
-    maxChunks: typeof maxChunks === 'number' ? maxChunks : DEFAULT_OPTIONS.maxChunks,
+    maxChunks: normalizeMaxChunksPerPaper(maxChunks),
     maxChars: DEFAULT_OPTIONS.maxChars,
   };
 }

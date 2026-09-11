@@ -6,6 +6,10 @@
 >
 > Status markers: **[Shipped]** = in production code and accepted; **[In progress]** = approved, partially implemented or awaiting runtime acceptance. Finer-grained experiment data and per-item acceptance records live in the maintainer's local workspace and are not distributed with this repository.
 
+## Plan 71: PDF batch boundary recovery
+
+Shared `readPdfAttachment` rereads only a mismatched PDFWorker batch one page at a time, sequentially. Zotero's final `trim()` removes form-feed boundaries around empty edge pages; padding cannot safely recover page numbers. Single-page results retain their requested physical page, empty text and embedded form feeds; failed or inconsistent results still fail. MCP/REST keep their 20-page batches, 100-page/about-300,000-character response limits and continuation fields. Brief's internal whole-document reads share recovery without acquiring server limits. Index extraction is unchanged.
+
 ## Plan 62: BM25 snapshots (accepted)
 
 Preferences Storage Used sums the file sizes of `zotseek.sqlite` and the saved BM25 JSON snapshot, reread on Refresh Statistics. A missing snapshot contributes zero; stale or corrupt files still count their actual bytes. Temporary replacement files, SQLite journals, model files and Zotero attachments are excluded. The raw JS API / MCP `storageUsedBytes` retains its database-file meaning.
@@ -156,6 +160,7 @@ Narrow-projection vector cache for the active model (base64 decoded straight int
 - Default bundled model `multilingual-e5-base` (Q8, 768 dims, 512-token input limit, `query:` / `passage:` prefixes), switched from upstream's Nomic default at fork start for multilingual semantics.
 - Three-model registry: `nomic-embed-text-v1.5` (optional download), `multilingual-e5-base` (default), `bge-m3` (optional download); upstream's MiniLM was removed from the registry and settings menu.
 - Download interaction: selecting a missing model offers "download automatically (recommended) / download manually / cancel"; a `.part` file is written atomically and the active model does not switch until the download succeeds. Vectors are partitioned per `model_id`; switching or failing never deletes or mixes existing vectors.
+- ChromeWorker crash recovery is single-flight: concurrent failed calls share one replacement Worker; late events from old instances are ignored by identity, and reset/destroy cancels unfinished initialization so an ended lifecycle cannot be revived.
 
 ### 7.2 Model input contracts and exact chunking
 
@@ -163,7 +168,7 @@ Narrow-projection vector cache for the active model (base64 decoded straight int
 
 ### 7.3 Local Server slot
 
-Self-hosted inference servers connect through a single fixed slot: the config file `<Zotero profile>/zotseek-server-models.json` (with a `schemaVersion` / `models` / `example` template; fields include `id` (`server:` prefix), `baseUrl` (loopback only), `serverModelName`, `dimensions`, `maxInputTokens`, `recommendedChunkTokens`, `queryPrefix`, `docPrefix`). The model menu presents the stable value `server-slot` with NONE / UNKNOWN / ready states; incomplete configs may be kept but semantic operations are gated; when ready, startup validates `GET /v1/models` and probes dimensions.
+Self-hosted inference servers connect through a single fixed slot: the config file `<Zotero profile>/zotseek-server-models.json` (with a `schemaVersion` / `models` / `example` template; fields include `id` (`server:` prefix), `baseUrl` (loopback only), `serverModelName`, `dimensions`, `maxInputTokens`, `recommendedChunkTokens`, `queryPrefix`, `docPrefix`). The model menu presents the stable value `server-slot` with NONE / UNKNOWN / ready states; incomplete configs may be kept but semantic operations are gated; when ready, startup validates `GET /v1/models` and probes dimensions. Every normal embedding response revalidates complete unique indexes plus each vector's array shape, dimension, finite values, and non-zero content before storage.
 
 ### 7.4 Cloud embedding and BYOK
 
@@ -184,6 +189,7 @@ Key points:
 - **Query/document API roles**: editable in advanced settings (defaults `query` / `document`, with a restore-Bailian-defaults action); changing a role invalidates connection verification and enters the index fingerprint (together with adapter version and output contract).
 - Bailian region endpoint `zotseek.cloud.bailianRegion` (`cn` / `intl`); `cloudAutoIndex` defaults to off.
 - A Cloud-only conservative multilingual token estimator (×1.3 per English word, ×2 per CJK character) feeds only the Cloud chunking budget; the estimator version is part of the Cloud strategy fingerprint.
+- Custom `model_id` values also carry a short fingerprint of the normalized endpoint. The raw URL is not stored in the database, and identically named/equal-dimension models from different services remain in separate vector partitions.
 
 ## 8. Index Maintenance System [Shipped]
 
@@ -200,6 +206,10 @@ The preferences pane converged to three buttons whose semantics match the actual
 - **Clear index** (dangerous): deletes without rebuilding.
 
 The "run incremental sync now" button was removed; at startup, a configuration-fingerprint mismatch raises a three-way "check and update / rebuild / cancel" prompt where cancel performs zero writes. Context-menu entries are limited to "check and update selected items / current collection" and reuse the same freshness fingerprints as startup reconciliation.
+
+Every explicit index write/delete operation and startup/background reconciliation share one operation lease. While either side is active, the other exits before reading candidates or clearing a partition and reports the busy state. A rebuild retains the lease from coverage discovery through its final batch, preventing reconciliation from observing or advancing a partition between clear and completion.
+
+Full extraction and incremental Note replacement share the same Summary → at most 30 Notes → remaining PDF-slot allocator. A Note change on an already truncated Full item forces a whole-item rebuild with fresh PDF extraction so quota allocation, page coverage, and `wasTruncated` can converge again.
 
 ### 8.3 Index task pause and resume
 
@@ -219,6 +229,8 @@ Index identities **already indexed** that come to match `excludeTag` / `excludeB
 - **Stable item identity is `libraryKey + itemKey`**, threading through deletion cleanup, fingerprints, incremental reconciliation, MCP reads and deep links; local Zotero item IDs are never used as cross-library stable identity. user / group / orphan records are handled distinctly.
 - Schema nodes introduced by the fork: **v10** `startup_fingerprints` (freshness fingerprints), **v11** `section_paths` (note section paths), **v12** `chunks.pdf_attachment_key` (exact Full-mode PDF provenance, nullable; existing rows are never assigned a guessed source).
 - One model partition per paper (`chunks.model_id` composite key + `item_models`); model switching and failures never mix vectors.
+- Incremental freshness reads `item_models.content_hash` for the active model. `items.content_hash` remains only as a legacy-schema/migration compatibility field and cannot describe whether another model partition is current.
+- Startup cross-checks schema metadata against the physical tables. If an historical build marked a v3 layout with `embeddings`, or a pre-v8 `items` table without `library_key`, as a newer version, startup lowers the replay point to the verified v3/v6/v7 boundary and reruns the existing idempotent migrations; v8/v9 still back up the database before destructive migration. Current layouts are never downgraded by this recovery path.
 - The "storage usage" figure in preferences is the database file's physical size: after `DELETE`, pages go to the freelist instead of returning to disk immediately; only "compact database" (`VACUUM INTO`) actually shrinks the file. This is by design, not residue.
 
 ## 10. MCP/REST Extensions [Shipped]
@@ -231,7 +243,7 @@ MCP parameter documentation alignment on 2026-09-10: `search` defaults to `hybri
 
 On top of upstream's `search` / `find_similar` / `index_status` (full usage in [MCP.md](MCP.md)):
 
-- **`get_item` tool**: reads normalized bibliography, tags, collections, relatedItems and attachment lists by `library_key + item_key`; `include_notes: true` returns all child notes' complete unfiltered text (the index-side "basic information"/References exclusion rules are not applied) plus live `sections` / `sectionPaths`; `include_pdf: "pages" | "full"` supports a chosen attachment and ≤20 consecutive pages, reading from Zotero's full-text cache first with a batched `PDFWorker` fallback for missing pages; `pdf.status` uses the machine values `ok / partial / missing / unresolved / empty / failed`; local file paths are never exposed. REST equivalent: `GET /zotseek/item`.
+- **`get_item` tool**: reads normalized bibliography, tags, collections, relatedItems and attachment lists by `library_key + item_key`; `include_notes: true` returns all child notes' complete unfiltered text (the index-side "basic information"/References exclusion rules are not applied) plus live `sections` / `sectionPaths`; `include_pdf: "pages" | "full"` supports a chosen attachment, with ≤20 consecutive pages per explicit range, while `full` uses batches of ≤20 pages and returns a leading prefix of at most 100 pages or about 300,000 characters. Limited results expose `partial`, `limitReason`, and `nextPage` under the same MCP/REST contract; reads prefer Zotero's full-text cache and use batched `PDFWorker` fallback for missing pages without claiming that Zotero's underlying queue can be cancelled. Local file paths are never exposed. REST equivalent: `GET /zotseek/item`.
 - **Structured post-filtering on `search`**: an optional `filter` (`year_from` / `year_to` / `journal` / `author` + an `exact` master switch) applies to the window already ranked into `max_results`, never reordering and never hidden-overfetching; REST exposes `yearFrom` / `yearTo` / `journal` / `author` / `exact`.
 - **Exact PDF back-linking**: `matchedChunk.pdfAttachmentKey` threads through end to end so deep links open the exact attachment that produced the hit instead of a heuristic pick.
 - The MCP authorization copy was updated to "allow local AI agents read-only search and access to items, notes and PDFs", synced across all 10 locales.
@@ -246,7 +258,9 @@ On top of upstream's `search` / `find_similar` / `index_status` (full usage in [
 ## 12. Preferences UI [Shipped]
 
 - Visual and information-architecture cleanup: embedding/token/chunk settings no longer live under the Search area; "max tokens per chunk / max chunks per paper" moved into "Chunking and model input" at the end of the Models group; model-input-policy hints show only "hard limit / recommended value"; spacing across stats, operations and maintenance sections was unified; all copy is synced across the 10 locales.
+- Numeric settings reject blank, fractional, and out-of-range input at commit time with native visible validation; core readers also normalize historical or externally written preferences. `maxChunksPerPaper` is 1–200 (default 100), result count is 5–100 (default 20), and similarity percentage is 0–100 (default 70); invalid `maxTokens` falls back to the active model recommendation. Index runtime and configuration fingerprints reuse the same normalized value so freshness cannot describe a different quota than extraction used.
 - Search settings gained a "default search mode" dropdown (Semantic / Keyword / Hybrid, default `hybrid`, reusing the existing preference key); dropdown width tuned to avoid Chinese truncation.
+- An already-open VTable search window receives a new initial query and `excludeItemId` through its controller instead of a stale hard-coded input ID. Reusing the window for “Find Related” therefore refreshes the query and still excludes the source item.
 - The About section links to this fork's repository, `https://github.com/Einheriar/ZotSeek-U`.
 - Legacy `alert` prompts such as chunk-strategy-upgrade notices became cancellable `confirm` dialogs (closing triggers no rebuild).
 - Known non-blocking UI issue: multiple bottom-right notification windows can overlap; assessed and accepted as-is.
@@ -255,22 +269,38 @@ On top of upstream's `search` / `find_similar` / `index_status` (full usage in [
 
 ### 13.1 Implemented core modules [Shipped (module level)]
 
-The brief feature's server-side core plus its settings/item entry points are committed (`108552c`) and default off; real-Zotero end-to-end and paid-generation acceptance are not complete yet:
+The brief feature's server-side core, settings/item entry points, and Plan 57 P7 guidance loop are in source and default off; real-Zotero end-to-end and paid-generation acceptance across providers are not complete yet:
 
-- The model is pinned to Bailian `deepseek-v4-flash-0731` (OpenAI-compatible endpoint, thinking mode on, `max_completion_tokens` with a default 16384 output budget).
+- The provider follows the last Cloud provider saved in preferences and reuses that provider's protected credential and endpoint. When Embedding currently uses the local or loopback-server runtime, briefs still use the last saved Cloud provider.
+- The generation model is independent from the Embedding model and saved per provider. Preferences retain one free-text field with model-discovery suggestions for the active provider; Bailian/Gemini suggestions carry capability metadata, while OpenAI/Custom suggestions are marked as requiring confirmation by the connection test.
+- Bailian and Custom use Chat Completions, OpenAI uses the Responses API, and Gemini uses native `generateContent`; connection verification, fingerprints, and credential revisions are isolated per provider. Paper disclosure no longer reuses persistent consent: every generation operation requires a fresh confirmation.
 - A title/abstract forced-choice classifier distinguishes `review` / `standard` papers (stable machine values; ambiguous samples default to `standard`) with its own call budget.
 - Scheduler: single-paper manual tasks run FIFO with concurrency 1; collection tasks run in batches of three papers with intra-batch parallelism; the two modes are mutually exclusive.
 - Prompt store: bundled "standard paper" and "review" templates (`prompts/standard-article-brief.md`, `prompts/review-article-brief.md`) with atomic override import into the profile directory (UTF-8 / 256KiB validation).
 - Brief notes carry source provenance as HTML comments.
-- Briefs support the Bailian provider only; switching away confirms and clears the brief connection-verification state (`zotseek.cloud.brief.connectionVerified`).
 
 ### 13.2 In-progress closed-loop design [In progress]
 
-The full generation loop below is implemented and committed (`108552c`); its real-Zotero end-to-end and paid-generation acceptance are not complete yet:
+Single-paper runtime acceptance update: Bailian successfully generated and saved one Chinese brief with readable H1, sections, and provenance. Plan 70A fixes the Markdown renderer treating scientific text between a less-than sign and a later greater-than sign as raw HTML. It now strips only syntactically recognizable raw HTML tags while preserving and escaping comparisons in prose and inline code. Offline regressions cover the fix; real-Zotero generated-content fidelity still needs re-validation.
+
+Brief setting updates complete pure validation before cancelling queued or active generation work. Invalid input reports an error and leaves existing tasks intact; only a successful commit cancels work bound to the old settings and invalidates the corresponding verification.
+
+Generation entry points now use transaction-scoped informed confirmation: every single-paper action confirms once, while one collection batch receives one aggregate confirmation; classifier, layered, merge, and retry calls do not open additional dialogs. Before confirmation ZotSeek only extracts PDFs locally and uses the existing character-count / 3 estimator to show approximate input tokens, the per-request output ceiling, and the expected minimum call count. It does not create a provider client or send a model request. Preparation is bound to the provider, configuration, credential revision, endpoint, and both prompt hashes; any queued-time change fails before disclosure and requires a new preparation and confirmation. The preferences connection test and wizard checkbox authorize only the narrow fixed-test/template-customization disclosure and no longer write paper consent. The experimental public `recordBriefConsent()` writer is removed; `getBriefStatus().consentCurrent` remains only as a deprecated compatibility status and cannot suppress confirmation.
+
+Every actual HTTP attempt enters an in-memory usage ledger. Provider `usage` from classification, direct generation, segment summaries, merges, final generation, and retries is aggregated into the single-paper or collection result as input, output, reasoning, and total tokens; reasoning is shown separately without being added twice. When a successful response omits usage, or a timeout/rejection/disconnect returns no usable total, the report keeps known totals and states the number of unreported requests, that the figures are incomplete, and that they are not the final bill. Failures, cancellations, and the model's garbled-source exit retain usage already incurred and reported.
+
+Connection retest on 2026-09-11: task cancellation now shares the request client's constructor resolver, falling back to the Zotero main window when the plugin global lacks `AbortController`. The enabled switch reads and writes the same absolute preference path. Real read-only self-tests passed 4/4 and the Bailian fixed-text connection probe succeeded. Verification survived restart; the single-item menu and bundled-template branch worked. No paper was sent and no note was generated, so this does not complete end-to-end acceptance.
+
+Real-Zotero fixes on 2026-09-11: the controller sets the wizard title, XUL status uses one attribute, the checkbox uses `.label`, and button label updates preserve native internal elements. The webpage `<datalist>` AutoComplete actor does not match Zotero chrome windows. The shared `brief-model-autocomplete.ts` now uses native `autocomplete-input` with an isolated search registration, released on window unload. Display labels preserve exact model IDs, while free-input blur and candidate completion both commit changes. After a cache-cleared restart, Bailian suggestions appeared in preferences and the wizard; preferences mouse selection and free-input persistence passed, and wizard buttons/status text were restored. Full wizard, cross-provider, and paid-generation acceptance remain incomplete.
+
+The full generation loop below is implemented; its real-Zotero end-to-end and paid-generation acceptance are not complete yet:
 
 - A "Briefs" collapsible section after "Search" in the preferences pane with a master switch (`zotseek.brief.enabled`, default off).
-- A dedicated wizard dialog collects domain / output language and lets the LLM rewrite personal prompts from the bundled templates; the default templates are downloaded automatically and a controlled paired copy is enabled; advanced users may edit and import.
-- Entry points: single item / direct PDF / collection; generation always creates a new child note; PDFs need at least 100 non-whitespace Unicode characters after cleanup or are skipped as `insufficient_text`; items in a collection that already have child notes are skipped.
+- Turning the master switch on opens a stepped wizard immediately. Closing it sends no request and does not complete setup, so the next actual brief action opens it again. Users can explicitly keep the bundled pair, which targets psychology, developmental psychology, and cognitive neuroscience, or answer exactly three questions (field, output language, optional special focus) so the LLM performs a constrained rewrite of those templates. The wizard never shows full prompts or reads the library.
+- Setup becomes usable only after an explicit bundled-template choice or a complete customized/imported pair. Advanced import replaces one slot while preserving the other; generated files still use non-overwriting download names and are activated as a controlled pair in the profile.
+- An invalid setup version/choice or damaged active prompt record is surfaced as needing repair rather than silently treated as ready; explicitly restoring the bundled pair or generating a new pair repairs the state.
+- Entry points: single item / direct PDF / collection; generation always creates a new child note. The program injects the H1 title “简报”; the model is instructed to use only H2–H4 in the body, with no extra program-side heading validator.
+- PDFs need at least 100 non-whitespace Unicode characters after cleanup or are skipped as `insufficient_text`. Above that threshold, the model may report strict `source_unusable/garbled_text`; the runner then exits without writing a note. Collection items that already have child notes are still skipped.
 - Full-lifecycle cancellation context, connection-verification staleness fixes (credential revision), protocol-error and malformed-response handling, and sanitized errors.
 
 ## 14. Engineering and Development Workflow

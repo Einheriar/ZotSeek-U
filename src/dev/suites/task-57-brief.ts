@@ -3,6 +3,7 @@ import { briefPromptStore } from '../../core/brief-prompt-store';
 import { briefService } from '../../core/brief-service';
 import { markdownToSafeHtml } from '../../core/brief-markdown';
 import { BRIEF_MIN_TEXT_CODE_POINTS } from '../../core/brief-source-builder';
+import { createBriefGenerationTaskContext, BriefGenerationCancelledError } from '../../core/brief-generation-client';
 
 /**
  * Read-only runtime checks for Plan 57. This suite never calls a provider,
@@ -10,6 +11,18 @@ import { BRIEF_MIN_TEXT_CODE_POINTS } from '../../core/brief-source-builder';
  */
 selfTest.register('task-57-brief', async () => {
   return [
+    await scenario('Brief task cancellation works in the real plugin sandbox', async () => {
+      const context = createBriefGenerationTaskContext();
+      assertTrue(!context.cancelled, 'new task is cancelled');
+      context.throwIfCancelled();
+      context.cancel();
+      assertTrue(context.signal.aborted && context.cancelled, 'task signal did not abort');
+      let cancelled = false;
+      try { context.throwIfCancelled(); } catch (error) {
+        cancelled = error instanceof BriefGenerationCancelledError;
+      }
+      assertTrue(cancelled, 'task did not throw the cancellation error');
+    }),
     await scenario('packaged and active Brief prompts are readable as a complete pair', async () => {
       const bundled = await briefPromptStore.loadBundledRequired();
       const active = await briefPromptStore.loadRequired();
@@ -27,11 +40,18 @@ selfTest.register('task-57-brief', async () => {
       assertTrue(!serialized.includes('apiKey'), 'credential field leaked through runtime status');
       assertTrue(!serialized.includes('zotseek-brief-prompts'), 'managed prompt path leaked through runtime status');
     }),
+    await scenario('Brief public API has no persistent paper-consent writer', async () => {
+      const api = (globalThis as any).Zotero?.ZotSeek?.api;
+      assertTrue(!!api, 'ZotSeek public API is unavailable');
+      assertTrue(typeof api.recordBriefConsent === 'undefined', 'legacy consent writer is still public');
+    }),
     await scenario('Brief safety constants and sanitizer are active', async () => {
       assertEq(BRIEF_MIN_TEXT_CODE_POINTS, 100);
-      const html = markdownToSafeHtml('[safe](https://example.com)<script>bad()</script>');
+      const html = markdownToSafeHtml('[safe](https://example.com)<script>bad()</script> p < .05 and `n > 30`');
       assertTrue(!/<script/iu.test(html), 'script element survived sanitization');
       assertTrue(!/javascript:/iu.test(html), 'dangerous URL survived sanitization');
+      assertTrue(html.includes('p &lt; .05'), 'scientific less-than comparison was removed');
+      assertTrue(html.includes('<code>n &gt; 30</code>'), 'inline-code comparison was removed');
     }),
   ];
 });

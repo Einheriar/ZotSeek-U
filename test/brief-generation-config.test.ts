@@ -49,6 +49,20 @@ describe('brief generation configuration', () => {
     assert.equal(isBriefConnectionVerified(), false);
   });
 
+  test('keeps a separate brief model value for every Cloud provider', () => {
+    setBriefGenerationSettings({
+      modelName: 'bailian-chat', maxInputTokens: 100000,
+      maxOutputTokens: 8000, thinkingEnabled: true,
+    }, 'alibaba-bailian');
+    setBriefGenerationSettings({
+      modelName: 'openai-chat', maxInputTokens: 32000,
+      maxOutputTokens: 8000, thinkingEnabled: false,
+    }, 'openai');
+    assert.equal(getBriefGenerationSettings('alibaba-bailian').modelName, 'bailian-chat');
+    assert.equal(getBriefGenerationSettings('openai').modelName, 'openai-chat');
+    assert.equal(getBriefGenerationSettings('google-gemini-api').modelName, '');
+  });
+
   test('rejects invalid model and token budgets', () => {
     const valid = {
       modelName: BRIEF_MODEL_NAME,
@@ -72,13 +86,24 @@ describe('brief generation configuration', () => {
     }));
   });
 
-  test('uses separate consent and connection state', () => {
+  test('keeps legacy consent storage separate from connection state', () => {
     assert.equal(isBriefConnectionVerified(), false);
     assert.equal(hasCurrentBriefConsent(), false);
     setBriefConnectionVerified(true);
     recordCurrentBriefConsent();
     assert.equal(isBriefConnectionVerified(), true);
     assert.equal(hasCurrentBriefConsent(), true);
+  });
+
+  test('can still read legacy provider-scoped literature-brief consent', () => {
+    recordCurrentBriefConsent('openai');
+    assert.equal(hasCurrentBriefConsent('openai'), true);
+    assert.equal(hasCurrentBriefConsent('google-gemini-api'), false);
+    assert.equal(hasCurrentBriefConsent('alibaba-bailian'), false);
+
+    recordCurrentBriefConsent('alibaba-bailian');
+    assert.equal(hasCurrentBriefConsent('alibaba-bailian'), true);
+    assert.equal(hasCurrentBriefConsent('openai'), true);
   });
 
   test('changing the Bailian region invalidates brief verification', () => {

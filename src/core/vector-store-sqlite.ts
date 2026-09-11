@@ -274,6 +274,11 @@ export class VectorStoreSQLite {
       this.logger.debug('Creating tables...');
       await this.createTables();
 
+      // A historical createTables() implementation could stamp a modern
+      // schema_version onto a legacy layout. Repair only those proven legacy
+      // shapes so the existing idempotent migration sequence can run again.
+      await this.repairStrandedLegacySchemaVersion();
+
       // Migrate to v4 (add location columns) if needed
       await this.migrateToV4();
 
@@ -1609,6 +1614,49 @@ export class VectorStoreSQLite {
   }
 
   /**
+   * Recover the two legacy layouts that old releases could mark newer than
+   * their physical schema. Structure is authoritative; current v8+ layouts are
+   * left to their own structure-detected migrations.
+   */
+  private async repairStrandedLegacySchemaVersion(): Promise<void> {
+    let structuralVersion: number | null = null;
+    if (await this.tableExists('embeddings')) {
+      // v4 is column-idempotent and v5 is metadata-only, so v3 is the safe
+      // replay point for every still-denormalized embeddings table.
+      structuralVersion = 3;
+    } else if (await this.tableExists('items')) {
+      const columns: any[] = await Zotero.DB.queryAsync(
+        `PRAGMA ${DB_NAME}.table_info(items)`
+      );
+      const names = new Set((columns || []).map((column: any) => column.name));
+      if (!names.has('library_key')) {
+        structuralVersion = ['was_truncated', 'pages_indexed', 'pages_total']
+          .every(name => names.has(name)) ? 7 : 6;
+      }
+    }
+    if (structuralVersion === null) return;
+
+    let recordedVersion = 0;
+    try {
+      recordedVersion = parseInt(await Zotero.DB.valueQueryAsync(
+        `SELECT value FROM ${DB_NAME}.metadata WHERE key = 'schema_version'`
+      ), 10) || 0;
+    } catch {
+      return;
+    }
+    if (recordedVersion <= structuralVersion) return;
+
+    this.logger.warn(
+      `Legacy schema layout is v${structuralVersion} but metadata says v${recordedVersion}; ` +
+      'replaying idempotent migrations'
+    );
+    await Zotero.DB.queryAsync(
+      `INSERT OR REPLACE INTO ${DB_NAME}.metadata (key, value) VALUES ('schema_version', ?)`,
+      [String(structuralVersion)]
+    );
+  }
+
+  /**
    * Create indexes for items and chunks tables
    */
   private async createIndexes(): Promise<void> {
@@ -1939,13 +1987,20 @@ export class VectorStoreSQLite {
     }
   }
 
-  async needsReindexByIdentity(libraryKey: string, itemKey: string, contentHash: string): Promise<boolean> {
+  async needsReindexByIdentity(
+    libraryKey: string,
+    itemKey: string,
+    contentHash: string,
+    modelId: string = getActiveModelId(),
+  ): Promise<boolean> {
     await this.ensureInit();
     const stored = await Zotero.DB.valueQueryAsync(
-      `SELECT content_hash FROM ${DB_NAME}.items WHERE library_key = ? AND item_key = ?`,
-      [libraryKey, itemKey]
+      `SELECT im.content_hash FROM ${DB_NAME}.items i
+       INNER JOIN ${DB_NAME}.item_models im ON im.item_pk = i.item_pk
+       WHERE i.library_key = ? AND i.item_key = ? AND im.model_id = ?`,
+      [libraryKey, itemKey, modelId]
     );
-    if (!stored) return true;          // not indexed at all
+    if (!stored) return true;          // not indexed for this model
     return String(stored) !== contentHash;
   }
 

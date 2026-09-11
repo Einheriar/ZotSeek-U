@@ -228,7 +228,17 @@ describe('cloud model configuration', () => {
     assert.equal(settings.recommendedChunkTokens, 4000);
     assert.equal(settings.queryRole, '');
     assert.equal(settings.adapterVersion, 'openai-compatible-v1');
-    assert.equal(cloudModelId(settings), 'cloud:custom-openai-compatible:bge-m3:1024');
+    const modelId = cloudModelId(settings);
+    assert.match(modelId, /^cloud:custom-openai-compatible:bge-m3:1024:endpoint-[0-9a-f]{16}$/);
+    assert.doesNotMatch(modelId, /api\.example\.com/);
+    assert.equal(
+      modelId,
+      cloudModelId({ ...settings, customBaseUrl: 'https://API.EXAMPLE.COM:443/v1/' }),
+    );
+    assert.notEqual(
+      modelId,
+      cloudModelId({ ...settings, customBaseUrl: 'https://other.example.com/v1' }),
+    );
     assert.deepEqual(getCloudModelSettings(), settings);
   });
 
@@ -386,12 +396,12 @@ describe('cloud model configuration', () => {
     assert.equal(isCloudConnectionVerified('alibaba-bailian'), true);
   });
 
-  test('clears the brief connection state when leaving Bailian or changing region', () => {
+  test('keeps provider-scoped brief verification on switches and clears changed endpoints', () => {
     const stub: ZoteroStub = (globalThis as any).Zotero;
     stub.prefs.set('zotseek.cloud.brief.connectionVerified', true);
 
     setCloudModelSettings({ provider: 'openai', modelName: 'text-embedding-3-small', dimensions: 1536 });
-    assert.equal(stub.prefs.get('zotseek.cloud.brief.connectionVerified'), false);
+    assert.equal(stub.prefs.get('zotseek.cloud.brief.connectionVerified'), true);
 
     stub.prefs.set('zotseek.cloud.brief.connectionVerified', true);
     setCloudModelSettings({

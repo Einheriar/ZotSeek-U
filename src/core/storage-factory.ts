@@ -29,7 +29,12 @@ export interface IVectorStore {
   deleteItem(libraryKey: string, itemKey: string): Promise<void>;
   deleteChunksForItem(libraryKey: string, itemKey: string, modelId?: string): Promise<void>;
   isIndexedByIdentity(libraryKey: string, itemKey: string): Promise<boolean>;
-  needsReindexByIdentity(libraryKey: string, itemKey: string, contentHash: string): Promise<boolean>;
+  needsReindexByIdentity(
+    libraryKey: string,
+    itemKey: string,
+    contentHash: string,
+    modelId?: string,
+  ): Promise<boolean>;
   getChunkCountByIdentity(libraryKey: string, itemKey: string): Promise<number>;
   getIndexedIdentities(modelId?: string): Promise<Array<{ libraryKey: string; itemKey: string }>>;
   getStartupFingerprint(libraryKey: string, itemKey: string, modelId?: string): Promise<import('./vector-store-sqlite').StartupFingerprint | null>;

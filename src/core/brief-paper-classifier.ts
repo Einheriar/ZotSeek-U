@@ -73,10 +73,11 @@ function validateInputs(inputs: readonly BriefPaperClassificationInput[]): void 
   }
 }
 
-function messagesFor(
+export function briefClassifierMessages(
   inputs: readonly BriefPaperClassificationInput[],
-  correction: boolean,
+  correction = false,
 ): BriefGenerationMessage[] {
+  validateInputs(inputs);
   const articles = inputs.map((input, index) => ({
     id: index + 1,
     title: input.title,
@@ -137,7 +138,7 @@ export async function classifyBriefPapers(
   };
   for (let attempt = 0; attempt <= BRIEF_CLASSIFIER_PROTOCOL_RETRIES; attempt++) {
     throwIfCancelled();
-    const result = await client.generate(messagesFor(inputs, attempt > 0), {
+    const result = await client.generate(briefClassifierMessages(inputs, attempt > 0), {
       retries: 3,
       maxCompletionTokens: BRIEF_CLASSIFIER_MAX_COMPLETION_TOKENS,
       ...(signal ? { signal } : {}),

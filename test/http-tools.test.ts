@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { installZoteroStub } from './helpers/zotero-stub';
 import {
   applySearchResultFilter,
+  GET_ITEM_PDF_FULL_READ_LIMITS,
   isAllowedOrigin,
   parsePdfPageRange,
   runFindSimilarTool,
@@ -270,5 +271,77 @@ describe('get_item normalized read contract', () => {
       runGetItemTool({ item_key: 'PARENT01', pdf_attachment_key: 'PDF00002' }),
       /must identify a PDF attachment belonging to the requested parent/,
     );
+  });
+
+  test('applies the shared full-PDF limits to get_item server reads', async () => {
+    const zotero = installZoteroStub();
+    const calls: number[][] = [];
+    const pdf = {
+      id: 10,
+      key: 'PDF00001',
+      libraryID: 1,
+      parentID: 1,
+      attachmentContentType: 'application/pdf',
+      attachmentFilename: 'paper.pdf',
+      isAttachment: () => true,
+      isPDFAttachment: () => true,
+    };
+    const parent = {
+      id: 1,
+      key: 'PARENT01',
+      libraryID: 1,
+      itemType: 'journalArticle',
+      isRegularItem: () => true,
+      isNote: () => false,
+      isAttachment: () => false,
+      getField: (field: string) => field === 'title' ? 'Long paper' : '',
+      getCreators: () => [],
+      getTags: () => [],
+      getCollections: () => [],
+      getAttachments: () => [10],
+      getNotes: () => [],
+      relatedItems: [],
+    };
+    zotero.Libraries = { userLibraryID: 1 };
+    zotero.Items = {
+      get: (id: number) => id === 1 ? parent : id === 10 ? pdf : null,
+      getByLibraryAndKey: (libraryId: number, key: string) => {
+        if (libraryId !== 1) return null;
+        if (key === 'PARENT01') return parent;
+        if (key === 'PDF00001') return pdf;
+        return null;
+      },
+    };
+    zotero.Collections = { get: () => null };
+    zotero.Fulltext = {
+      getPages: async () => ({ indexedPages: 0, total: 125 }),
+      getItemCacheFile: () => ({ path: 'missing', exists: () => false }),
+    };
+    zotero.PDFWorker = {
+      getFullText: async (_id: number, pages: number[]) => {
+        calls.push(pages);
+        return {
+          totalPages: 125,
+          text: pages.map(page => `page ${page + 1}`).join('\f'),
+          extractedPages: pages.length,
+        };
+      },
+    };
+
+    const response = await runGetItemTool({
+      item_key: 'PARENT01',
+      pdf_attachment_key: 'PDF00001',
+      include_pdf: 'full',
+    });
+    assert.deepEqual(GET_ITEM_PDF_FULL_READ_LIMITS, {
+      batchPages: 20,
+      maxPages: 100,
+      maxCharacters: 300_000,
+    });
+    assert.equal(response.pdf?.status, 'partial');
+    assert.equal(response.pdf?.limitReason, 'page_limit');
+    assert.equal(response.pdf?.nextPage, 101);
+    assert.equal(response.pdf?.pages.length, 100);
+    assert.equal(calls.length, 5);
   });
 });

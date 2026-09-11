@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { installZoteroStub } from './helpers/zotero-stub';
 import { HybridSearchEngine } from '../src/core/hybrid-search';
-import { handleMcpRequest } from '../src/server/mcp-endpoint';
+import { handleMcpRequest, ZotSeekMCPEndpoint } from '../src/server/mcp-endpoint';
 import { handleSearchRequest } from '../src/server/rest-endpoints';
 
 async function rpc(method: string, params?: any): Promise<any> {
@@ -68,4 +68,73 @@ test('advertised MCP tools omit threshold tuning and explain evidence/PDF readin
   const item = response.result.tools.find((t: any) => t.name === 'get_item');
   assert.match(item.description, /extracted text/);
   assert.match(item.description, /Greek letters/);
+  assert.match(item.description, /batches of at most 20 pages/);
+  assert.match(item.description, /at most 100 pages/);
+  assert.match(item.description, /status=partial/);
+  assert.match(item.inputSchema.properties.include_pdf.description, /bounded leading prefix/);
+});
+
+test('MCP 2025-03-26 receives mixed JSON-RPC batches and omits notification responses', async () => {
+  installZoteroStub();
+  const [status, contentType, body] = await handleMcpRequest({
+    method: 'POST',
+    headers: { 'mcp-protocol-version': '2025-03-26' },
+    data: [
+      { jsonrpc: '2.0', id: 'list', method: 'tools/list' },
+      { jsonrpc: '2.0', method: 'notifications/initialized' },
+      { jsonrpc: '2.0', id: 2, method: 'ping' },
+      { nope: true },
+    ],
+  });
+  assert.equal(status, 200);
+  assert.equal(contentType, 'application/json');
+  const responses = JSON.parse(body);
+  assert.deepEqual(responses.map((entry: any) => entry.id), ['list', 2, null]);
+  assert.equal(responses[0].result.tools.length, 4);
+  assert.deepEqual(responses[1].result, {});
+  assert.equal(responses[2].error.code, -32600);
+
+  const [notificationStatus, , notificationBody] = await handleMcpRequest({
+    method: 'POST',
+    headers: { 'mcp-protocol-version': '2025-03-26' },
+    data: [
+      { jsonrpc: '2.0', method: 'notifications/initialized' },
+      { jsonrpc: '2.0', method: 'ping' },
+    ],
+  });
+  assert.equal(notificationStatus, 202);
+  assert.equal(notificationBody, '');
+});
+
+test('MCP batch boundaries reject empty, initialization, and the 2025-06 contract', async () => {
+  installZoteroStub();
+  const [emptyStatus, , emptyBody] = await handleMcpRequest({ headers: {}, data: [] });
+  assert.equal(emptyStatus, 400);
+  assert.equal(JSON.parse(emptyBody).error.code, -32600);
+
+  const [initStatus, , initBody] = await handleMcpRequest({
+    headers: { 'mcp-protocol-version': '2025-03-26' },
+    data: [{
+      jsonrpc: '2.0', id: 1, method: 'initialize',
+      params: { protocolVersion: '2025-03-26' },
+    }],
+  });
+  assert.equal(initStatus, 200);
+  assert.match(JSON.parse(initBody)[0].error.message, /must not be sent.*batch/);
+
+  const [newStatus, , newBody] = await handleMcpRequest({
+    headers: { 'mcp-protocol-version': '2025-06-18' },
+    data: [{ jsonrpc: '2.0', id: 1, method: 'ping' }],
+  });
+  assert.equal(newStatus, 400);
+  assert.match(JSON.parse(newBody).error.message, /not supported.*2025-06-18/);
+});
+
+test('MCP endpoint explicitly returns 405 for GET when SSE is unavailable', async () => {
+  installZoteroStub();
+  assert.deepEqual((ZotSeekMCPEndpoint as any).prototype.supportedMethods, ['POST', 'GET']);
+  const [status, contentType, body] = await handleMcpRequest({ method: 'GET', headers: {} });
+  assert.equal(status, 405);
+  assert.equal(contentType, 'text/plain');
+  assert.equal(body, 'Method Not Allowed');
 });

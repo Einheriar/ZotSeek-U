@@ -199,7 +199,11 @@ describe('the active model pref', () => {
     });
     setActiveModelId(CLOUD_SLOT_SELECTION_ID);
     const model = getActiveModel();
-    assert.equal(model.id, 'cloud:custom-openai-compatible:bge-m3:1024');
+    assert.match(
+      model.id,
+      /^cloud:custom-openai-compatible:bge-m3:1024:endpoint-[0-9a-f]{16}$/,
+    );
+    assert.doesNotMatch(model.id, /api\.example\.com/);
     assert.equal(model.cloudProvider, 'custom-openai-compatible');
     assert.equal(model.cloudCustomBaseUrl, 'https://api.example.com/v1');
     assert.equal(model.cloudQueryRole, '');

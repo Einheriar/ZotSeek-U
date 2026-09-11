@@ -53,6 +53,26 @@ selfTest.register('mcp-server', async () => {
     assertEq(status, 202, 'status');
   }));
 
+  scenarios.push(await scenario('2025-03-26 batch returns requests and omits notifications', async () => {
+    const [status, , body] = await handleMcpRequest({
+      method: 'POST',
+      headers: { 'mcp-protocol-version': '2025-03-26' },
+      data: [
+        { jsonrpc: '2.0', id: 'list', method: 'tools/list' },
+        { jsonrpc: '2.0', method: 'notifications/initialized' },
+        { jsonrpc: '2.0', id: 'ping', method: 'ping' },
+      ],
+    });
+    assertEq(status, 200, 'status');
+    const json = JSON.parse(body);
+    assertEq(JSON.stringify(json.map((entry: any) => entry.id)), JSON.stringify(['list', 'ping']), 'response ids');
+  }));
+
+  scenarios.push(await scenario('GET handler returns 405 without SSE', async () => {
+    const [status] = await handleMcpRequest({ method: 'GET', headers: {} });
+    assertEq(status, 405, 'status');
+  }));
+
   scenarios.push(await scenario('tools/list returns the 4 tools', async () => {
     const { json } = await callMcp('tools/list');
     const names = json.result.tools.map((t: any) => t.name).sort();
@@ -61,6 +81,9 @@ selfTest.register('mcp-server', async () => {
       json.result.tools.every((t: any) => t.inputSchema?.type === 'object'),
       'every tool has an object inputSchema'
     );
+    const getItem = json.result.tools.find((tool: any) => tool.name === 'get_item');
+    assertTrue(getItem.description.includes('at most 100 pages'), 'get_item advertises bounded full reads');
+    assertTrue(getItem.description.includes('nextPage'), 'get_item advertises continuation page');
   }));
 
   scenarios.push(await scenario('unknown method returns -32601', async () => {
@@ -334,6 +357,45 @@ selfTest.register('mcp-server', async () => {
       assertEq(resp.status, 200, 'HTTP status');
       const json = await resp.json();
       assertEq(json.result.tools.length, 4, 'four tools over HTTP');
+    } finally {
+      if (!wasRegistered) unregisterEndpoints();
+    }
+  }));
+
+  scenarios.push(await scenario('end-to-end: HTTP MCP batch + GET 405', async () => {
+    const port = Zotero.Server?.port;
+    if (!port) return;
+    const wasRegistered = isRegistered();
+    registerEndpoints();
+    try {
+      const headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream',
+        'MCP-Protocol-Version': '2025-03-26',
+        'Zotero-Allowed-Request': '1',
+      };
+      const batch = await fetch(`http://127.0.0.1:${port}/zotseek/mcp`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify([
+          { jsonrpc: '2.0', id: 1, method: 'ping' },
+          { jsonrpc: '2.0', method: 'notifications/initialized' },
+          { jsonrpc: '2.0', id: 2, method: 'tools/list' },
+        ]),
+      });
+      assertEq(batch.status, 200, 'batch status');
+      const batchJson = await batch.json();
+      assertEq(JSON.stringify(batchJson.map((entry: any) => entry.id)), JSON.stringify([1, 2]), 'batch ids');
+
+      const get = await fetch(`http://127.0.0.1:${port}/zotseek/mcp`, {
+        method: 'GET',
+        headers: {
+          'Accept': 'text/event-stream',
+          'MCP-Protocol-Version': '2025-03-26',
+          'Zotero-Allowed-Request': '1',
+        },
+      });
+      assertEq(get.status, 405, 'GET status');
     } finally {
       if (!wasRegistered) unregisterEndpoints();
     }

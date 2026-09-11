@@ -295,7 +295,7 @@ test('fills all missing requested pages with one batched PDFWorker call', async 
   ]);
 });
 
-test('uses one whole-document PDFWorker call when no cache is available', async () => {
+test('keeps an unbounded whole-document read for non-server callers', async () => {
   const zotero = installZoteroStub();
   const calls: Array<number[] | null> = [];
   zotero.Fulltext = {
@@ -313,4 +313,221 @@ test('uses one whole-document PDFWorker call when no cache is available', async 
   assert.equal(result.status, 'ok');
   assert.equal(result.source, 'pdfworker');
   assert.deepEqual(calls, [null]);
+});
+
+test('bounded full reads probe one page before batching when total pages are unknown', async () => {
+  const zotero = installZoteroStub();
+  const calls: number[][] = [];
+  zotero.Fulltext = {
+    getPages: async () => null,
+    getItemCacheFile: () => ({ path: 'missing', exists: () => false }),
+  };
+  zotero.PDFWorker = {
+    getFullText: async (_id: number, pages: number[]) => {
+      calls.push(pages);
+      return {
+        totalPages: 2,
+        text: pages.map(page => `page ${page + 1}`).join('\f'),
+        extractedPages: pages.length,
+      };
+    },
+  };
+
+  const result = await new ZoteroAPI().readPdfAttachment(
+    { id: 10, key: 'PDFKEY12' } as any,
+    null,
+    { batchPages: 20, maxPages: 100, maxCharacters: 300_000 },
+  );
+  assert.equal(result.status, 'ok');
+  assert.equal(result.complete, true);
+  assert.deepEqual(calls, [[0], [1]]);
+  assert.deepEqual(result.pages.map(page => page.page), [1, 2]);
+});
+
+test('worker trim loses empty edge pages; sequential fallback preserves physical pages and limits', async () => {
+  for (const texts of [['title', '', 'third', 'fourth'], ['title', 'second', 'third', ''], ['title', '', '', '']]) {
+    const zotero = installZoteroStub();
+    const calls: number[][] = [];
+    let active = 0;
+    let maxActive = 0;
+    zotero.Fulltext = { getPages: async () => null };
+    zotero.PDFWorker = {
+      getFullText: async (_id: number, indexes: number[]) => {
+        calls.push(indexes);
+        maxActive = Math.max(maxActive, ++active);
+        await Promise.resolve();
+        active--;
+        return { totalPages: 5, extractedPages: indexes.length,
+          text: indexes.map(i => texts[i] + '\n\n').join('\f').trim().normalize('NFC') };
+      },
+    };
+    const result = await new ZoteroAPI().readPdfAttachment({ id: 10, key: 'PDFKEY12' } as any,
+      null, { batchPages: 3, maxPages: 4, maxCharacters: 300_000 });
+    assert.equal(result.status, 'partial');
+    assert.equal(result.nextPage, 5);
+    assert.equal(result.limitReason, 'page_limit');
+    assert.deepEqual(result.pages, texts.map((text, i) => ({ page: i + 1, text })));
+    assert.deepEqual(calls, [[0], [1, 2, 3], [1], [2], [3]]);
+    assert.equal(maxActive, 1);
+  }
+});
+
+test('ambiguous worker ranges reread exact pages and preserve embedded form feeds', async () => {
+  const zotero = installZoteroStub();
+  const calls: number[][] = [];
+  zotero.Fulltext = { getPages: async () => ({ indexedPages: 0, total: 4 }) };
+  zotero.PDFWorker = { getFullText: async (_id: number, indexes: number[]) => {
+    calls.push(indexes);
+    return { totalPages: 4, extractedPages: indexes.length,
+      text: indexes.map(i => i === 1 ? 'a\fb' : 'four').join('\f') };
+  } };
+  const result = await new ZoteroAPI().readPdfAttachment({ id: 10, key: 'PDFKEY12' } as any, [2, 4]);
+  assert.equal(result.status, 'ok');
+  assert.deepEqual(result.pages, [{ page: 2, text: 'a\fb' }, { page: 4, text: 'four' }]);
+  assert.deepEqual(calls, [[1, 3], [1], [3]]);
+});
+
+test('single-page fallback rejects failures and inconsistent output without manufacturing pages', async () => {
+  for (const bad of [new Error('worker failed'), { totalPages: 3, text: 'x' },
+    { totalPages: 2, text: null }, { totalPages: 2, text: '', extractedPages: 0 }]) {
+    const zotero = installZoteroStub();
+    const calls: number[][] = [];
+    zotero.Fulltext = { getPages: async () => null };
+    zotero.PDFWorker = { getFullText: async (_id: number, indexes: number[]) => {
+      calls.push(indexes);
+      if (indexes.length === 2) return { totalPages: 2, text: 'collapsed' };
+      if (bad instanceof Error) throw bad;
+      return bad;
+    } };
+    const result = await new ZoteroAPI().readPdfAttachment({ id: 10, key: 'PDFKEY12' } as any, [1, 2]);
+    assert.equal(result.status, 'failed');
+    assert.deepEqual(result.pages, []);
+    assert.deepEqual(calls, [[0, 1], [0]]);
+  }
+});
+
+test('bounded full reads use sequential batches and stop at the page limit', async () => {
+  const zotero = installZoteroStub();
+  const calls: number[][] = [];
+  zotero.Fulltext = {
+    getPages: async () => ({ indexedPages: 0, total: 125 }),
+    getItemCacheFile: () => ({ path: 'missing', exists: () => false }),
+  };
+  zotero.PDFWorker = {
+    getFullText: async (_id: number, pages: number[]) => {
+      calls.push(pages);
+      return {
+        totalPages: 125,
+        text: pages.map(page => `page ${page + 1}`).join('\f'),
+        extractedPages: pages.length,
+      };
+    },
+  };
+
+  const result = await new ZoteroAPI().readPdfAttachment(
+    { id: 10, key: 'PDFKEY12' } as any,
+    null,
+    { batchPages: 20, maxPages: 100, maxCharacters: 300_000 },
+  );
+  assert.equal(result.status, 'partial');
+  assert.equal(result.complete, false);
+  assert.equal(result.limitReason, 'page_limit');
+  assert.equal(result.nextPage, 101);
+  assert.equal(result.totalPages, 125);
+  assert.equal(result.pages.length, 100);
+  assert.equal(calls.length, 5);
+  assert.deepEqual(calls.map(pages => pages.length), [20, 20, 20, 20, 20]);
+  assert.deepEqual(calls[0], Array.from({ length: 20 }, (_, index) => index));
+  assert.deepEqual(calls[4], Array.from({ length: 20 }, (_, index) => index + 80));
+});
+
+test('bounded full reads stop on a physical-page boundary at the character threshold', async () => {
+  const zotero = installZoteroStub();
+  const calls: number[][] = [];
+  zotero.Fulltext = {
+    getPages: async () => ({ indexedPages: 0, total: 10 }),
+    getItemCacheFile: () => ({ path: 'missing', exists: () => false }),
+  };
+  zotero.PDFWorker = {
+    getFullText: async (_id: number, pages: number[]) => {
+      calls.push(pages);
+      return {
+        totalPages: 10,
+        text: pages.map(() => 'x'.repeat(100_000)).join('\f'),
+        extractedPages: pages.length,
+      };
+    },
+  };
+
+  const result = await new ZoteroAPI().readPdfAttachment(
+    { id: 10, key: 'PDFKEY12' } as any,
+    null,
+    { batchPages: 20, maxPages: 100, maxCharacters: 300_000 },
+  );
+  assert.equal(result.status, 'partial');
+  assert.equal(result.limitReason, 'character_limit');
+  assert.equal(result.nextPage, 4);
+  assert.deepEqual(result.pages.map(page => page.page), [1, 2, 3]);
+  assert.deepEqual(calls.map(pages => pages.length), [10]);
+});
+
+test('bounded full reads also limit a complete Zotero cache without invoking PDFWorker', async () => {
+  const zotero = installZoteroStub();
+  let workerCalls = 0;
+  zotero.Fulltext = {
+    getPages: async () => ({ indexedPages: 120, total: 120 }),
+    getItemCacheFile: () => ({ path: 'cache', exists: () => true }),
+  };
+  zotero.File = {
+    getContentsAsync: async () => Array.from({ length: 120 }, (_, index) => `page ${index + 1}`).join('\f'),
+  };
+  zotero.PDFWorker = {
+    getFullText: async () => {
+      workerCalls++;
+      throw new Error('must not run');
+    },
+  };
+
+  const result = await new ZoteroAPI().readPdfAttachment(
+    { id: 10, key: 'PDFKEY12' } as any,
+    null,
+    { batchPages: 20, maxPages: 100, maxCharacters: 300_000 },
+  );
+  assert.equal(result.status, 'partial');
+  assert.equal(result.source, 'zotero-fulltext-cache');
+  assert.equal(result.limitReason, 'page_limit');
+  assert.equal(result.nextPage, 101);
+  assert.equal(result.pages.length, 100);
+  assert.equal(workerCalls, 0);
+});
+
+test('opens the exact indexed PDF attachment and falls back only without provenance', async () => {
+  const zotero = installZoteroStub();
+  const opens: unknown[][] = [];
+  let bestCalls = 0;
+  const best = { id: 10, key: 'BESTPDF1', parentID: 1, isPDFAttachment: () => true };
+  const exact = { id: 20, key: 'EXACTPDF', parentID: 1, isPDFAttachment: () => true };
+  const parent = {
+    id: 1,
+    key: 'PARENT01',
+    libraryID: 7,
+    getBestAttachment: async () => { bestCalls++; return best; },
+  };
+  zotero.Items.get = (id: number) => id === 1 ? parent : id === 10 ? best : id === 20 ? exact : null;
+  zotero.Items.getIDFromLibraryAndKey = (libraryID: number, key: string) =>
+    libraryID === 7 && key === exact.key ? exact.id : false;
+  zotero.Reader = { open: async (...args: unknown[]) => { opens.push(args); } };
+
+  const api = new ZoteroAPI();
+  await api.openPDFToPage(1, 7, exact.key);
+  assert.deepEqual(opens, [[20, { pageIndex: 6 }]]);
+  assert.equal(bestCalls, 0);
+
+  await api.openPDFToPage(1, 3, 'MISSING1');
+  assert.equal(opens.length, 1, 'invalid exact provenance must not open a different PDF');
+  assert.equal(bestCalls, 0);
+
+  await api.openPDFToPage(1, 2);
+  assert.deepEqual(opens.at(-1), [10, { pageIndex: 1 }]);
+  assert.equal(bestCalls, 1);
 });

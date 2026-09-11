@@ -469,7 +469,7 @@
       <html:input type="number"
                   id="zotseek-pref-maxTokens"
                   class="zotseek-input"
-                  min="50" max="8192" step="10"
+                  min="50" max="8192" step="1" required="required"
                   style="width: 100%; box-sizing: border-box; padding: 4px 8px; border-radius: 4px; border-width: 1px; border-style: solid;" />
       <html:span id="zotseek-pref-maxTokensPolicy" style="font-size: 11px; color: var(--zotseek-text-secondary);"></html:span>
       <button id="zotseek-pref-resetMaxTokens" data-l10n-id="zotseek-pref-resetMaxTokens" />
@@ -478,7 +478,7 @@
       <html:input type="number"
                   id="zotseek-pref-maxChunksPerPaper"
                   class="zotseek-input"
-                  min="1" max="200" step="10"
+                  min="1" max="200" step="1" required="required"
                   value="100"
                   style="width: 100%; box-sizing: border-box; padding: 4px 8px; border-radius: 4px; border-width: 1px; border-style: solid;" />
       <html:span data-l10n-id="zotseek-pref-maxChunksDesc" style="font-size: 11px; color: var(--zotseek-text-secondary);">Limit for long documents (1-200)</html:span>
@@ -529,7 +529,7 @@
       <html:input type="number"
                   id="zotseek-pref-topK"
                   class="zotseek-input"
-                  min="5" max="100" step="5"
+                  min="5" max="100" step="1" required="required"
                   value="20"
                   style="width: 100%; box-sizing: border-box; padding: 4px 8px; border-radius: 4px; border-width: 1px; border-style: solid;" />
       <html:span data-l10n-id="zotseek-pref-resultsToShowDesc" style="font-size: 11px; color: var(--zotseek-text-secondary);">How many matches to display (5-100)</html:span>
@@ -538,7 +538,7 @@
       <html:input type="number"
                   id="zotseek-pref-minSimilarity"
                   class="zotseek-input"
-                  min="0" max="100" step="5"
+                  min="0" max="100" step="1" required="required"
                   value="30"
                   style="width: 100%; box-sizing: border-box; padding: 4px 8px; border-radius: 4px; border-width: 1px; border-style: solid;" />
       <html:span data-l10n-id="zotseek-pref-minSimilarityDesc" style="font-size: 11px; color: var(--zotseek-text-secondary);">% — Filter out low-quality matches (0-100)</html:span>
@@ -577,14 +577,18 @@
 
   <html:div class="zotseek-settings-box"
             style="border-radius: 6px; padding: 12px; border-width: 1px; border-style: solid;">
-    <html:div style="display: grid; grid-template-columns: 180px minmax(0, 1fr) auto; gap: 10px 12px; align-items: center;">
+    <html:div style="display: grid; grid-template-columns: 180px minmax(0, 1fr) auto auto; gap: 10px 12px; align-items: center;">
       <html:span data-l10n-id="zotseek-pref-brief-provider">Shared provider</html:span>
       <html:span id="zotseek-brief-provider-status" style="color: var(--zotseek-text-secondary);">—</html:span>
-      <button id="zotseek-brief-open-cloud-settings" data-l10n-id="zotseek-pref-brief-open-cloud-settings" label="Configure credentials" />
+      <button id="zotseek-brief-open-cloud-settings" data-l10n-id="zotseek-pref-brief-open-cloud-settings" label="Configure credentials" style="grid-column: span 2;" />
 
       <html:label data-l10n-id="zotseek-pref-brief-model" for="zotseek-brief-model">Generation model</html:label>
-      <html:input id="zotseek-brief-model" class="zotseek-input" type="text"
-                  style="width: 100%; box-sizing: border-box; padding: 4px 8px; border-radius: 4px; border-width: 1px; border-style: solid;" />
+      <html:div>
+        <html:input id="zotseek-brief-model" class="zotseek-input" type="text"
+                    autocomplete="off"
+                    style="width: 100%; box-sizing: border-box; padding: 4px 8px; border-radius: 4px; border-width: 1px; border-style: solid;" />
+      </html:div>
+      <button id="zotseek-brief-refresh-models" data-l10n-id="zotseek-pref-brief-refresh-models" label="Refresh models" />
       <button id="zotseek-brief-test" data-l10n-id="zotseek-pref-brief-test" label="Test connection" />
     </html:div>
     <html:p id="zotseek-brief-connection-status"
@@ -597,7 +601,7 @@
             label="Create my brief prompts…" />
     <html:span data-l10n-id="zotseek-pref-brief-create-prompts-desc"
                style="font-size: 11px; color: var(--zotseek-text-secondary);">
-      Optional: personalize both built-in templates for your field and reading language.
+      Reopen the guide to personalize both built-in templates or explicitly use the built-in pair.
     </html:span>
   </html:div>
 

@@ -34,18 +34,13 @@ export class ZotSeekDialogWithVTable {
         // Bring existing window to front
         this.window.focus();
 
-        // If we have an initial query and window is already open, set it and search
-        if (initialQuery) {
-          const queryInput = this.window.document?.getElementById('zotseek-query') as HTMLInputElement;
-          if (queryInput) {
-            queryInput.value = initialQuery;
-            // Set the exclude item ID if provided
-            if (excludeItemId !== undefined) {
-              (this.window as any).searchDialogVTable?.setExcludeItemId?.(excludeItemId);
-            }
-            // Trigger search via the dialog's exposed method
-            (this.window as any).searchDialogVTable?.performSearch?.();
-          }
+        // Reuse the controller contract rather than duplicating its input IDs.
+        // Exclusion is applied even when no new query text was supplied.
+        if (initialQuery !== undefined || excludeItemId !== undefined) {
+          (this.window as any).searchDialogVTable?.setInitialSearch?.(
+            initialQuery || '',
+            excludeItemId,
+          );
         }
         return;
       }

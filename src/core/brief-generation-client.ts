@@ -1,6 +1,9 @@
-/** OpenAI-compatible Cloud client dedicated to literature-brief generation. */
+/** Provider-aware Cloud client dedicated to literature-brief generation. */
 
-import { assertCloudBaseUrl } from './cloud-model-config';
+import type { CloudProviderId } from './cloud-model-config';
+import {
+  briefProviderBaseUrl,
+} from './brief-model-discovery';
 
 declare const Zotero: any;
 
@@ -15,6 +18,7 @@ export interface BriefGenerationMessage {
 }
 
 export interface BriefGenerationClientConfig {
+  provider: CloudProviderId;
   baseUrl: string;
   modelName: string;
   apiKey: string;
@@ -38,6 +42,8 @@ export interface BriefGenerationRequestOptions {
   maxCompletionTokens?: number;
   /** Shared task cancellation signal. */
   signal?: AbortSignal;
+  /** One event for every HTTP attempt after it may have reached the provider. */
+  onUsage?: (usage: BriefGenerationUsage | undefined) => void;
 }
 
 export type BriefProviderErrorCategory =
@@ -60,7 +66,10 @@ export interface BriefGenerationTaskContext {
 
 /** One cancellation object shared by extraction, classification, generation and commit. */
 export function createBriefGenerationTaskContext(): BriefGenerationTaskContext {
-  const controller = new AbortController();
+  // Zotero's plugin sandbox may only expose this DOM constructor on its window.
+  const Controller = abortControllerCtor();
+  if (!Controller) throw new Error('Brief task cancellation is unavailable in this runtime.');
+  const controller = new Controller();
   return {
     get signal() { return controller.signal; },
     get cancelled() { return controller.signal.aborted; },
@@ -208,7 +217,7 @@ export class BriefGenerationClient {
     private readonly config: BriefGenerationClientConfig,
     dependencies: BriefGenerationClientDependencies = {},
   ) {
-    this.baseUrl = assertCloudBaseUrl(config.baseUrl).href.replace(/\/$/, '');
+    this.baseUrl = briefProviderBaseUrl(config.provider, config.baseUrl);
     if (!config.apiKey.trim()) throw new Error('Cloud API key is missing.');
     if (!config.modelName.trim()) throw new Error('Brief generation model name is missing.');
     if (!Number.isSafeInteger(config.maxOutputTokens) || config.maxOutputTokens <= 0) {
@@ -223,17 +232,213 @@ export class BriefGenerationClient {
     this.abortController = abortControllerCtor(dependencies.abortController);
   }
 
+  private endpoint(): string {
+    if (this.config.provider === 'openai') return `${this.baseUrl}/responses`;
+    if (this.config.provider === 'google-gemini-api') {
+      return `${this.baseUrl}/models/${encodeURIComponent(this.config.modelName)}:generateContent`;
+    }
+    return `${this.baseUrl}/chat/completions`;
+  }
+
+  private headers(): Record<string, string> {
+    if (this.config.provider === 'google-gemini-api') {
+      return { 'x-goog-api-key': this.config.apiKey, 'Content-Type': 'application/json' };
+    }
+    return {
+      Authorization: `Bearer ${this.config.apiKey}`,
+      'Content-Type': 'application/json',
+    };
+  }
+
+  private requestBody(
+    messages: BriefGenerationMessage[],
+    maxCompletionTokens: number,
+  ): Record<string, unknown> {
+    if (this.config.provider === 'openai') {
+      return {
+        model: this.config.modelName,
+        input: messages.map(message => ({
+          role: message.role,
+          content: [{ type: 'input_text', text: message.content }],
+        })),
+        max_output_tokens: maxCompletionTokens,
+      };
+    }
+    if (this.config.provider === 'google-gemini-api') {
+      const systemText = messages
+        .filter(message => message.role === 'system')
+        .map(message => message.content)
+        .join('\n\n');
+      const contents = messages.filter(message => message.role !== 'system').map(message => ({
+        role: message.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: message.content }],
+      }));
+      return {
+        ...(systemText ? { systemInstruction: { parts: [{ text: systemText }] } } : {}),
+        contents,
+        generationConfig: { maxOutputTokens: maxCompletionTokens },
+      };
+    }
+    return {
+      model: this.config.modelName,
+      messages,
+      max_completion_tokens: maxCompletionTokens,
+      ...(this.config.provider === 'alibaba-bailian'
+        ? { enable_thinking: this.config.thinkingEnabled }
+        : {}),
+      stream: false,
+    };
+  }
+
+  private responseUsage(json: any): BriefGenerationUsage | undefined {
+    if (this.config.provider === 'openai') {
+      const usage: BriefGenerationUsage = {
+        promptTokens: optionalTokenCount(json?.usage?.input_tokens),
+        completionTokens: optionalTokenCount(json?.usage?.output_tokens),
+        totalTokens: optionalTokenCount(json?.usage?.total_tokens),
+        reasoningTokens: optionalTokenCount(json?.usage?.output_tokens_details?.reasoning_tokens),
+      };
+      return Object.values(usage).some(value => value !== undefined) ? usage : undefined;
+    }
+    if (this.config.provider === 'google-gemini-api') {
+      const usage: BriefGenerationUsage = {
+        promptTokens: optionalTokenCount(json?.usageMetadata?.promptTokenCount),
+        completionTokens: optionalTokenCount(json?.usageMetadata?.candidatesTokenCount),
+        totalTokens: optionalTokenCount(json?.usageMetadata?.totalTokenCount),
+        reasoningTokens: optionalTokenCount(json?.usageMetadata?.thoughtsTokenCount),
+      };
+      return Object.values(usage).some(value => value !== undefined) ? usage : undefined;
+    }
+    return parseUsage(json?.usage);
+  }
+
+  private parseSuccess(json: any): BriefGenerationResult {
+    if (this.config.provider === 'openai') {
+      if (json?.status === 'incomplete' || json?.incomplete_details?.reason === 'max_output_tokens') {
+        throw new BriefGenerationTruncatedError();
+      }
+      if (json?.status !== 'completed') {
+        throw new BriefGenerationRequestError(
+          'Cloud provider did not complete the brief generation response.',
+          502, undefined, false, 'protocol',
+        );
+      }
+      const content = Array.isArray(json?.output)
+        ? json.output.flatMap((item: any) => Array.isArray(item?.content) ? item.content : [])
+          .filter((item: any) => item?.type === 'output_text' && typeof item.text === 'string')
+          .map((item: any) => item.text)
+          .join('\n')
+          .trim()
+        : '';
+      if (!content) {
+        throw new BriefGenerationRequestError(
+          'Cloud provider returned an empty brief generation response.',
+          502, undefined, false, 'protocol',
+        );
+      }
+      return {
+        content,
+        model: typeof json.model === 'string' ? json.model : this.config.modelName,
+        finishReason: 'stop',
+        usage: this.responseUsage(json),
+        requestId: typeof json.id === 'string' ? json.id : undefined,
+      };
+    }
+
+    if (this.config.provider === 'google-gemini-api') {
+      const candidate = Array.isArray(json?.candidates) && json.candidates.length === 1
+        ? json.candidates[0]
+        : null;
+      if (candidate?.finishReason === 'MAX_TOKENS') throw new BriefGenerationTruncatedError();
+      if (!candidate || candidate.finishReason !== 'STOP') {
+        throw new BriefGenerationRequestError(
+          'Cloud provider did not complete the brief generation response.',
+          502, undefined, false, 'protocol',
+        );
+      }
+      const content = Array.isArray(candidate?.content?.parts)
+        ? candidate.content.parts
+          .filter((part: any) => typeof part?.text === 'string')
+          .map((part: any) => part.text)
+          .join('\n')
+          .trim()
+        : '';
+      if (!content) {
+        throw new BriefGenerationRequestError(
+          'Cloud provider returned an empty brief generation response.',
+          502, undefined, false, 'protocol',
+        );
+      }
+      return {
+        content,
+        model: typeof json.modelVersion === 'string' ? json.modelVersion : this.config.modelName,
+        finishReason: 'stop',
+        usage: this.responseUsage(json),
+      };
+    }
+
+    const choice = Array.isArray(json?.choices) && json.choices.length === 1
+      ? json.choices[0]
+      : null;
+    if (!choice || typeof choice !== 'object' || choice === null
+        || typeof choice.message !== 'object' || choice.message === null) {
+      throw new BriefGenerationRequestError(
+        'Cloud provider returned an invalid brief generation response.',
+        502, undefined, false, 'protocol',
+      );
+    }
+    if (choice.finish_reason === 'length') throw new BriefGenerationTruncatedError();
+    if (choice.finish_reason !== 'stop') {
+      throw new BriefGenerationRequestError(
+        'Cloud provider did not complete the brief generation response.',
+        502, undefined, false, 'protocol',
+      );
+    }
+    const content = typeof choice.message.content === 'string'
+      ? choice.message.content.trim()
+      : '';
+    if (!content) {
+      throw new BriefGenerationRequestError(
+        'Cloud provider returned an empty brief generation response.',
+        502, undefined, false, 'protocol',
+      );
+    }
+    const reasoningContent = typeof choice.message.reasoning_content === 'string'
+      && choice.message.reasoning_content.trim()
+      ? choice.message.reasoning_content
+      : undefined;
+    const requestId = typeof json.id === 'string'
+      ? json.id
+      : typeof json.request_id === 'string' ? json.request_id : undefined;
+    return {
+      content,
+      reasoningContent,
+      model: typeof json.model === 'string' ? json.model : this.config.modelName,
+      finishReason: 'stop',
+      usage: this.responseUsage(json),
+      requestId,
+    };
+  }
+
   private async request(
     messages: BriefGenerationMessage[],
     maxCompletionTokens: number,
     signal?: AbortSignal,
+    onUsage?: (usage: BriefGenerationUsage | undefined) => void,
   ): Promise<BriefGenerationResult> {
-    const endpoint = `${this.baseUrl}/chat/completions`;
+    const endpoint = this.endpoint();
     const Controller = this.abortController;
     const controller = Controller ? new Controller() : null;
     if (controller) this.activeControllers.add(controller);
     const timeoutMs = this.config.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
     let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+    let attemptStarted = false;
+    let usageReported = false;
+    const reportUsage = (usage: BriefGenerationUsage | undefined) => {
+      if (usageReported) return;
+      usageReported = true;
+      try { onUsage?.(usage); } catch { /* accounting must not break generation */ }
+    };
     const timer = controller ? setTimeout(() => {
       this.timedOutControllers.add(controller);
       controller.abort();
@@ -250,19 +455,11 @@ export class BriefGenerationClient {
         signal.addEventListener('abort', abort, { once: true });
         removeAbortListener = () => signal.removeEventListener('abort', abort);
       }
+      attemptStarted = true;
       const request = this.fetchImpl(endpoint, {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.config.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: this.config.modelName,
-          messages,
-          max_completion_tokens: maxCompletionTokens,
-          enable_thinking: this.config.thinkingEnabled,
-          stream: false,
-        }),
+        headers: this.headers(),
+        body: JSON.stringify(this.requestBody(messages, maxCompletionTokens)),
         redirect: 'error',
         ...(controller ? { signal: controller.signal } : signal ? { signal } : {}),
       });
@@ -288,6 +485,8 @@ export class BriefGenerationClient {
       }
       const body = await response.text().catch(() => '');
       if (!response.ok) {
+        try { reportUsage(this.responseUsage(JSON.parse(body))); }
+        catch { reportUsage(undefined); }
         const providerCode = safeProviderCode(body);
         const suffix = providerCode ? ` (${providerCode})` : '';
         throw new BriefGenerationRequestError(
@@ -323,54 +522,18 @@ export class BriefGenerationClient {
           'protocol',
         );
       }
-      const choice = Array.isArray(json?.choices) && json.choices.length === 1
-        ? json.choices[0]
-        : null;
-      if (!choice || typeof choice !== 'object' || choice === null ||
-          typeof choice.message !== 'object' || choice.message === null) {
-        throw new BriefGenerationRequestError(
-          'Cloud provider returned an invalid brief generation response.',
-          502, undefined, false, 'protocol',
-        );
+      try {
+        const result = this.parseSuccess(json);
+        reportUsage(result.usage);
+        return result;
+      } catch (error) {
+        // Truncated and otherwise rejected responses may still carry billable
+        // usage. Preserve it even though their content is not accepted.
+        reportUsage(this.responseUsage(json));
+        throw error;
       }
-      if (choice.finish_reason === 'length') throw new BriefGenerationTruncatedError();
-      if (choice.finish_reason !== 'stop') {
-        throw new BriefGenerationRequestError(
-          'Cloud provider did not complete the brief generation response.',
-          502, undefined, false, 'protocol',
-        );
-      }
-      if (typeof json.model !== 'string' || json.model !== this.config.modelName) {
-        throw new BriefGenerationRequestError(
-          'Cloud provider returned an unexpected brief generation model.',
-          502, undefined, false, 'protocol',
-        );
-      }
-      const content = typeof choice.message.content === 'string'
-        ? choice.message.content.trim()
-        : '';
-      if (!content) {
-        throw new BriefGenerationRequestError(
-          'Cloud provider returned an empty brief generation response.',
-          502, undefined, false, 'protocol',
-        );
-      }
-      const reasoningContent = typeof choice.message.reasoning_content === 'string'
-        && choice.message.reasoning_content.trim()
-        ? choice.message.reasoning_content
-        : undefined;
-      const requestId = typeof json.id === 'string'
-        ? json.id
-        : typeof json.request_id === 'string' ? json.request_id : undefined;
-      return {
-        content,
-        reasoningContent,
-        model: json.model,
-        finishReason: 'stop',
-        usage: parseUsage(json.usage),
-        requestId,
-      };
     } catch (error) {
+      if (attemptStarted && !usageReported) reportUsage(undefined);
       if (controller && this.cancelledControllers.has(controller)) {
         throw new BriefGenerationCancelledError();
       }
@@ -401,13 +564,14 @@ export class BriefGenerationClient {
     maxCompletionTokens: number,
     cancellationGeneration: number,
     signal?: AbortSignal,
+    onUsage?: (usage: BriefGenerationUsage | undefined) => void,
   ): Promise<BriefGenerationResult> {
     for (let attempt = 0; attempt <= retries; attempt++) {
       if (cancellationGeneration !== this.cancellationGeneration || signal?.aborted) {
         throw new BriefGenerationCancelledError();
       }
       try {
-        return await this.request(messages, maxCompletionTokens, signal);
+        return await this.request(messages, maxCompletionTokens, signal, onUsage);
       } catch (error: any) {
         if (error instanceof BriefGenerationCancelledError ||
             error instanceof BriefGenerationTruncatedError) throw error;
@@ -486,6 +650,7 @@ export class BriefGenerationClient {
       maxCompletionTokens,
       this.cancellationGeneration,
       normalized.signal,
+      normalized.onUsage,
     );
   }
 

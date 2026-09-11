@@ -1,6 +1,6 @@
 /** Stable, non-secret configuration for the Cloud embedding slot (multi-provider catalog). */
 
-import { BRIEF_CONNECTION_VERIFIED_PREF } from './brief-generation-config';
+import { invalidateBriefConnectionVerification } from './brief-generation-config';
 import {
   calculateRecommendedChunkTokens,
   fixedChunkProfile,
@@ -304,7 +304,10 @@ export function assertCustomProviderBaseUrl(value: string): string {
   if (!url.hostname) {
     throw new CloudBaseUrlRejectedError('The Custom Base URL must include a host.');
   }
-  return trimmed.replace(/\/+$/, '');
+  // URL.href canonicalizes host casing, default ports and path encoding. The
+  // trailing slash is then removed so equivalent endpoint spellings share one
+  // vector-space identity.
+  return url.href.replace(/\/+$/, '');
 }
 
 /** The Custom provider follows the OpenAI SDK convention: base URL + /embeddings. */
@@ -408,8 +411,34 @@ export function calculateCloudRecommendedChunkTokens(maxInputTokens: number): nu
   return Math.max(1, Math.min(calculated, maxInputTokens));
 }
 
-export function cloudModelId(settings: Pick<CloudModelSettings, 'provider' | 'modelName' | 'dimensions'>): string {
-  return `cloud:${settings.provider}:${encodeURIComponent(settings.modelName)}:${settings.dimensions}`;
+function compactEndpointFingerprint(value: string): string {
+  // Two mixed 32-bit accumulators avoid storing a user-supplied host/path in
+  // SQLite model_id while making accidental collisions far less likely than
+  // a single short checksum. This is an identity fingerprint, not a secret.
+  let h1 = 0xdeadbeef ^ value.length;
+  let h2 = 0x41c6ce57 ^ value.length;
+  for (let index = 0; index < value.length; index++) {
+    const ch = value.charCodeAt(index);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507)
+    ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507)
+    ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return `${(h2 >>> 0).toString(16).padStart(8, '0')}${(h1 >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+export function cloudModelId(
+  settings: Pick<CloudModelSettings, 'provider' | 'modelName' | 'dimensions'>
+    & Partial<Pick<CloudModelSettings, 'customBaseUrl'>>,
+): string {
+  const prefix = `cloud:${settings.provider}:${encodeURIComponent(settings.modelName)}:${settings.dimensions}`;
+  if (settings.provider !== 'custom-openai-compatible') return prefix;
+  const endpoint = settings.customBaseUrl
+    ? assertCustomProviderBaseUrl(settings.customBaseUrl)
+    : 'unconfigured';
+  return `${prefix}:endpoint-${compactEndpointFingerprint(`custom-endpoint-v1:${endpoint}`)}`;
 }
 
 /** Resolve the active provider; unknown or missing values fall back to Bailian. */
@@ -446,7 +475,6 @@ export function setCloudProvider(provider: CloudProviderId): CloudModelSettings 
   if (!isCloudProviderId(provider)) {
     throw new CloudConfigRejectedError(`Unknown Cloud provider: ${String(provider)}.`);
   }
-  const previous = getCloudModelSettings();
   Zotero.Prefs.set(PROVIDER_PREF, provider, true);
   if (provider !== 'custom-openai-compatible') {
     const entry = getProviderDefaultCatalogEntry(provider);
@@ -458,9 +486,6 @@ export function setCloudProvider(provider: CloudProviderId): CloudModelSettings 
       Zotero.Prefs.set(MODEL_NAME_PREF, entry.modelName, true);
       Zotero.Prefs.set(DIMENSIONS_PREF, entry.dimensions, true);
     }
-  }
-  if ((previous.provider === 'alibaba-bailian') !== (provider === 'alibaba-bailian')) {
-    Zotero.Prefs.set(BRIEF_CONNECTION_VERIFIED_PREF, false, true);
   }
   return getCloudModelSettings();
 }
@@ -772,6 +797,13 @@ function cloudSettingsChangeKey(settings: CloudModelSettings): string {
 
 export function setCloudModelSettings(input: CloudModelSettingsInput): CloudModelSettings {
   const previous = getCloudModelSettings();
+  const previousTarget = input.provider === previous.provider
+    ? previous
+    : input.provider === 'alibaba-bailian'
+      ? resolveBailianSettings()
+      : input.provider === 'openai' || input.provider === 'google-gemini-api'
+        ? resolveBuiltinSettings(input.provider)
+        : resolveCustomSettings();
   const settings = validateCloudModelSettings(input);
   Zotero.Prefs.set(PROVIDER_PREF, settings.provider, true);
   if (settings.provider === 'alibaba-bailian') {
@@ -792,19 +824,9 @@ export function setCloudModelSettings(input: CloudModelSettingsInput): CloudMode
     Zotero.Prefs.set(CUSTOM_MAX_INPUT_TOKENS_PREF, settings.maxInputTokens, true);
     Zotero.Prefs.set(CUSTOM_BATCH_SIZE_PREF, settings.batchSize, true);
   }
-  if (previous.provider === settings.provider
-    && cloudSettingsChangeKey(previous) !== cloudSettingsChangeKey(settings)) {
+  if (cloudSettingsChangeKey(previousTarget) !== cloudSettingsChangeKey(settings)) {
     setCloudConnectionVerified(false, settings.provider);
-  }
-  // The literature-brief client only works against Bailian. Switching away
-  // from Bailian, or moving Bailian to another regional endpoint, invalidates
-  // the brief connection state; its model settings are intentionally kept.
-  const briefAffected = previous.provider === 'alibaba-bailian'
-    !== (settings.provider === 'alibaba-bailian')
-    || (settings.provider === 'alibaba-bailian'
-      && previous.bailianRegion !== settings.bailianRegion);
-  if (briefAffected) {
-    Zotero.Prefs.set(BRIEF_CONNECTION_VERIFIED_PREF, false, true);
+    invalidateBriefConnectionVerification(settings.provider);
   }
   return settings;
 }
@@ -848,8 +870,10 @@ export function resetCloudModelSettings(): CloudModelSettings {
     // An empty Custom contract can never remain connection-verified, even if
     // it was already empty when reset was pressed.
     setCloudConnectionVerified(false, settings.provider);
+    invalidateBriefConnectionVerification(settings.provider);
   } else if (cloudSettingsChangeKey(previous) !== cloudSettingsChangeKey(settings)) {
     setCloudConnectionVerified(false, settings.provider);
+    invalidateBriefConnectionVerification(settings.provider);
   }
   return settings;
 }

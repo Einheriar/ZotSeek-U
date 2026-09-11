@@ -62,7 +62,12 @@ function isSkip<T>(value: T | BriefTaskSkip): value is BriefTaskSkip {
     && typeof (value as BriefTaskSkip).reason === 'string' && !!(value as BriefTaskSkip).reason.trim();
 }
 function outcomeFromValue<T>(key: string, value: T | BriefTaskSkip): BriefTaskOutcome<T> {
-  if (isSkip(value)) return { key, status: 'skipped', reason: value.reason };
+  if (isSkip(value)) {
+    // A runner can reach a billable structured skip (for example garbled PDF
+    // text) after provider calls. Preserve its value so the final report does
+    // not discard the usage ledger. Pre-scan skips still bypass run() entirely.
+    return { key, status: 'skipped', reason: value.reason, value: value as T };
+  }
   // Runner results are deliberately accepted at this boundary so a runner can
   // report a committed success, skip, failure, or cancellation without making
   // the scheduler mistake the discriminated result for a successful value.
@@ -73,6 +78,7 @@ function outcomeFromValue<T>(key: string, value: T | BriefTaskSkip): BriefTaskOu
       return {
         key,
         status,
+        value: value as T,
         ...(typeof result.reason === 'string' ? { reason: result.reason } : {}),
         ...(result.error !== undefined ? { error: result.error } : {}),
       };

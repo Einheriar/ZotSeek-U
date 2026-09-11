@@ -32,6 +32,7 @@ import { modelInputPolicyFingerprint, resolveModelInputPolicy } from './model-in
 import { textExtractor } from './text-extractor';
 import { isModifiedAfterVerification } from '../utils/timestamp';
 import { normalizeStoredIndexingMode } from '../utils/indexing-mode';
+import { normalizeMaxChunksPerPaper } from '../utils/numeric-preferences';
 import {
   isItemExcludedFromIndex,
   readIndexExclusionPolicy,
@@ -122,6 +123,8 @@ export type ScopedReconciliationOptions = {
   noteIndexCallback?: IndexCallback;
   /** Treat every already-indexed eligible item as needing a full replacement. */
   forceFull?: boolean;
+  /** Admit the holder of the currently active explicit-operation lease. */
+  operationToken?: symbol;
 };
 
 const STARTUP_DELAY_MS = 10_000;
@@ -134,6 +137,7 @@ export class AutoIndexManager {
   private logger = new Logger('StartupIndexManager');
   private running = false;
   private checking = false;
+  private explicitOperationToken: symbol | null = null;
   private chunkStrategyBlocked = false;
   private startupTimer: any = null;
   private releaseStartup: (() => void) | null = null;
@@ -184,6 +188,30 @@ export class AutoIndexManager {
 
   public setVectorStore(store: any): void {
     this.vectorStore = store;
+  }
+
+  /**
+   * Reserve all index writes for one explicit user/API operation. The check and
+   * assignment are synchronous, so a reconciliation and a destructive rebuild
+   * cannot both cross this boundary in the single-threaded Zotero runtime.
+   */
+  public tryBeginExplicitOperation(): symbol | null {
+    if (this.checking || this.explicitOperationToken) return null;
+    const token = Symbol('zotseek-index-operation');
+    this.explicitOperationToken = token;
+    return token;
+  }
+
+  public endExplicitOperation(token: symbol): void {
+    if (this.explicitOperationToken === token) {
+      this.explicitOperationToken = null;
+    } else {
+      this.logger.warn('Ignored an index-operation release with a stale token');
+    }
+  }
+
+  public hasActiveIndexOperation(): boolean {
+    return this.checking || this.explicitOperationToken !== null;
   }
 
   public setChunkStrategyBlocked(blocked: boolean): void {
@@ -337,9 +365,7 @@ export class AutoIndexManager {
     return {
       indexContractVersion: 4,
       mode,
-      maxChunksPerPaper: Number.isFinite(maxChunks) && maxChunks >= 1
-        ? maxChunks
-        : 100,
+      maxChunksPerPaper: normalizeMaxChunksPerPaper(maxChunks),
       chunkStrategyVersion: CHUNK_STRATEGY_VERSION,
       modelInputPolicy: modelInputPolicyFingerprint(policy),
       pdfSourceIdentityVersion: mode === 'full' ? PDF_SOURCE_IDENTITY_VERSION : 0,
@@ -766,7 +792,12 @@ export class AutoIndexManager {
     const persistFreshness = options.persistFreshness !== false;
     const fullIndexCallback = options.fullIndexCallback || this.fullIndexCallback;
     const noteIndexCallback = options.noteIndexCallback || this.noteIndexCallback;
-    if (this.checking || !this.vectorStore ||
+    const ownsExplicitLease = options.operationToken !== undefined &&
+      options.operationToken === this.explicitOperationToken;
+    const explicitLeaseConflict = this.explicitOperationToken !== null
+      ? !ownsExplicitLease
+      : options.operationToken !== undefined;
+    if (this.checking || explicitLeaseConflict || !this.vectorStore ||
         (allowWrites && (!fullIndexCallback || !noteIndexCallback))) {
       return this.emptyResult(true);
     }
@@ -972,7 +1003,11 @@ export class AutoIndexManager {
             else result.unchanged++;
           } else {
             indexFreshnessTracker.markDirty(identity);
-            noteItems.push(item);
+            // A truncated Full index may have omitted PDF chunks. When Note
+            // demand changes, only a full extraction can refill newly available
+            // PDF slots and recompute wasTruncated truthfully.
+            if (mode === 'full' && status?.wasTruncated) rebuildItems.push(item);
+            else noteItems.push(item);
           }
         } else {
           // Fingerprint-less indexes must be compared with the source text that
@@ -989,7 +1024,8 @@ export class AutoIndexManager {
             rebuildItems.push(item);
           } else if (assessment === 'notes-changed') {
             indexFreshnessTracker.markDirty(identity);
-            noteItems.push(item);
+            if (mode === 'full' && status?.wasTruncated) rebuildItems.push(item);
+            else noteItems.push(item);
           } else {
             if (persistFreshness) {
               const persisted = await this.persistFingerprintSafely(

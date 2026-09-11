@@ -15,6 +15,7 @@ const compiled = ts.transpileModule(`class Harness { ${method.getText(ast)} }`, 
 
 function harness() {
   let activeModel = 'cloud:test';
+  let operationToken: symbol | null = null;
   const valid = { id: 1 }, excluded = { id: 2, excluded: true };
   const calls: any[][] = [];
   const Harness = new Function('getActiveModelId', 'getZotero', 'Zotero',
@@ -27,6 +28,18 @@ function harness() {
   Object.assign(h, {
     indexing: false, indexOperationActive: false,
     logger: { debug() {}, error() {} }, showAlert() {},
+    isIndexOperationBusy() { return h.indexing || h.indexOperationActive; },
+    tryBeginIndexOperation() {
+      if (h.indexing || h.indexOperationActive) return null;
+      operationToken = Symbol('test-index-operation');
+      h.indexOperationActive = true;
+      return operationToken;
+    },
+    endIndexOperation(token: symbol) {
+      assert.equal(token, operationToken);
+      operationToken = null;
+      h.indexOperationActive = false;
+    },
     ensureOperationalModel: () => true, ensureChunkStrategyWritable: async () => true,
     ensureStoreReady: async () => {},
     vectorStore: { getItemsMissingModel: async (model: string) => {
@@ -34,9 +47,10 @@ function harness() {
       return [{ localID: 1 }, { localID: 2 }, { localID: 3 }, { localID: null }];
     } },
     indexItems: async (...args: any[]) => {
-      assert.equal(h.indexOperationActive, false);
+      assert.equal(h.indexOperationActive, true);
       assert.equal(h.indexing, false);
-      calls.push(args);
+      assert.equal(args[3], operationToken);
+      calls.push([args[0]]);
     },
   });
   return { h, calls, valid, setModel: (model: string) => { activeModel = model; } };

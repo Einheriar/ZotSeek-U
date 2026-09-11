@@ -53,6 +53,11 @@ type PendingWorkerJob = {
   timeoutId: ReturnType<typeof setTimeout>;
 };
 
+type PendingWorkerInitialization = {
+  worker: any;
+  cancel: (error: Error) => void;
+};
+
 /**
  * Embedding Pipeline with ChromeWorker support
  */
@@ -73,6 +78,11 @@ export class EmbeddingPipeline {
   // worker creation instead of each spawning (and leaking) their own. Cleared
   // on failure so a later call can retry.
   private initPromise: Promise<void> | null = null;
+  // A failed worker can reject several in-flight jobs at once. Their retry
+  // loops must all await one replacement worker instead of terminating each
+  // other's newly-created instance.
+  private recoveryPromise: Promise<void> | null = null;
+  private workerInitialization: PendingWorkerInitialization | null = null;
   // Bounded recovery attempts so a permanently-broken worker doesn't loop forever
   // within a single embed() call. Resets on every successful embed.
   private consecutiveRecoveries = 0;
@@ -172,19 +182,41 @@ export class EmbeddingPipeline {
         const workerPath = 'chrome://zotseek/content/scripts/embedding-worker.js';
 
         this.logger.info(`Creating ChromeWorker: ${workerPath}`);
-        this.worker = new ChromeWorker(workerPath);
+        const worker = new ChromeWorker(workerPath);
+        this.worker = worker;
 
-        const timeout = setTimeout(() => {
+        let settled = false;
+        let timeout: ReturnType<typeof setTimeout>;
+        const finish = (error?: Error): void => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          if (this.workerInitialization?.worker === worker) {
+            this.workerInitialization = null;
+          }
+          if (error) reject(error);
+          else resolve();
+        };
+        const isCurrentWorker = (): boolean => this.worker === worker;
+
+        timeout = setTimeout(() => {
           // Name the model and its size: a timeout on a 570 MB model on a slow
           // disk means something different from one on a bundled model, and the
           // bare message made issue #24 impossible to triage from the report.
-          reject(new Error(
+          finish(new Error(
             `Worker initialization timeout after ${EmbeddingPipeline.WORKER_INIT_TIMEOUT_MS / 1000}s ` +
             `loading "${this.model.label}" (${this.model.approxSizeMB} MB, ${this.model.bundled ? 'bundled' : 'downloaded'})`,
           ));
         }, EmbeddingPipeline.WORKER_INIT_TIMEOUT_MS);
+        this.workerInitialization = { worker, cancel: finish };
 
-        this.worker.onmessage = (event: any) => {
+        worker.onmessage = (event: any) => {
+          // A terminated worker can still deliver a queued event. Never let
+          // it settle jobs or mark a replacement worker ready.
+          if (!isCurrentWorker()) {
+            finish(new Error('Worker initialization superseded'));
+            return;
+          }
           const { type, status, jobId, error, embedding, modelId, processingTimeMs, message, level, data } = event.data;
 
           if (type === 'log') {
@@ -208,9 +240,8 @@ export class EmbeddingPipeline {
               this.logger.info(`Worker status: ${status} - ${message}`);
             }
             if (status === 'ready') {
-              clearTimeout(timeout);
               this.workerReady = true;
-              resolve();
+              finish();
             }
           } else if (type === 'error') {
             this.logger.error(`Worker error: ${error}`);
@@ -218,8 +249,7 @@ export class EmbeddingPipeline {
             if (job) {
               job.reject(new Error(error));
             } else {
-              clearTimeout(timeout);
-              reject(new Error(error));
+              finish(new Error(error));
             }
           } else if (type === 'embedding' && jobId) {
             const job = this.takePendingJob(jobId);
@@ -229,7 +259,11 @@ export class EmbeddingPipeline {
           }
         };
 
-        this.worker.onerror = (event: any) => {
+        worker.onerror = (event: any) => {
+          if (!isCurrentWorker()) {
+            finish(new Error('Worker initialization superseded'));
+            return;
+          }
           // Extract detailed error info from ErrorEvent
           const errorInfo = {
             message: event.message || 'Unknown error',
@@ -240,18 +274,16 @@ export class EmbeddingPipeline {
           };
           this.logger.error(`Worker error: ${errorInfo.message} at ${errorInfo.filename}:${errorInfo.lineno}:${errorInfo.colno}`);
           this.logger.error(`Error details: ${errorInfo.error}`);
-          clearTimeout(timeout);
-
           // Mark the worker as dead so embed() will trigger recovery.
           // Reject any in-flight jobs with a recoverable error code so the
           // caller knows to retry rather than treat as permanent failure.
           this.workerReady = false;
           this.rejectPendingJobs(new Error('WORKER_DIED'));
 
-          reject(new Error(`Worker failed: ${errorInfo.message}`));
+          finish(new Error(`Worker failed: ${errorInfo.message}`));
         };
 
-        this.worker.postMessage({
+        worker.postMessage({
           type: 'init',
           model: {
             modelId: this.model.id,
@@ -286,7 +318,12 @@ export class EmbeddingPipeline {
     if (!baseUrl || !serverModelName) {
       throw new Error(`Local Server model '${this.model.id}' is missing its server configuration`);
     }
-    const client = new ServerEmbeddingClient({ baseUrl, serverModelName, apiKey });
+    const client = new ServerEmbeddingClient({
+      baseUrl,
+      serverModelName,
+      dimensions: this.model.dimensions,
+      apiKey,
+    });
     const availableModels = await client.listModels();
     if (!availableModels.includes(serverModelName)) {
       throw new Error(
@@ -387,6 +424,20 @@ export class EmbeddingPipeline {
     }
   }
 
+  /** Terminate only the currently published worker and settle its pending init. */
+  private disposeWorker(error: Error): void {
+    const worker = this.worker;
+    const initialization = this.workerInitialization;
+    if (worker && initialization && initialization.worker === worker) {
+      initialization.cancel(error);
+    }
+    if (worker) {
+      try { worker.terminate(); } catch { /* ignore */ }
+    }
+    if (this.worker === worker) this.worker = null;
+    this.workerReady = false;
+  }
+
   private async diagnoseExactInput(text: string, kind: 'query' | 'doc'): Promise<void> {
     const maxInputTokens = this.inputPolicy.maxInputTokens;
     if (!this.inputPolicy.supportsExactTokenCount || maxInputTokens === null) return;
@@ -483,17 +534,29 @@ export class EmbeddingPipeline {
    * the first init and for recovery after a worker crash.
    */
   private async recoverWorker(): Promise<void> {
-    if (this.worker) {
-      try { this.worker.terminate(); } catch { /* ignore */ }
-      this.worker = null;
+    if (this.recoveryPromise) return this.recoveryPromise;
+    const lifecycle = this.queryEmbeddingLifecycle;
+    const recovery = (async () => {
+      this.disposeWorker(new Error('WORKER_DIED'));
+      this.serverClient = null;
+      this.cloudClient = null;
+      this.ready = false;
+      this.initPromise = null;
+      this.rejectPendingJobs(new Error('WORKER_DIED'));
+      if (lifecycle !== this.queryEmbeddingLifecycle) {
+        throw new Error('Pipeline lifecycle changed during worker recovery');
+      }
+      await this.init();
+      if (lifecycle !== this.queryEmbeddingLifecycle) {
+        throw new Error('Pipeline lifecycle changed during worker recovery');
+      }
+    })();
+    this.recoveryPromise = recovery;
+    try {
+      await recovery;
+    } finally {
+      if (this.recoveryPromise === recovery) this.recoveryPromise = null;
     }
-    this.serverClient = null;
-    this.cloudClient = null;
-    this.workerReady = false;
-    this.ready = false;
-    this.initPromise = null;
-    this.rejectPendingJobs(new Error('WORKER_DIED'));
-    await this.init();
   }
 
   /**
@@ -601,15 +664,13 @@ export class EmbeddingPipeline {
     this.logger.info('Resetting embedding pipeline');
     this.queryEmbeddingLifecycle++;
     this.queryEmbeddingsInFlight.clear();
-    if (this.worker) {
-      try { this.worker.terminate(); } catch { /* ignore */ }
-      this.worker = null;
-    }
+    this.disposeWorker(new Error('Pipeline reset'));
     this.serverClient = null;
     this.cloudClient = null;
     this.workerReady = false;
     this.ready = false;
     this.initPromise = null;
+    this.recoveryPromise = null;
     this.consecutiveRecoveries = 0;
     this.rejectPendingJobs(new Error('Pipeline reset'));
     tokenizerService.reset();
@@ -659,12 +720,12 @@ export class EmbeddingPipeline {
   destroy(): void {
     this.queryEmbeddingLifecycle++;
     this.queryEmbeddingsInFlight.clear();
-    if (this.worker) {
-      this.worker.terminate();
-      this.worker = null;
-    }
+    this.disposeWorker(new Error('Pipeline destroyed'));
     this.serverClient = null;
     this.cloudClient = null;
+    this.ready = false;
+    this.initPromise = null;
+    this.recoveryPromise = null;
     this.rejectPendingJobs(new Error('Pipeline destroyed'));
     tokenizerService.reset();
   }

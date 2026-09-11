@@ -51,3 +51,31 @@ test('reads startup fingerprints when Zotero 8 drops indented SELECT results', a
   });
   assert.equal(observedQueries[1].startsWith('SELECT config_fingerprint'), true);
 });
+
+test('content freshness reads the requested model partition rather than the shared item row', async () => {
+  const zotero = installZoteroStub();
+  const hashes = new Map([
+    ['model-a', 'h1'],
+    ['model-b', 'h0'],
+  ]);
+  const observed: Array<{ sql: string; params: any[] }> = [];
+  zotero.DB = {
+    queryAsync: async (sql: string) => {
+      if (sql === 'PRAGMA database_list') return [{ name: 'main' }, { name: 'zotseek' }];
+      return [];
+    },
+    valueQueryAsync: async (sql: string, params: any[] = []) => {
+      observed.push({ sql, params });
+      return hashes.get(String(params[2])) || false;
+    },
+  };
+  const store = new VectorStoreSQLite();
+  (store as any).initialized = true;
+  (store as any).attached = true;
+
+  assert.equal(await store.needsReindexByIdentity('user', 'ABCDEFGH', 'h1', 'model-a'), false);
+  assert.equal(await store.needsReindexByIdentity('user', 'ABCDEFGH', 'h1', 'model-b'), true);
+  assert.equal(await store.needsReindexByIdentity('user', 'ABCDEFGH', 'h1', 'missing'), true);
+  assert.equal(observed.every(entry => entry.sql.includes('item_models')), true);
+  assert.deepEqual(observed.map(entry => entry.params[2]), ['model-a', 'model-b', 'missing']);
+});

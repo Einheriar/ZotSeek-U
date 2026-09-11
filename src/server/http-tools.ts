@@ -17,15 +17,25 @@ import {
 } from '../core/server-model-config';
 import { identityFromItem } from '../core/identity-resolver';
 import { noteHTMLFirstHeading, noteHTMLToStructuredText } from '../utils/note-text';
-import { PdfReadResult, ZoteroAPI } from '../utils/zotero-api';
+import { PdfFullReadLimits, PdfReadResult, ZoteroAPI } from '../utils/zotero-api';
 import { OPEN_PATH } from './open-endpoint';
 import { normalizeProductIndexingMode } from '../core/search-policy';
+import {
+  MIN_SIMILARITY_PERCENT_BOUNDS,
+  normalizeMinSimilarityPercent,
+} from '../utils/numeric-preferences';
 
 declare const Zotero: any;
 
 // One engine instance for all HTTP-facing searches (same wrapping the UI uses)
 const hybridEngine = new HybridSearchEngine(searchEngine);
 const zoteroAPI = new ZoteroAPI();
+
+export const GET_ITEM_PDF_FULL_READ_LIMITS: Readonly<PdfFullReadLimits> = Object.freeze({
+  batchPages: 20,
+  maxPages: 100,
+  maxCharacters: 300_000,
+});
 
 export interface MatchedChunk {
   snippet?: string;
@@ -180,12 +190,13 @@ function clampFloat(value: any, min: number, max: number, fallback: number): num
 /** The user's minimum-similarity preference, as the UI reads it. */
 function prefMinSimilarity(): number {
   try {
-    const pct = Zotero.Prefs.get('zotseek.minSimilarityPercent', true);
-    if (typeof pct === 'number' && pct >= 0 && pct <= 100) return pct / 100;
+    return normalizeMinSimilarityPercent(
+      Zotero.Prefs.get('zotseek.minSimilarityPercent', true),
+    ) / 100;
   } catch {
     // fall through to default
   }
-  return 0.3;
+  return MIN_SIMILARITY_PERCENT_BOUNDS.defaultValue / 100;
 }
 
 function round3(n: number): number {
@@ -808,6 +819,7 @@ export async function runGetItemTool(rawArgs: GetItemToolArgs): Promise<GetItemR
       const pdf = await zoteroAPI.readPdfAttachment(
         selectedAttachment,
         includePdf === 'pages' ? requestedPages : null,
+        includePdf === 'full' ? GET_ITEM_PDF_FULL_READ_LIMITS : undefined,
       );
       if (pdf.status === 'failed' && pdf.error?.startsWith('Requested PDF page exceeds')) {
         throw new Error(`get_item: ${pdf.error}`);

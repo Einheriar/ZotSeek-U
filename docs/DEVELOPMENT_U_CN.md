@@ -6,6 +6,10 @@
 >
 > 状态标记约定：**[已上线]** = 已进入生产代码并通过验收；**[进行中]** = 已批准、部分实现或尚待实机验收。更细粒度的实验数据与逐项验收记录保存在维护者本地工作区，不随本仓库分发。
 
+## Plan 71：PDF 批次边界修复
+
+共享 `readPdfAttachment` 在 PDFWorker 分段数不匹配时，串行逐页重读该批次。Zotero 对拼接文本整体 `trim()` 会删除批次首尾无文本页的分页符，不能靠补空段恢复页码。逐页结果按请求的物理页定位，保留空文本和页内分页字符；失败或不一致结果仍报错。MCP/REST 的 20 页批次、100 页/约 300,000 字符返回上限和续读字段不变；Brief 内部整篇读取也复用此恢复逻辑，不新增服务器限额。索引提取链不变。
+
 ## Plan 62：BM25 快照（已验收）
 
 设置页“存储占用”统计 `zotseek.sqlite` 与已保存 BM25 JSON 快照的文件大小合计，点击“刷新统计”重新读取；无快照时快照部分为 0，过期或损坏但仍存在的文件按实际大小计入。不包含临时替换文件、SQLite 日志、模型文件或 Zotero 附件。原始 JS API / MCP 的 `storageUsedBytes` 仍表示数据库文件大小。
@@ -156,6 +160,7 @@ Plan 60 兼容修补将词法契约更新为 v2：对实际合并的韩英片段
 - 默认内置模型 `multilingual-e5-base`（Q8 量化、768 维、512-token 输入上限、`query:` / `passage:` 前缀），fork 初期即从上游 Nomic 默认切换，以获得多语言语义能力。
 - 注册表三模型制：`nomic-embed-text-v1.5`（可选下载）、`multilingual-e5-base`（默认）、`bge-m3`（可选下载）；上游的 MiniLM 已从注册表与设置菜单移除。
 - 模型下载交互：选择缺失模型时提供"自动下载（推荐）/ 手动下载 / 取消"三选一，`.part` 临时文件原子写入，下载成功前不切换活动模型；各模型向量按 `model_id` 分区隔离，切换或失败不删除、不混用现有向量。
+- ChromeWorker 崩溃恢复采用 single-flight：并发失败的调用共享一个替代 Worker；旧实例迟到事件按身份丢弃，reset / destroy 可取消未完成初始化，不能复活已结束生命周期。
 
 ### 7.2 模型输入契约与精确分块
 
@@ -163,7 +168,7 @@ Plan 60 兼容修补将词法契约更新为 v2：对实际合并的韩英片段
 
 ### 7.3 Local Server 槽位
 
-自建推理服务经固定单槽位接入：配置文件 `<Zotero profile>/zotseek-server-models.json`（含 `schemaVersion` / `models` / `example` 模板，字段 `id`（`server:` 前缀）、`baseUrl`（仅允许 loopback）、`serverModelName`、`dimensions`、`maxInputTokens`、`recommendedChunkTokens`、`queryPrefix`、`docPrefix` 等）。模型菜单以稳定值 `server-slot` 呈现 NONE / UNKNOWN / ready 三态；不完整配置可保留但不执行语义操作；ready 时启动校验 `GET /v1/models` 与维度探测。
+自建推理服务经固定单槽位接入：配置文件 `<Zotero profile>/zotseek-server-models.json`（含 `schemaVersion` / `models` / `example` 模板，字段 `id`（`server:` 前缀）、`baseUrl`（仅允许 loopback）、`serverModelName`、`dimensions`、`maxInputTokens`、`recommendedChunkTokens`、`queryPrefix`、`docPrefix` 等）。模型菜单以稳定值 `server-slot` 呈现 NONE / UNKNOWN / ready 三态；不完整配置可保留但不执行语义操作；ready 时启动校验 `GET /v1/models` 与维度探测。每个正常 embedding 响应还会重新校验 index 完整唯一、逐向量数组/维度/有限数/非零，异常响应不会进入数据库。
 
 ### 7.4 Cloud Embedding 与 BYOK
 
@@ -184,6 +189,7 @@ Plan 60 兼容修补将词法契约更新为 v2：对实际合并的韩英片段
 - **query/document API role**：高级设置可编辑两角色（默认 `query` / `document`，可恢复百炼默认）；角色变化使连接验证失效并进入索引指纹（连同 adapter 版本、输出契约）。
 - 百炼区域端点 `zotseek.cloud.bailianRegion`（`cn` / `intl`）；`cloudAutoIndex` 默认关闭。
 - Cloud 专用保守多语言 token 估算（英文词 ×1.3、CJK 字符 ×2）仅用于 Cloud 分块预算，估算器版本进入 Cloud 策略指纹。
+- Custom 的 `model_id` 额外包含规范化 endpoint 的短指纹；不把原始 URL 写入数据库，并隔离同名同维度但来自不同服务的向量。
 
 ## 8. 索引维护体系 [已上线]
 
@@ -200,6 +206,10 @@ Plan 60 兼容修补将词法契约更新为 v2：对实际合并的韩英片段
 - **清除索引**（危险）：只删除不重建。
 
 "立即执行增量同步"按钮已删除；启动时若发现配置指纹不一致，弹"检查并更新 / 重建 / 取消"三选一，取消保持零写入。右键菜单仅保留"检查并更新所选条目 / 当前合集"两个范围快捷入口，与启动核对复用同一套新鲜度指纹。
+
+所有会写入或删除索引的显式操作与启动/后台核对共用同一份操作租约：任一侧运行时，另一侧在读取候选或清空分区之前即退出并提示忙碌。重建从覆盖率发现到最后一批写入期间持续持有租约，避免后台核对在“清空后、重建完成前”观察并推进半成品分区。
+
+Full 模式的完整提取与 Note 增量替换使用同一 Summary → 最多 30 个 Notes → PDF 剩余名额分配器。已截断的 Full 条目发生 Note 变化时强制整条目重建并重新提取 PDF，使配额、页数覆盖和 `wasTruncated` 能重新收敛。
 
 ### 8.3 索引任务暂停与恢复
 
@@ -219,6 +229,8 @@ Plan 60 兼容修补将词法契约更新为 v2：对实际合并的韩英片段
 - **稳定文献身份是 `libraryKey + itemKey`**，贯穿删除清理、指纹、增量核对、MCP 读取与深链接；本地 Zotero item ID 不作为跨库稳定身份。user / group / orphan 记录分别处理。
 - fork 引入的 schema 节点：**v10** `startup_fingerprints`（新鲜度指纹）、**v11** `section_paths`（Note 章节路径）、**v12** `chunks.pdf_attachment_key`（Full 模式精确 PDF 来源，nullable，旧数据不伪造来源）。
 - 每篇一个模型分区（`chunks.model_id` 复合主键 + `item_models`），模型切换与失败不混用向量。
+- 增量新鲜度按活动模型读取 `item_models.content_hash`；`items.content_hash` 只保留为旧 schema/迁移兼容字段，不能代表其他模型分区是否最新。
+- 启动时会核对 schema 元数据与真实表结构。若历史版本曾把带 `embeddings` 的 v3 布局或缺少 `library_key` 的 pre-v8 `items` 表误标为高版本，会把迁移起点回退到已确认的 v3/v6/v7 并重放已有幂等迁移；v8/v9 仍在破坏性迁移前备份数据库。当前布局不会被该恢复逻辑降级。
 - 设置页"存储占用"显示数据库文件物理大小：`DELETE` 后空间进入 freelist 而非立即归还磁盘，执行"压缩数据库"（`VACUUM INTO`）后才真正缩小文件，这是设计行为而非残留。
 
 ## 10. MCP/REST 扩展 [已上线]
@@ -231,7 +243,7 @@ MCP 工具说明补充通用证据判断提醒：判断结果时保留用户的�
 
 在上游 `search` / `find_similar` / `index_status` 基础上新增（完整用法见 [MCP.md](MCP.md)）：
 
-- **`get_item` 工具**：按 `library_key + item_key` 读取规范化书目、tags、collections、relatedItems 与附件清单；`include_notes: true` 返回全部 Child Notes 的完整未过滤文本（不应用索引侧的"基本信息"/References 排除规则）及实时 `sections` / `sectionPaths`；`include_pdf: "pages" | "full"` 支持指定附件与 ≤20 连续页，PDF 读取优先 Zotero 全文缓存、缺页时批量 `PDFWorker` 兜底，`pdf.status` 以机器值 `ok / partial / missing / unresolved / empty / failed` 表达；不暴露本机文件路径。REST 对应 `GET /zotseek/item`。
+- **`get_item` 工具**：按 `library_key + item_key` 读取规范化书目、tags、collections、relatedItems 与附件清单；`include_notes: true` 返回全部 Child Notes 的完整未过滤文本（不应用索引侧的"基本信息"/References 排除规则）及实时 `sections` / `sectionPaths`；`include_pdf: "pages" | "full"` 支持指定附件，显式范围每次 ≤20 连续页，`full` 以 ≤20 页批次返回最多 100 页或约 300,000 字符的开头前缀。超限时返回 `partial`、`limitReason` 与 `nextPage`，MCP/REST 合同一致；PDF 读取优先 Zotero 全文缓存、缺页时批量 `PDFWorker` 兜底，不虚假承诺底层队列可取消；不暴露本机文件路径。REST 对应 `GET /zotseek/item`。
 - **`search` 结构化后过滤**：可选 `filter`（`year_from` / `year_to` / `journal` / `author` + `exact` 总开关）作用于已排入 `max_results` 的结果窗口，不改变排序、不做隐藏超量拉取；REST 暴露 `yearFrom` / `yearTo` / `journal` / `author` / `exact`。
 - **精确 PDF 回链**：`matchedChunk.pdfAttachmentKey` 端到端透传，深链接打开产生命中的确切附件，而非启发式选择。
 - MCP 授权文案更新为"允许本地 AI 智能体只读搜索并读取条目、Notes 和 PDF"，同步全部 10 个语言包。
@@ -246,7 +258,9 @@ MCP 工具说明补充通用证据判断提醒：判断结果时保留用户的�
 ## 12. 设置页与 UI [已上线]
 
 - 设置页视觉与信息层级整理：Embedding / token / chunk 设置不再归属 Search 区域；"每分块最大令牌数 / 每篇文献最大分块数"迁入模型分组末尾的"分块与模型输入"；模型输入策略提示只保留"硬上限 / 推荐值"；统计、操作、维护区间距统一收紧；全部文案同步 10 个语言包。
+- 数字设置在提交时拒绝空值、非整数和越界值，并由浏览器原生校验给出可见反馈；核心读取也统一规范化外部或历史偏好。`maxChunksPerPaper` 固定为 1–200（默认 100），搜索结果数为 5–100（默认 20），相似度百分比为 0–100（默认 70）；非法 `maxTokens` 回退活动模型推荐值。索引运行时与配置指纹复用同一规范化结果，避免“实际分块与新鲜度记录不同”。
 - 搜索设置新增"默认搜索模式"下拉（Semantic / Keyword / Hybrid，默认 `hybrid`，复用既有偏好键）；下拉列宽调整避免中文截断。
+- 已打开的 VTable 搜索窗口会通过控制器接收新的初始查询和 `excludeItemId`，不再依赖错误的静态输入框 ID；因此“查找相关文献”复用窗口时仍会更新查询并排除源条目。
 - 关于页链接指向本 fork 仓库 `https://github.com/Einheriar/ZotSeek-U`。
 - 分块策略升级提示等旧式 `alert` 改为可关闭的 `confirm`（关闭不触发重建）。
 - 已知非阻断 UI 问题：多个右下角通知窗口可能重叠遮挡，经评估接受现状。
@@ -255,22 +269,38 @@ MCP 工具说明补充通用证据判断提醒：判断结果时保留用户的�
 
 ### 13.1 已实现的核心模块 [已上线（模块级）]
 
-简报功能的服务端核心与设置/条目入口已进入源码并提交（`108552c`），默认关闭；真实 Zotero 端到端与付费生成验收尚未完成：
+简报功能的服务端核心、设置/条目入口以及 Plan 57 P7 引导闭环均已进入源码，默认关闭；真实 Zotero 端到端与各 provider 付费生成验收尚未完成：
 
-- 模型固定为百炼 `deepseek-v4-flash-0731`（OpenAI 兼容端点、思考模式开启、`max_completion_tokens` 默认 16384 输出预算）。
+- provider 跟随设置页最后保存的 Cloud provider，并复用该 provider 的安全凭据和 endpoint；即使当前 Embedding 使用本地或 loopback server，简报仍使用最后保存的 Cloud provider。
+- 生成模型独立于 Embedding 模型，并按 provider 分别保存。设置页只提供一个自由输入框，通过当前 provider 的模型发现接口给出联想候选；Bailian/Gemini 候选带能力元数据，OpenAI/Custom 候选标记为需要连接测试确认。
+- Bailian 与 Custom 使用 Chat Completions，OpenAI 使用 Responses API，Gemini 使用原生 `generateContent`；连接测试、验证指纹和凭据 revision 均按 provider 隔离。论文外发不再复用持久 consent，而是每次生成操作重新确认。
 - 标题/摘要迫选分类器区分 `review` / `standard` 两类文献（稳定机器值，模糊样本默认 `standard`），分类调用独立预算。
 - 调度器：单篇手动任务 FIFO 并发 1；合集任务三篇一批、批内并行；两模式互斥。
 - 提示词存储：随包内置"标准论文"与"综述"双模板（`prompts/standard-article-brief.md`、`prompts/review-article-brief.md`），支持 profile 目录原子覆盖导入（UTF-8 / 256KiB 校验）。
 - 简报 Note 携带 HTML 注释形式的来源 provenance。
-- 简报仅支持百炼 provider；切出该 provider 时确认并清空简报连接验证状态（`zotseek.cloud.brief.connectionVerified`）。
 
 ### 13.2 进行中的闭环设计 [进行中]
 
-以下完整生成闭环已实现并提交（`108552c`），端到端闭环的真实 Zotero 与付费生成验收尚未完成：
+单篇真实验收补充：百炼已成功生成并保存一个中文简报，H1、分节及来源注释可读。Plan 70A 已修复 Markdown 渲染器把科学文本中小于号与后续大于号之间内容误当 HTML 删除的问题；渲染器现在只移除语法上可识别的原始 HTML 标签，并在正文和 inline code 中保留、转义比较符号。离线回归已覆盖，真实生成内容保真仍需在 Zotero 中复验。
+
+简报设置更新先完成纯校验，再取消排队中或正在运行的生成任务；无效输入只报错且保留既有任务，成功提交才按新设置取消旧任务并使相应验证失效。
+
+生成入口现在实行事务级知情确认：单篇操作每次确认一次，合集批次汇总确认一次，内部分类、分层、合并和重试不重复弹窗。确认前只在本地提取 PDF，使用既有字符数 / 3 估算器展示约计输入 token、单次输出上限和预计最少请求数，不创建 provider 客户端或发出模型请求；准备结果绑定 provider、配置、凭据 revision、endpoint 和双提示词 hash，排队期间任一绑定变化都会在外发前失败并要求重新确认。设置页连接测试与引导页 checkbox 只授权固定测试文本/模板定制的窄用途外发，不再写完整论文 consent；experimental 公共写入口 `recordBriefConsent()` 已移除，`getBriefStatus().consentCurrent` 仅作 deprecated 兼容状态且不能跳过生成确认。
+
+每个实际 HTTP 尝试均写入内存 usage 台账。分类、正文直发、分段总结、合并、最终生成及重试返回的 provider `usage` 会在单篇或合集最终报告中汇总输入、输出、推理和总 token；推理量只单列，不重复相加。成功响应缺少 usage，或超时/拒绝/断线没有返回可用总量时，报告保留已知总量并给出未报告请求数与“不完整、非最终账单”提示；失败、取消和模型判定乱码也不会丢失此前已产生的可报告用量。
+
+2026-09-11 连接复验：任务级取消信号现在与请求客户端共用构造器解析，在插件全局缺少 `AbortController` 时取 Zotero 主窗口构造器；启用开关按同一绝对偏好路径读写。真实只读自测 4/4，百炼固定文本连接测试成功；重启后验证状态保留、单篇菜单及内置模板分支可用。尚未发送论文或生成 Note，端到端验收不能据此标为完成。
+
+2026-09-11 实机修复：向导标题由控制器设置，XUL 状态使用单一属性、checkbox 使用 `.label`，按钮更新 label 时保留原生内部元素。网页 `<datalist>` 所需的 AutoComplete actor 不匹配 Zotero chrome 窗口，现由共享 `brief-model-autocomplete.ts` 接入原生 `autocomplete-input` 与独立搜索注册；关闭窗口时注销，候选显示名不改变实际模型 ID，自由输入失焦与候选确认均触发保存。清缓存重启后，设置页和向导均显示百炼候选；设置页鼠标选择及手动输入保存通过，向导按钮和状态文案恢复。完整引导、跨 provider 与付费生成验收仍未完成。
+
+以下完整生成闭环已实现，端到端闭环的真实 Zotero 与付费生成验收尚未完成：
 
 - 设置页"搜索"后新增"简报"折叠栏目与总开关（`zotseek.brief.enabled`，默认关闭）。
-- 独立弹窗收集领域 / 输出语言等信息，由 LLM 基于内置双模板改写个人提示词；自动下载默认模板并保存受控副本成对启用，高级用户可编辑后导入。
-- 生成入口：单篇 / 直接 PDF / 合集；生成始终新建 Child Note；PDF 清理后至少 100 个非空白 Unicode 字符才发送，不足则按 `insufficient_text` 跳过；合集内已有 Child Note 的条目跳过。
+- 总开关由关闭变为开启时立即打开分步引导；关闭弹窗不会发起请求，也不算完成设置，下一次实际使用简报入口时会再次打开。用户可以明确使用针对心理学、发展心理学和认知神经科学的内置双模板，或回答“领域、输出语言、特殊关注”三个问题，让 LLM 仅在内置模板基础上受约束地改写；引导不展示完整提示词，也不读取文库。
+- 只有明确选择内置模板，或完成个人双模板生成/导入，设置状态才可用。高级导入一次替换一个槽位并保留另一槽；生成结果仍以非覆盖文件名下载并以受控 profile 成对启用。
+- 非法 setup 版本/选择或损坏的活动提示词会显示为需要修复，不会静默冒充 ready；用户可明确恢复内置双模板或重新生成一对模板完成修复。
+- 生成入口：单篇 / 直接 PDF / 合集；生成始终新建 Child Note。程序注入一级标题“简报”，模型正文被提示只使用二至四级标题，但程序不另做标题层级校验。
+- PDF 清理后至少 100 个非空白 Unicode 字符才会发送，不足按 `insufficient_text` 跳过；超过门槛但严重乱码时，模型可以返回严格的 `source_unusable/garbled_text` 结构化结果，runner 随即退出且不写 Note。合集内已有 Child Note 的条目仍会跳过。
 - 全生命周期取消上下文、连接验证失效修复（凭据 revision）、协议错误与畸形响应处理、错误脱敏。
 
 ## 14. 工程化与开发流程

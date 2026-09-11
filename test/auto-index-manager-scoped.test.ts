@@ -13,7 +13,7 @@ import {
 import { modelInputPolicyFingerprint, resolveModelInputPolicy } from '../src/core/model-input-policy';
 import { getActiveModel } from '../src/core/model-registry';
 import { textExtractor } from '../src/core/text-extractor';
-import { CHUNK_STRATEGY_VERSION } from '../src/utils/chunker';
+import { CHUNK_STRATEGY_VERSION, getChunkOptionsFromPrefs } from '../src/utils/chunker';
 import type { StartupFingerprint, TextSourceType } from '../src/core/vector-store-sqlite';
 
 type FakePaper = ReturnType<typeof createPaper>;
@@ -63,6 +63,17 @@ function createNote(paper: FakePaper) {
 }
 
 describe('scoped index reconciliation', () => {
+  test('fingerprints the same normalized maxChunks value used by extraction', () => {
+    const zotero = installZoteroStub({
+      'zotseek.embeddingModel': 'multilingual-e5-base',
+      'zotseek.maxChunksPerPaper': 0,
+    });
+    const runtimeMaxChunks = getChunkOptionsFromPrefs(zotero).maxChunks;
+    const snapshot = (autoIndexManager as any).getConfigSnapshot('notes');
+    assert.equal(runtimeMaxChunks, 1);
+    assert.equal(snapshot.maxChunksPerPaper, runtimeMaxChunks);
+  });
+
   test('rebuilds only truncated papers when maxChunksPerPaper is increased', async () => {
     const zotero = installZoteroStub({
       'zotseek.indexScope': 'user',
@@ -411,6 +422,90 @@ describe('scoped index reconciliation', () => {
         libraryKey: 'user',
         itemKey: failedPaper.key,
       }), true);
+    } finally {
+      (textExtractor as any).extractChunksFromItem = originalExtract;
+      autoIndexManager.setVectorStore(null);
+      indexFreshnessTracker.clearAll();
+    }
+  });
+
+  test('fully rebuilds a truncated Full-mode item when its Note content changes', async () => {
+    const zotero = installZoteroStub({
+      'zotseek.indexingMode': 'full',
+      'zotseek.embeddingModel': 'multilingual-e5-base',
+      'zotseek.maxChunksPerPaper': 100,
+      'zotseek.excludeBooks': false,
+      'zotseek.excludeTag': '',
+    });
+    const paper = createPaper(1);
+    const note = createNote(paper);
+    zotero.Libraries = {
+      userLibraryID: 1,
+      get: () => ({ libraryID: 1, libraryType: 'user' }),
+    };
+    zotero.Items = {
+      get: (id: number) => id === paper.id ? paper : id === note.id ? note : null,
+      getAsync: async (ids: number[]) => ids.includes(note.id) ? [note] : [],
+    };
+
+    const fingerprints = new Map<string, StartupFingerprint>();
+    const store = {
+      getIndexedIdentities: async () => [{ libraryKey: 'user', itemKey: paper.key }],
+      getIndexStatusByIdentity: async () => new Map([
+        [`user|${paper.key}`, { wasTruncated: true }],
+      ]),
+      getStartupFingerprint: async (libraryKey: string, itemKey: string, modelId: string) =>
+        fingerprints.get(`${libraryKey}\u0000${itemKey}\u0000${modelId}`) || null,
+      setStartupFingerprint: async (fingerprint: StartupFingerprint) => {
+        fingerprints.set(
+          `${fingerprint.libraryKey}\u0000${fingerprint.itemKey}\u0000${fingerprint.modelId}`,
+          fingerprint,
+        );
+      },
+      getChunkTextsBySources: async (
+        _libraryKey: string,
+        _itemKey: string,
+        sources: TextSourceType[],
+      ) => sources.includes('note') ? [paper.noteText] : [`Summary ${paper.id}`],
+    };
+    autoIndexManager.setVectorStore(store);
+
+    const originalExtract = textExtractor.extractChunksFromItem;
+    (textExtractor as any).extractChunksFromItem = async () => ({
+      chunks: [
+        { type: 'summary', text: `Summary ${paper.id}` },
+        { type: 'note', text: paper.noteText },
+        { type: 'pdf', text: 'PDF page', page: 1 },
+      ],
+      wasTruncated: true,
+    });
+
+    try {
+      const baseline = await autoIndexManager.reconcileItems([paper], {
+        allowWrites: false,
+      });
+      assert.equal(baseline.baselined, 1);
+
+      paper.noteText = 'Changed Note 1';
+      paper.noteVersion++;
+      paper.noteModified = '2026-08-31 09:00:00';
+      const fullCalls: number[][] = [];
+      const noteCalls: number[][] = [];
+      const result = await autoIndexManager.reconcileItems([paper], {
+        fullIndexCallback: async candidates => {
+          fullCalls.push(candidates.map(item => item.id));
+          return candidates.map(item => item.id);
+        },
+        noteIndexCallback: async candidates => {
+          noteCalls.push(candidates.map(item => item.id));
+          return candidates.map(item => item.id);
+        },
+      });
+
+      assert.equal(result.rebuilt, 1);
+      assert.equal(result.notesUpdated, 0);
+      assert.deepEqual(fullCalls, [[1]]);
+      assert.deepEqual(noteCalls, []);
     } finally {
       (textExtractor as any).extractChunksFromItem = originalExtract;
       autoIndexManager.setVectorStore(null);
@@ -1019,5 +1114,81 @@ describe('scoped index reconciliation', () => {
       autoIndexManager.setVectorStore(null);
       indexFreshnessTracker.clearAll();
     }
+  });
+
+  test('an explicit operation reservation blocks reconciliation before any reads', async () => {
+    installZoteroStub();
+    let reads = 0;
+    autoIndexManager.setVectorStore({
+      getIndexedIdentities: async () => { reads++; return []; },
+    });
+    const token = autoIndexManager.tryBeginExplicitOperation();
+    assert.ok(token);
+    try {
+      const result = await autoIndexManager.reconcileItems([], { allowWrites: false });
+      assert.equal(result.skipped, true);
+      assert.equal(reads, 0);
+    } finally {
+      autoIndexManager.endExplicitOperation(token);
+      autoIndexManager.setVectorStore(null);
+    }
+  });
+
+  test('the explicit lease owner can enter reconciliation, while a stale token cannot', async () => {
+    installZoteroStub();
+    let reads = 0;
+    autoIndexManager.setVectorStore({
+      getIndexedIdentities: async () => { reads++; return []; },
+    });
+    const token = autoIndexManager.tryBeginExplicitOperation();
+    assert.ok(token);
+    try {
+      const owned = await autoIndexManager.reconcileItems([], {
+        allowWrites: false,
+        operationToken: token,
+      });
+      assert.equal(owned.skipped, false);
+      assert.equal(reads, 1);
+    } finally {
+      autoIndexManager.endExplicitOperation(token);
+    }
+
+    const stale = await autoIndexManager.reconcileItems([], {
+      allowWrites: false,
+      operationToken: token,
+    });
+    assert.equal(stale.skipped, true);
+    assert.equal(reads, 1);
+    autoIndexManager.setVectorStore(null);
+  });
+
+  test('an active reconciliation rejects a destructive-operation reservation', async () => {
+    installZoteroStub({
+      'zotseek.indexingMode': 'abstract',
+      'zotseek.embeddingModel': 'multilingual-e5-base',
+      'zotseek.maxChunksPerPaper': 100,
+      'zotseek.excludeBooks': false,
+      'zotseek.excludeTag': '',
+    });
+    let releaseRead!: () => void;
+    let markReadStarted!: () => void;
+    const readStarted = new Promise<void>(resolve => { markReadStarted = resolve; });
+    const readGate = new Promise<void>(resolve => { releaseRead = resolve; });
+    autoIndexManager.setVectorStore({
+      getIndexedIdentities: async () => {
+        markReadStarted();
+        await readGate;
+        return [];
+      },
+    });
+    const reconciliation = autoIndexManager.reconcileItems([], { allowWrites: false });
+    await readStarted;
+    assert.equal(autoIndexManager.tryBeginExplicitOperation(), null);
+    releaseRead();
+    await reconciliation;
+    const token = autoIndexManager.tryBeginExplicitOperation();
+    assert.ok(token);
+    autoIndexManager.endExplicitOperation(token);
+    autoIndexManager.setVectorStore(null);
   });
 });
