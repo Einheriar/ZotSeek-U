@@ -166,3 +166,9 @@ MCP 接口可以搜索文献、读取条目 Metadata、Child Notes 和指定 PDF
 ## 上游项目
 
 [访问 ZotSeek 原项目](https://github.com/introfini/ZotSeek)
+
+## 署名与许可证
+
+ZotSeek-U 是 [ZotSeek](https://github.com/introfini/ZotSeek) 的独立 fork，原项目由 José Fernandes 创建。ZotSeek-U 由 Einheriar Wang 维护，并包含大量修改和新增功能。
+
+本项目按照 [MIT License](LICENSE) 发布。对于原始 ZotSeek 代码的副本或实质性部分，应继续保留原项目署名和许可证声明。

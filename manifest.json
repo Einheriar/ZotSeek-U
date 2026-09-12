@@ -1,9 +1,9 @@
 {
   "manifest_version": 2,
-  "name": "ZotSeek-U | AI-Powered Semantic Search & MCP Server",
+  "name": "ZotSeek-U",
   "version": "0.2.1",
   "description": "AI-powered semantic search for your Zotero library, with a built-in MCP server for AI agents. Find similar papers by meaning, not just keywords.",
-  "author": "José Fernandes",
+  "author": "Einheriar Wang",
   "homepage_url": "https://github.com/Einheriar/ZotSeek-U",
   "icons": {
     "48": "content/icons/favicon@0.5x.png",

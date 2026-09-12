@@ -166,3 +166,9 @@ The current release requires **Zotero 9.0 or newer** and supports Zotero 9 and Z
 ## Upstream
 
 [Visit the original ZotSeek project](https://github.com/introfini/ZotSeek)
+
+## Attribution and License
+
+ZotSeek-U is an independent fork of [ZotSeek](https://github.com/introfini/ZotSeek), originally created by José Fernandes. ZotSeek-U is maintained by Einheriar Wang and includes substantial modifications and additional features.
+
+This project is distributed under the [MIT License](LICENSE). The original ZotSeek attribution and the license notice must be retained in copies or substantial portions of the original code.

@@ -2,7 +2,7 @@
   "name": "zotseek",
   "version": "0.2.1",
   "description": "ZotSeek-U - Semantic Search for Zotero using local AI embeddings",
-  "author": "Jos\u00e9 Fernandes",
+  "author": "Einheriar Wang",
   "license": "MIT",
   "scripts": {
     "build": "node scripts/build.js",
