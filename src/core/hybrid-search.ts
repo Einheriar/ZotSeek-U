@@ -107,7 +107,14 @@ export interface HybridSearchOptions {
 
   // Scope
   collectionId?: number;      // Limit to collection
+  includeSubcollections?: boolean; // Existing UI callers remain direct-only unless explicit
   libraryId?: number;         // Limit to library
+  candidateFilter?: (identity: { libraryKey: string; itemKey: string; itemId?: number }) => boolean;
+  candidateFilterKey?: string; // Stable cache discriminator for the resolved candidate scope
+
+  // Apply live metadata conditions after the bounded candidates are ranked,
+  // but before finalTopK is selected.
+  postFilter?: (result: HybridSearchResult) => boolean;
 
   // Search mode override
   mode?: 'hybrid' | 'semantic' | 'keyword';
@@ -126,13 +133,15 @@ export interface HybridSearchOptions {
 type ResolvedHybridSearchOptions = Required<Omit<
   HybridSearchOptions,
   'collectionId' | 'libraryId' | 'mode' | 'indexingMode' |
-  'semanticTextSources' | 'keywordTextSources'
+  'semanticTextSources' | 'keywordTextSources' | 'candidateFilter' |
+  'candidateFilterKey' | 'postFilter'
 >> & HybridSearchOptions;
 
 const DEFAULT_OPTIONS: Required<Omit<
   HybridSearchOptions,
   'collectionId' | 'libraryId' | 'mode' | 'indexingMode' |
-  'semanticTextSources' | 'keywordTextSources'
+  'semanticTextSources' | 'keywordTextSources' | 'candidateFilter' |
+  'candidateFilterKey' | 'postFilter'
 >> = {
   semanticTopK: 50,
   keywordTopK: 50,
@@ -140,6 +149,7 @@ const DEFAULT_OPTIONS: Required<Omit<
   rrfK: 60,
   minSimilarity: 0.7,
   semanticWeight: 0.5,
+  includeSubcollections: false,
   returnAllChunks: false,
 };
 
@@ -196,6 +206,12 @@ interface IdentityNavigationCandidate {
   doi?: string;
   year?: string;
   creators: Array<{ firstName?: string; lastName?: string; name?: string }>;
+}
+
+interface IdentityNavigationOutcome {
+  /** True when identity classification matched, even if live post-filtering removed every result. */
+  matched: boolean;
+  results: HybridSearchResult[];
 }
 
 function stableRankingKey(result: {
@@ -291,8 +307,10 @@ export class HybridSearchEngine {
       ? resolveProductHybridPolicy(indexingMode, 'hybrid') : 'identity-bounded-paper';
     this.logger.info(`Product hybrid policy: ${policy} (indexingMode=${indexingMode})`);
 
-    const identityResults = await this.identityNavigationSearch(query, opts);
-    if (identityResults.length > 0) return identityResults;
+    const identityOutcome = await this.identityNavigationSearch(query, opts);
+    // A confirmed identity query never falls through to content retrieval just
+    // because live structured filters removed every matched item.
+    if (identityOutcome.matched) return identityOutcome.results;
 
     // The calibrated paper contract is global within the selected indexing
     // mode. Passage mode keeps its existing independent location semantics.
@@ -331,6 +349,19 @@ export class HybridSearchEngine {
     }
   }
 
+  private addCollectionScope(search: any, opts: ResolvedHybridSearchOptions): void {
+    if (!opts.collectionId) return;
+    search.addCondition('collectionID', 'is', opts.collectionId.toString());
+    if (opts.includeSubcollections) search.addCondition('recursive', 'true');
+  }
+
+  private applyPostFilter(
+    results: HybridSearchResult[],
+    opts: ResolvedHybridSearchOptions,
+  ): HybridSearchResult[] {
+    return opts.postFilter ? results.filter(opts.postFilter) : results;
+  }
+
   /** Paper MaxSim plus a fixed, bounded K50 bonus; no source slots. */
   private async fixedHybridSearch(
     query: string,
@@ -354,11 +385,16 @@ export class HybridSearchEngine {
         opts,
       );
 
+    // Structured HTTP filters inspect the complete bounded S/K candidate
+    // union. Ranking is already fixed; filtering only determines which entries
+    // reach the final result window.
+    const selected = this.applyPostFilter(fusedResults, opts).slice(0, opts.finalTopK);
+
     // Populate metadata for top results
     if (populateMetadata) {
       // K-only candidates have a true semantic winner outside S50. Hydrate
       // that winner, never attach its page to a different lexical snippet.
-      const missing = fusedResults.slice(0, opts.finalTopK)
+      const missing = selected
         .filter(result => result.semanticRank === null && result.semanticScore !== null)
         .map(result => semanticPass.scores.get(stableRankingKey(result)))
         .filter((entry): entry is NonNullable<typeof entry> => !!entry)
@@ -366,7 +402,7 @@ export class HybridSearchEngine {
       if (missing.length) {
         await this.semanticSearch.populateChunkText(missing);
         const hydrated = new Map(missing.map(entry => [stableRankingKey(entry), entry as SearchResult]));
-        for (const result of fusedResults.slice(0, opts.finalTopK)) {
+        for (const result of selected) {
           const entry = hydrated.get(stableRankingKey(result));
           if (!entry) continue;
           result.chunkText = entry.chunkText;
@@ -374,11 +410,10 @@ export class HybridSearchEngine {
           result.pdfAttachmentKey = entry.pdfAttachmentKey;
         }
       }
-      await this.populateItemMetadata(fusedResults.slice(0, opts.finalTopK));
+      await this.populateItemMetadata(selected);
     }
 
-    // Return top K
-    return fusedResults.slice(0, opts.finalTopK);
+    return selected;
   }
 
   /** Full product default: rank Notes and PDF candidates under one score contract. */
@@ -425,13 +460,14 @@ export class HybridSearchEngine {
 
     const taggedNotes = notesResults.map(result => ({ ...result, policyChannel: 'notes' as const }));
     const taggedPdf = pdfResults.map(result => ({ ...result, policyChannel: 'pdf' as const }));
-    const allocated = this.mergeFullHybridCandidates(
+    const candidates = this.mergeFullHybridCandidates(
       taggedNotes,
       taggedPdf,
-      opts.finalTopK,
+      taggedNotes.length + taggedPdf.length,
       opts.returnAllChunks,
     );
 
+    const allocated = this.applyPostFilter(candidates, opts).slice(0, opts.finalTopK);
     await this.populateItemMetadata(allocated);
     return allocated;
   }
@@ -443,7 +479,7 @@ export class HybridSearchEngine {
   private async identityNavigationSearch(
     query: string,
     opts: ResolvedHybridSearchOptions,
-  ): Promise<HybridSearchResult[]> {
+  ): Promise<IdentityNavigationOutcome> {
     const totalStartedAt = Date.now();
     const excludeBooks = Zotero.Prefs.get('zotseek.excludeBooks', true) ?? true;
     const buildMetrics = { searchMs: 0, metadataLoadMs: 0, filterMs: 0, itemIds: 0 };
@@ -451,6 +487,8 @@ export class HybridSearchEngine {
     const cached = await metadataIdentityCache.getOrBuild({
       libraryId: opts.libraryId,
       collectionId: opts.collectionId,
+      includeSubcollections: opts.includeSubcollections,
+      candidateFilterKey: opts.candidateFilterKey,
       excludeBooks,
     }, maxBytes => this.buildMetadataIdentitySnapshot(
       opts,
@@ -462,7 +500,8 @@ export class HybridSearchEngine {
 
     if (cached.snapshot) {
       try {
-        const analysis = analyzeMetadataIdentity(query, cached.snapshot.candidates);
+        const scopedCandidates = this.filterIdentityCandidates(cached.snapshot.candidates, opts);
+        const analysis = analyzeMetadataIdentity(query, scopedCandidates);
         if (analysis.hasPotentialMatch) {
           // The legacy path first asks Zotero for query-specific candidates.
           // A whole-scope snapshot can safely prove that no candidate could
@@ -478,7 +517,7 @@ export class HybridSearchEngine {
         return await this.classifyIdentityCandidates(
           query,
           opts,
-          cached.snapshot.candidates,
+          scopedCandidates,
           {
             path: `cache-${cached.state}`,
             totalStartedAt,
@@ -486,7 +525,7 @@ export class HybridSearchEngine {
             searchMs: buildMetrics.searchMs,
             metadataLoadMs: buildMetrics.metadataLoadMs,
             filterMs: buildMetrics.filterMs,
-            itemIds: buildMetrics.itemIds || cached.snapshot.candidates.length,
+            itemIds: buildMetrics.itemIds || scopedCandidates.length,
             estimatedBytes: cached.snapshot.estimatedBytes,
           },
           analysis.match,
@@ -510,9 +549,7 @@ export class HybridSearchEngine {
   ): Promise<MetadataIdentitySnapshotCandidate[]> {
     const search = new Zotero.Search();
     if (opts.libraryId !== undefined) search.libraryID = opts.libraryId;
-    if (opts.collectionId) {
-      search.addCondition('collectionID', 'is', opts.collectionId.toString());
-    }
+    this.addCollectionScope(search, opts);
     search.addCondition('itemType', 'isNot', 'attachment');
     search.addCondition('itemType', 'isNot', 'note');
 
@@ -539,6 +576,11 @@ export class HybridSearchEngine {
       // An incomplete stable identity would make a cached result lossy; abort
       // the whole publication and let the legacy query-specific path decide.
       if (!stable) throw new Error(`stable identity unavailable for item ${item.id}`);
+      if (opts.candidateFilter && !opts.candidateFilter({
+        libraryKey: stable.libraryKey,
+        itemKey: stable.itemKey,
+        itemId: item.id,
+      })) continue;
       const date = String(item.getField('date') || '');
       const candidate: MetadataIdentitySnapshotCandidate = {
         id: String(item.id),
@@ -569,7 +611,7 @@ export class HybridSearchEngine {
     opts: ResolvedHybridSearchOptions,
     totalStartedAt = Date.now(),
     cacheMs = 0,
-  ): Promise<HybridSearchResult[]> {
+  ): Promise<IdentityNavigationOutcome> {
     let searchMs = 0;
     let metadataLoadMs = 0;
     let candidateFilterMs = 0;
@@ -577,9 +619,7 @@ export class HybridSearchEngine {
     try {
       const search = new Zotero.Search();
       if (opts.libraryId !== undefined) search.libraryID = opts.libraryId;
-      if (opts.collectionId) {
-        search.addCondition('collectionID', 'is', opts.collectionId.toString());
-      }
+      this.addCollectionScope(search, opts);
       const doiQuery = /(?:^|doi(?:\.org)?[/:\s])10\.\d{4,9}\//i.test(query);
       search.addCondition(
         doiQuery ? 'quicksearch-everything' : 'quicksearch-titleCreatorYear',
@@ -641,7 +681,7 @@ export class HybridSearchEngine {
         `metadata=${metadataLoadMs}ms filter=${candidateFilterMs}ms ` +
         `cache=${cacheMs}ms total=${Date.now() - totalStartedAt}ms`
       );
-      return [];
+      return { matched: false, results: [] };
     }
   }
 
@@ -660,7 +700,8 @@ export class HybridSearchEngine {
       estimatedBytes?: number;
     },
     precomputedMatch?: ReturnType<typeof classifyMetadataIdentity<T>>,
-  ): Promise<HybridSearchResult[]> {
+  ): Promise<IdentityNavigationOutcome> {
+    candidates = this.filterIdentityCandidates(candidates, opts);
     const classifyStartedAt = Date.now();
     const match = precomputedMatch === undefined
       ? classifyMetadataIdentity(query, candidates)
@@ -675,7 +716,7 @@ export class HybridSearchEngine {
         `filter=${timing.filterMs}ms classify=${classifyMs}ms ` +
         `total=${Date.now() - timing.totalStartedAt}ms`
       );
-      return [];
+      return { matched: false, results: [] };
     }
 
     const resultStartedAt = Date.now();
@@ -692,7 +733,7 @@ export class HybridSearchEngine {
       matchedCandidates.sort((left, right) =>
         candidateIdentity(left).localeCompare(candidateIdentity(right)));
     }
-    const results = matchedCandidates.slice(0, opts.finalTopK).map((candidate, index) => ({
+    const results = matchedCandidates.map((candidate, index) => ({
       libraryKey: candidate.libraryKey,
       itemId: candidate.itemId,
       itemKey: candidate.itemKey,
@@ -709,16 +750,30 @@ export class HybridSearchEngine {
       policyChannel: 'identity' as const,
       textSource: 'summary' as TextSourceType,
     }));
-    await this.populateItemMetadata(results);
+    const selected = this.applyPostFilter(results, opts).slice(0, opts.finalTopK);
+    await this.populateItemMetadata(selected);
     this.logger.info(
-      `Identity navigation: path=${timing.path} match=${match.kind} results=${results.length} ` +
+      `Identity navigation: path=${timing.path} match=${match.kind} results=${selected.length} ` +
       `itemIds=${timing.itemIds} candidates=${candidates.length}${memory} ` +
       `cache=${timing.cacheMs}ms search=${timing.searchMs}ms metadata=${timing.metadataLoadMs}ms ` +
       `filter=${timing.filterMs}ms classify=${classifyMs}ms ` +
       `finalize=${Date.now() - resultStartedAt}ms ` +
       `total=${Date.now() - timing.totalStartedAt}ms`
     );
-    return results;
+    return { matched: true, results: selected };
+  }
+
+  private filterIdentityCandidates<T extends IdentityNavigationCandidate>(
+    candidates: T[],
+    opts: ResolvedHybridSearchOptions,
+  ): T[] {
+    if (!opts.candidateFilter) return candidates;
+    return candidates.filter(candidate => !!candidate.libraryKey && !!candidate.itemKey &&
+      opts.candidateFilter!({
+        libraryKey: candidate.libraryKey,
+        itemKey: candidate.itemKey,
+        itemId: candidate.itemId,
+      }));
   }
 
   /**
@@ -731,11 +786,12 @@ export class HybridSearchEngine {
   ): Promise<HybridSearchResult[]> {
     const results = await this.semanticSearchQuery(query, opts);
     const hybridResults = this.semanticHitsToHybrid(results);
+    const selected = this.applyPostFilter(hybridResults, opts).slice(0, opts.finalTopK);
 
     if (populateMetadata) {
-      await this.populateItemMetadata(hybridResults.slice(0, opts.finalTopK));
+      await this.populateItemMetadata(selected);
     }
-    return hybridResults.slice(0, opts.finalTopK);
+    return selected;
   }
 
   private semanticHitsToHybrid(results: SemanticSearchHit[]): HybridSearchResult[] {
@@ -800,8 +856,9 @@ export class HybridSearchEngine {
       pdfAttachmentKey: r.pdfAttachmentKey,
     }));
 
-    await this.populateItemMetadata(hybridResults.slice(0, opts.finalTopK));
-    return hybridResults.slice(0, opts.finalTopK);
+    const selected = this.applyPostFilter(hybridResults, opts).slice(0, opts.finalTopK);
+    await this.populateItemMetadata(selected);
+    return selected;
   }
 
   /**
@@ -855,6 +912,7 @@ export class HybridSearchEngine {
         libraryId: opts.libraryId,
         textSources: opts.semanticTextSources,
         returnAllChunks: opts.returnAllChunks,
+        candidateFilter: this.scopedCandidateEligibility(opts),
       });
 
       return this.filterAndMapSemanticResults(results);
@@ -879,6 +937,7 @@ export class HybridSearchEngine {
         minSimilarity: opts.minSimilarity,
         libraryId: opts.libraryId,
         returnAllChunks: opts.returnAllChunks,
+        candidateFilter: this.scopedCandidateEligibility(opts),
       });
       const mappedEntries = await Promise.all(partitions.map(async partition => [
         partition.key,
@@ -947,13 +1006,24 @@ export class HybridSearchEngine {
         ? Zotero.Items.get(identity.itemId) : undefined;
       const liveIdentity = identityFromItem(item);
       const missing = !item || item.deleted || !liveIdentity || stableRankingKey(liveIdentity) !== key;
-      const eligible = missing ? !opts.collectionId :
+      const customEligible = !opts.candidateFilter || opts.candidateFilter(identity);
+      const collectionEligible = !opts.collectionId ? true : opts.candidateFilter
+        ? customEligible
+        : !!Zotero.Collections.get(opts.collectionId)?.hasItem(item?.id);
+      const eligible = missing ? !opts.collectionId && !opts.candidateFilter :
         !!item.isRegularItem?.() && !(excludeBooks && item.itemType === 'book') &&
         (opts.libraryId === undefined || item.libraryID === opts.libraryId) &&
-        (!opts.collectionId || !!Zotero.Collections.get(opts.collectionId)?.hasItem(item.id));
+        collectionEligible && customEligible;
       answers.set(key, eligible);
       return eligible;
     };
+  }
+
+  /** Preserve unscoped legacy mode behavior while enforcing explicit scopes before top-K. */
+  private scopedCandidateEligibility(opts: ResolvedHybridSearchOptions) {
+    return opts.collectionId || opts.candidateFilter
+      ? this.candidateEligibility(opts)
+      : undefined;
   }
 
   private fuseKeywordChannels(
@@ -986,7 +1056,9 @@ export class HybridSearchEngine {
     fuseChannels = false,
   ): Promise<KeywordSearchHit[]> {
     try {
-      const eligibility = fuseChannels ? this.candidateEligibility(opts) : undefined;
+      const eligibility = fuseChannels || opts.collectionId || opts.candidateFilter
+        ? this.candidateEligibility(opts)
+        : undefined;
       // Search ZotSeek's own stored chunks as well as Zotero metadata. This is
       // the reliable path for exact text inside child notes, because Zotero's
       // quicksearch does not consistently promote a matching note to its parent.
@@ -1005,9 +1077,7 @@ export class HybridSearchEngine {
       if (opts.libraryId !== undefined) search.libraryID = opts.libraryId;
 
       // Add collection constraint if specified
-      if (opts.collectionId) {
-        search.addCondition('collectionID', 'is', opts.collectionId.toString());
-      }
+      this.addCollectionScope(search, opts);
 
       // Quick search searches title, creators, year, tags, etc.
       // This is the same search used in Zotero's search bar
@@ -1192,10 +1262,11 @@ export class HybridSearchEngine {
           if (!item?.isRegularItem?.()) continue;
           if (excludeBooks && item.itemType === 'book') continue;
 
-          if (opts.collectionId) {
-            const collection = Zotero.Collections.get(opts.collectionId);
-            if (collection?.hasItem && !collection.hasItem(match.itemId)) continue;
-          }
+          if (eligibility && !eligibility({
+            libraryKey: match.libraryKey,
+            itemKey: match.itemKey,
+            itemId: match.itemId,
+          })) continue;
 
           const hit: KeywordSearchHit = {
             itemId: match.itemId,

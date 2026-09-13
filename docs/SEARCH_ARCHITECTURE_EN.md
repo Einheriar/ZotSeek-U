@@ -49,6 +49,10 @@ The current architecture has two layers. The indexing mode determines which cont
 
 UI, MCP and REST reuse the same search engine and paper-level ranking. Their entry parameter boundaries are independent: the UI keeps its existing similarity preference; MCP `search` uses a fixed semantic candidate threshold of 0 and does not expose `min_similarity` (an older client-supplied field is ignored); REST keeps its existing `minSimilarity` parameter and preference-based default. MCP/REST results expose the final `score`, raw `semanticScore` and raw unnormalized `bm25Score`; a value is `null` when that channel was not computed or produced no match.
 
+MCP/REST can also scope search with stable `library_key + collection_key` values. The service layer first resolves live Zotero collection membership into a stable identity set, then sends that eligibility into the semantic scan, BM25, Quick Search and identity navigation, so high-scoring out-of-collection items cannot consume TopK. MCP includes all descendant collections by default and can request direct members only; existing UI callers retain direct-collection semantics unless they explicitly request recursion. `get_library_map` and REST `/zotseek/library-map` return only the complete live collection tree, not item lists, tags or index-coverage claims. Identity-snapshot scope keys distinguish library, collection, recursion and candidate-set identity, and collection/item Notifier changes invalidate the snapshot.
+
+Structured filtering has a fixed order: **live library/collection scope → bounded candidates and ranking for the selected mode → live year/journal/author/tag filtering → `max_results` truncation**. Filtering preserves relative order and does not expand candidate depth: paper Hybrid inspects S50∪K50, Semantic S50, Keyword K50, and identity navigation its complete identity match set; passages filter their existing compatibility candidates. A lower-ranked matching candidate can therefore fill a slot vacated by an earlier mismatch, but no paper outside the existing candidate pool is searched as a replacement. `tag` matches one complete NFC-normalized tag case-sensitively; `exact` changes substring versus whole-value matching for journal/author only and does not affect tag semantics.
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                  SEARCH ARCHITECTURE OVERVIEW (ZotSeek-U)                   │
@@ -72,7 +76,7 @@ UI, MCP and REST reuse the same search engine and paper-level ranking. Their ent
 │                  └───────────────┬─────────────────┘                        │
 │                                  ▼                                          │
 │             S50 ∪ K50 → semantic score + bounded lexical bonus             │
-│                         → stable paper ranking                             │
+│                         → stable paper ranking                              │
 │                                                                             │
 │Index modes: abstract = metadata; notes = metadata + Child Notes;            │
 │full = metadata + Child Notes + PDF.                                         │

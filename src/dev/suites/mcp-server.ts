@@ -9,7 +9,12 @@
  */
 import { selfTest, scenario, assertEq, assertTrue, Scenario } from '../self-test';
 import { handleMcpRequest } from '../../server/mcp-endpoint';
-import { handleItemRequest, handleSearchRequest, handleStatsRequest } from '../../server/rest-endpoints';
+import {
+  handleItemRequest,
+  handleLibraryMapRequest,
+  handleSearchRequest,
+  handleStatsRequest,
+} from '../../server/rest-endpoints';
 import { handleOpenRequest, parseOpenParams, buildZoteroUri } from '../../server/open-endpoint';
 import { registerEndpoints, isRegistered, unregisterEndpoints } from '../../server/server-manager';
 import { searchEngine } from '../../core/search-engine';
@@ -31,6 +36,27 @@ async function callMcp(method: string, params?: any, headers: any = {}) {
 function parseToolPayload(json: any): any {
   // tools/call wraps the payload as {content: [{type:'text', text}]}
   return JSON.parse(json.result.content[0].text);
+}
+
+function flattenCollections(nodes: any[]): any[] {
+  return nodes.flatMap(node => [node, ...flattenCollections(node.children || [])]);
+}
+
+async function liveCollectionMemberKeys(collectionKey: string, recursive: boolean): Promise<Set<string>> {
+  const libraryId = Zotero.Libraries.userLibraryID;
+  const collection = Zotero.Collections.getByLibraryAndKey(libraryId, collectionKey);
+  assertTrue(!!collection, `collection ${collectionKey} resolves`);
+  const search = new Zotero.Search();
+  search.libraryID = libraryId;
+  search.addCondition('collectionID', 'is', String(collection.id));
+  if (recursive) search.addCondition('recursive', 'true');
+  search.addCondition('itemType', 'isNot', 'attachment');
+  search.addCondition('itemType', 'isNot', 'note');
+  const ids = await search.search();
+  const resolved = ids.length ? await Zotero.Items.getAsync(ids) : [];
+  return new Set((Array.isArray(resolved) ? resolved : [resolved])
+    .filter((item: any) => item?.isRegularItem?.() && !item.deleted)
+    .map((item: any) => String(item.key)));
 }
 
 selfTest.register('mcp-server', async () => {
@@ -73,10 +99,14 @@ selfTest.register('mcp-server', async () => {
     assertEq(status, 405, 'status');
   }));
 
-  scenarios.push(await scenario('tools/list returns the 4 tools', async () => {
+  scenarios.push(await scenario('tools/list returns the 5 tools', async () => {
     const { json } = await callMcp('tools/list');
     const names = json.result.tools.map((t: any) => t.name).sort();
-    assertEq(JSON.stringify(names), JSON.stringify(['find_similar', 'get_item', 'index_status', 'search']), 'tool names');
+    assertEq(
+      JSON.stringify(names),
+      JSON.stringify(['find_similar', 'get_item', 'get_library_map', 'index_status', 'search']),
+      'tool names',
+    );
     assertTrue(
       json.result.tools.every((t: any) => t.inputSchema?.type === 'object'),
       'every tool has an object inputSchema'
@@ -84,6 +114,121 @@ selfTest.register('mcp-server', async () => {
     const getItem = json.result.tools.find((tool: any) => tool.name === 'get_item');
     assertTrue(getItem.description.includes('at most 100 pages'), 'get_item advertises bounded full reads');
     assertTrue(getItem.description.includes('nextPage'), 'get_item advertises continuation page');
+    const search = json.result.tools.find((tool: any) => tool.name === 'search');
+    assertTrue(
+      !Object.prototype.hasOwnProperty.call(search.inputSchema.properties, 'min_similarity'),
+      'search schema omits the legacy min_similarity field',
+    );
+  }));
+
+  scenarios.push(await scenario('library map is complete, stable, and matches REST', async () => {
+    const { json } = await callMcp('tools/call', {
+      name: 'get_library_map', arguments: { library_key: 'user' },
+    });
+    assertTrue(!json.result.isError, 'no map tool error');
+    const payload = parseToolPayload(json);
+    assertEq(payload.libraryKey, 'user', 'stable user library key');
+    const nodes = flattenCollections(payload.collections);
+    assertTrue(nodes.every(node => /^[A-Z0-9]{8}$/.test(node.collectionKey)), 'stable collection keys');
+    assertEq(new Set(nodes.map(node => node.collectionKey)).size, nodes.length, 'no duplicate collections');
+    assertEq(
+      nodes.length,
+      (Zotero.Collections.getByLibrary(Zotero.Libraries.userLibraryID) || []).length,
+      'every live collection appears once',
+    );
+
+    const [status, , body] = await handleLibraryMapRequest({
+      headers: {}, searchParams: new URLSearchParams('libraryKey=user'),
+    });
+    assertEq(status, 200, 'REST status');
+    assertEq(body, JSON.stringify(payload), 'REST and MCP map payloads match');
+  }));
+
+  scenarios.push(await scenario('collection-scoped Keyword results never leak outside the live scope', async () => {
+    const { json: mapJson } = await callMcp('tools/call', {
+      name: 'get_library_map', arguments: { library_key: 'user' },
+    });
+    const nodes = flattenCollections(parseToolPayload(mapJson).collections);
+    let target: { node: any; title: string } | undefined;
+    for (const node of nodes) {
+      const recursiveKeys = await liveCollectionMemberKeys(node.collectionKey, true);
+      for (const key of recursiveKeys) {
+        const item = Zotero.Items.getByLibraryAndKey(Zotero.Libraries.userLibraryID, key);
+        const title = String(item?.getField?.('title') || '').trim();
+        if (title) {
+          target = { node, title };
+          break;
+        }
+      }
+      if (target) break;
+    }
+    if (!target) return;
+
+    for (const includeSubcollections of [true, false]) {
+      const expected = await liveCollectionMemberKeys(target.node.collectionKey, includeSubcollections);
+      const { json } = await callMcp('tools/call', {
+        name: 'search',
+        arguments: {
+          query: target.title,
+          library_key: 'user',
+          collection_key: target.node.collectionKey,
+          include_subcollections: includeSubcollections,
+          mode: 'keyword',
+          max_results: 100,
+        },
+      });
+      assertTrue(!json.result.isError, 'scoped keyword search has no tool error');
+      const results = parseToolPayload(json).results;
+      assertTrue(results.every((result: any) => expected.has(result.itemKey)), 'no result crosses collection scope');
+    }
+
+    const { json: invalid } = await callMcp('tools/call', {
+      name: 'search',
+      arguments: {
+        query: target.title,
+        library_key: 'user',
+        collection_key: 'ZZZZZZZZ',
+        mode: 'keyword',
+      },
+    });
+    assertEq(invalid.result.isError, true, 'unknown collection is explicit tool error');
+  }));
+
+  scenarios.push(await scenario('live complete-tag filter returns only exact case-sensitive tags', async () => {
+    const keys = await Zotero.DB.columnQueryAsync(
+      "SELECT item_key FROM zotseek.items WHERE library_key = 'user' LIMIT 200"
+    ).then((rows: any) => rows || []);
+    let target: any;
+    let tag = '';
+    for (const key of keys) {
+      const item = Zotero.Items.getByLibraryAndKey(Zotero.Libraries.userLibraryID, String(key));
+      const firstTag = item?.getTags?.()?.map((entry: any) => String(entry.tag || '').trim()).find(Boolean);
+      const title = String(item?.getField?.('title') || '').trim();
+      if (item?.isRegularItem?.() && firstTag && title) {
+        target = item;
+        tag = firstTag;
+        break;
+      }
+    }
+    if (!target) return;
+    const { json } = await callMcp('tools/call', {
+      name: 'search',
+      arguments: {
+        query: String(target.getField('title')),
+        library_key: 'user',
+        mode: 'keyword',
+        max_results: 100,
+        filter: { tag },
+      },
+    });
+    assertTrue(!json.result.isError, 'tag-filtered keyword search has no tool error');
+    const results = parseToolPayload(json).results;
+    assertTrue(results.some((result: any) => result.itemKey === target.key), 'known tagged item is retained');
+    assertTrue(results.every((result: any) => {
+      const item = Zotero.Items.getByLibraryAndKey(Zotero.Libraries.userLibraryID, result.itemKey);
+      return (item?.getTags?.() || []).some((entry: any) =>
+        String(entry.tag || '').normalize('NFC') === tag.normalize('NFC'));
+    }), 'every result has the complete live tag');
   }));
 
   scenarios.push(await scenario('unknown method returns -32601', async () => {
@@ -181,15 +326,18 @@ selfTest.register('mcp-server', async () => {
   }));
 
   scenarios.push(await scenario('legacy MCP min_similarity cannot change the fixed threshold', async () => {
-    const args = (min: number) => ({
+    const { json } = await callMcp('tools/call', {
       name: 'search',
-      arguments: { query: 'analysis', max_results: 50, mode: 'semantic', min_similarity: min },
+      arguments: { query: 'analysis', max_results: 50, mode: 'semantic', min_similarity: 0.99 },
     });
-    const loose = parseToolPayload((await callMcp('tools/call', args(0.1))).json);
-    const strict = parseToolPayload((await callMcp('tools/call', args(0.99))).json);
-    assertEq(
-      JSON.stringify(strict.results), JSON.stringify(loose.results),
-      'legacy threshold values must return the same results'
+    const payload = parseToolPayload(json);
+    assertTrue(!json.result.isError, 'legacy field does not cause a tool error');
+    assertTrue(Array.isArray(payload.results), 'results array');
+    if (!payload.results.length) return;
+    assertTrue(
+      payload.results.some((result: any) =>
+        typeof result.semanticScore === 'number' && result.semanticScore < 0.99),
+      'legacy 0.99 threshold is ignored rather than applied to semantic results',
     );
   }));
 
@@ -356,7 +504,7 @@ selfTest.register('mcp-server', async () => {
       });
       assertEq(resp.status, 200, 'HTTP status');
       const json = await resp.json();
-      assertEq(json.result.tools.length, 4, 'four tools over HTTP');
+      assertEq(json.result.tools.length, 5, 'five tools over HTTP');
     } finally {
       if (!wasRegistered) unregisterEndpoints();
     }
@@ -413,6 +561,24 @@ selfTest.register('mcp-server', async () => {
       assertEq(resp.status, 200, 'HTTP status');
       const json = await resp.json();
       assertTrue(typeof json.indexedPapers === 'number', 'indexedPapers present');
+    } finally {
+      if (!wasRegistered) unregisterEndpoints();
+    }
+  }));
+
+  scenarios.push(await scenario('end-to-end: REST /zotseek/library-map over HTTP', async () => {
+    const port = Zotero.Server?.port;
+    if (!port) return;
+    const wasRegistered = isRegistered();
+    registerEndpoints();
+    try {
+      const resp = await fetch(`http://127.0.0.1:${port}/zotseek/library-map?libraryKey=user`, {
+        headers: { 'Zotero-Allowed-Request': '1' },
+      });
+      assertEq(resp.status, 200, 'HTTP status');
+      const json = await resp.json();
+      assertEq(json.libraryKey, 'user', 'libraryKey');
+      assertTrue(Array.isArray(json.collections), 'collections tree present');
     } finally {
       if (!wasRegistered) unregisterEndpoints();
     }

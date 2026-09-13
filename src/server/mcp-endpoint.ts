@@ -16,6 +16,7 @@ import {
   runFindSimilarTool,
   runIndexStatusTool,
   runGetItemTool,
+  runGetLibraryMapTool,
   isAllowedOrigin,
 } from './http-tools';
 
@@ -102,12 +103,23 @@ const TOOL_DEFINITIONS = [
           type: 'string',
           description:
             "'user' for the personal library, or 'group:<groupID>' to limit the search to one group library. " +
-            'Omit to search all indexed libraries, not just the selected collection. Indexing mode follows ZotSeek settings.',
+            'Omit to search all indexed libraries. Required when collection_key is supplied. Indexing mode follows ZotSeek settings.',
+        },
+        collection_key: {
+          type: 'string',
+          description:
+            '8-character stable key of one collection in library_key. The scope is applied before semantic/keyword candidate top-K.',
+        },
+        include_subcollections: {
+          type: 'boolean',
+          default: true,
+          description:
+            'With collection_key, include all descendant collections by default. Set false for direct members only.',
         },
         filter: {
           type: 'object',
           description:
-            'Post-filter the already-ranked result window. This is not an exhaustive library field query, so the returned set may contain fewer than max_results.',
+            'Filter the existing bounded ranked candidates before max_results is applied. This is not an exhaustive library field query; matching papers outside the mode-specific candidate pool are not added.',
           properties: {
             year_from: { type: 'integer' },
             year_to: { type: 'integer' },
@@ -119,6 +131,10 @@ const TOOL_DEFINITIONS = [
               type: 'string',
               description: 'Creator name; substring match by default',
             },
+            tag: {
+              type: 'string',
+              description: 'One complete live Zotero tag name; Unicode-normalized and case-sensitive',
+            },
             exact: {
               type: 'boolean',
               default: false,
@@ -129,6 +145,23 @@ const TOOL_DEFINITIONS = [
         },
       },
       required: ['query'],
+    },
+  },
+  {
+    name: 'get_library_map',
+    description:
+      'Read the complete live collection tree for one Zotero library. Returns every ordinary collection, including empty and nested collections, with stable collectionKey values, names, and children. ' +
+      'Use a returned collectionKey together with the same library_key in search. Read-only; does not return item lists, tags, saved searches, or index coverage.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        library_key: {
+          type: 'string',
+          default: 'user',
+          description: "'user' for the personal library, or 'group:<groupID>'",
+        },
+      },
+      additionalProperties: false,
     },
   },
   {
@@ -255,6 +288,8 @@ async function callTool(id: any, params: any): Promise<EndpointResponse> {
   try {
     if (name === 'search') {
       payload = await runMcpSearchTool(args);
+    } else if (name === 'get_library_map') {
+      payload = await runGetLibraryMapTool(args);
     } else if (name === 'get_item') {
       payload = await runGetItemTool(args);
     } else if (name === 'find_similar') {

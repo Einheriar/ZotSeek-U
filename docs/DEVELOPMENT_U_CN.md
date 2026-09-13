@@ -243,10 +243,13 @@ MCP 工具说明补充通用证据判断提醒：判断结果时保留用户的�
 
 2026-09-11 Plan 73：MCP/REST 的 `search`、`find_similar` 与 `get_item` 可从已加载 Zotero Style 的现成期刊缓存增加可选 `journalMetrics`，其中 `impactFactor` 对应 `sciif`，`sciQuartile` 仅接受 JCR SCI `Q1`–`Q4`。Style 6.x 适配按期刊名只读数据目录中的 `zoterostyle.json` / `rank`，并为旧版保留内存缓存 fallback；扩展隔离导致运行时全局不可见时，使用 Zotero Add-on Manager 只读确认 Style 是否 active，一次请求中的多条结果共享短时读取快照。适配器不读取密钥、不调用 EasyScholar、不调用可能安排联网更新的 Style 列数据提供器；插件、缓存或有效值缺失时省略字段，第三方结构或文件读取异常不影响原调用。指标不进入 metadata、索引、筛选或排序。
 
+2026-09-13 Plan 74：MCP/REST `search` 可用稳定 `library_key + collection_key` 在候选 TopK 前限制实时 collection 成员，MCP 默认包含全部后代、可选择仅直接成员；新增只读 `get_library_map` 与 `GET /zotseek/library-map` 返回完整普通 collection 树。结构化 year/journal/author 过滤移到有界候选排序之后、最终 `max_results` 之前，并增加完整、NFC 规范化且区分大小写的实时 `tag` 条件。它仍不是全库字段查询：Hybrid/Semantic/Keyword 分别只检查既有 S50∪K50、S50、K50，passages 保持兼容候选策略；过滤不重排。collection 解析或树完整性失败会明确报错，不会退化成全库或返回误导性部分树。未修改数据库 schema、索引策略、Embedding、chunk 或 XPI/manifest。
+
 在上游 `search` / `find_similar` / `index_status` 基础上新增（完整用法见 [MCP.md](MCP.md)）：
 
+- **`get_library_map` 工具**：按稳定 `library_key` 返回实时完整普通 collection 树，每个节点只有 `collectionKey`、`name` 和 `children`；包括空 collection，不返回 saved search、条目列表、标签或索引覆盖率。REST 对应 `GET /zotseek/library-map`。
 - **`get_item` 工具**：按 `library_key + item_key` 读取规范化书目、tags、collections、relatedItems 与附件清单；`include_notes: true` 返回全部 Child Notes 的完整未过滤文本（不应用索引侧的"基本信息"/References 排除规则）及实时 `sections` / `sectionPaths`；`include_pdf: "pages" | "full"` 支持指定附件，显式范围每次 ≤20 连续页，`full` 以 ≤20 页批次返回最多 100 页或约 300,000 字符的开头前缀。超限时返回 `partial`、`limitReason` 与 `nextPage`，MCP/REST 合同一致；PDF 读取优先 Zotero 全文缓存、缺页时批量 `PDFWorker` 兜底，不虚假承诺底层队列可取消；不暴露本机文件路径。REST 对应 `GET /zotseek/item`。
-- **`search` 结构化后过滤**：可选 `filter`（`year_from` / `year_to` / `journal` / `author` + `exact` 总开关）作用于已排入 `max_results` 的结果窗口，不改变排序、不做隐藏超量拉取；REST 暴露 `yearFrom` / `yearTo` / `journal` / `author` / `exact`。
+- **`search` 范围与结构化过滤**：可选 `collection_key` 在 live collection 身份集合内执行候选检索；可选 `filter`（`year_from` / `year_to` / `journal` / `author` / `tag` + `exact`）作用于既有有界候选、先于最终 `max_results`，不改变排序也不扩张候选深度。REST 使用对应 camelCase 参数。
 - **精确 PDF 回链**：`matchedChunk.pdfAttachmentKey` 端到端透传，深链接打开产生命中的确切附件，而非启发式选择。
 - MCP 授权文案更新为"允许本地 AI 智能体只读搜索并读取条目、Notes 和 PDF"，同步全部 10 个语言包。
 
@@ -315,7 +318,7 @@ MCP 工具说明补充通用证据判断提醒：判断结果时保留用户的�
 - 文献级 Hybrid 的融合合同（候选并集、资格前置、K50 名次、有界加分、稳定身份、缺失向量、片段定位与缓存并发失效）已有 Node 单元测试覆盖（`hybrid-bounded-runtime.test.ts`、`hybrid-search-policy.test.ts`、`search-policy.test.ts`、`lexical-search.test.ts`、`mcp-search-contract.test.ts`）；但 mock 嵌入与条目无法判断检索质量，检索质量仍归 eval 框架管（该框架尚不在仓库内，是已知缺口）。
 - `npm run typecheck`：基于 `tsconfig.test.json` 同时检查 `src/` 与 `test/`，配合 `scripts/typecheck-baseline.json` 已知基线防回退。
 - `npm run check:versions` 校验 `package.json` / `manifest.json` / `update.json` 版本一致性；CI 仅运行该检查。
-- `src/dev/suites/` 是需要真实 Zotero 的 self-test harness（MCP 27 场景、模型加载、数据库完整性等），不能用 Node mock 替代。
+- `src/dev/suites/` 是需要真实 Zotero 的 self-test harness（MCP 34 场景、模型加载、数据库完整性等），不能用 Node mock 替代。
 
 ### 14.2 真实 Zotero 开发代理
 

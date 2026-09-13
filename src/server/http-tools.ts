@@ -123,6 +123,10 @@ export interface SearchToolArgs {
   min_similarity?: number;
   /** 'user' for the personal library, or 'group:<groupID>' to limit the search to one group library. Omit to search all indexed libraries. */
   library_key?: string;
+  /** Stable collection key. Requires an explicit library_key. */
+  collection_key?: string;
+  /** Include every descendant collection. Valid only with collection_key; defaults to true. */
+  include_subcollections?: boolean;
   filter?: SearchResultFilter;
 }
 
@@ -131,7 +135,24 @@ export interface SearchResultFilter {
   year_to?: number;
   journal?: string;
   author?: string;
+  tag?: string;
   exact?: boolean;
+}
+
+export interface LibraryCollectionNode {
+  collectionKey: string;
+  name: string;
+  children: LibraryCollectionNode[];
+}
+
+export interface LibraryMapToolArgs {
+  library_key?: string;
+}
+
+export interface LibraryMapResult {
+  libraryKey: string;
+  name: string;
+  collections: LibraryCollectionNode[];
 }
 
 export interface FindSimilarToolArgs {
@@ -456,6 +477,231 @@ function resolveLibraryId(libraryKey: string | undefined, operation = 'search'):
   throw new Error(`${operation}: library_key must be "user" or "group:<groupID>", got "${libraryKey}"`);
 }
 
+function canonicalLibraryKey(libraryKey: string): string {
+  const key = libraryKey.trim();
+  return key === 'user' ? 'user' : `group:${Number(key.slice('group:'.length).trim())}`;
+}
+
+function normalizeCollectionKey(value: unknown, operation: string): string {
+  if (typeof value !== 'string' || !/^[A-Z0-9]{8}$/i.test(value.trim())) {
+    throw new Error(`${operation}: collection_key must be an 8-character Zotero collection key`);
+  }
+  return value.trim().toUpperCase();
+}
+
+function collectionParentId(collection: any, byKey: Map<string, any>): number | undefined {
+  const rawId = collection?.parentID ?? collection?.parentCollectionID;
+  if (rawId !== undefined && rawId !== null && rawId !== false && rawId !== '') {
+    const value = Number(rawId);
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`get_library_map: invalid parent for collection ${String(collection?.key || '')}`);
+    }
+    return value === 0 ? undefined : value;
+  }
+  const parentKey = cleanField(collection?.parentKey)?.toUpperCase();
+  if (!parentKey) return undefined;
+  const parent = byKey.get(parentKey);
+  if (!parent) {
+    throw new Error(`get_library_map: missing parent ${parentKey} for collection ${String(collection?.key || '')}`);
+  }
+  return Number(parent.id);
+}
+
+/** Build a complete deterministic tree and fail rather than silently omitting corrupt nodes. */
+export function buildLibraryCollectionTree(
+  collections: any[],
+  expectedLibraryId: number,
+): LibraryCollectionNode[] {
+  const byId = new Map<number, any>();
+  const byKey = new Map<string, any>();
+  for (const collection of collections || []) {
+    const id = Number(collection?.id);
+    const key = normalizeCollectionKey(collection?.key, 'get_library_map');
+    const name = cleanField(collection?.name);
+    if (!Number.isSafeInteger(id) || id <= 0 || !name) {
+      throw new Error(`get_library_map: invalid collection record ${key}`);
+    }
+    if (Number(collection.libraryID) !== expectedLibraryId) {
+      throw new Error(`get_library_map: collection ${key} belongs to another library`);
+    }
+    if (byId.has(id) || byKey.has(key)) {
+      throw new Error(`get_library_map: duplicate collection identity ${key}`);
+    }
+    byId.set(id, collection);
+    byKey.set(key, collection);
+  }
+
+  const parentById = new Map<number, number | undefined>();
+  const childrenById = new Map<number, number[]>();
+  for (const [id, collection] of byId) {
+    const parentId = collectionParentId(collection, byKey);
+    if (parentId === id) throw new Error(`get_library_map: collection ${collection.key} is its own parent`);
+    if (parentId !== undefined && !byId.has(parentId)) {
+      throw new Error(`get_library_map: missing parent ${parentId} for collection ${collection.key}`);
+    }
+    parentById.set(id, parentId);
+    if (parentId !== undefined) {
+      const children = childrenById.get(parentId) || [];
+      children.push(id);
+      childrenById.set(parentId, children);
+    }
+  }
+
+  const states = new Map<number, 1 | 2>();
+  const visit = (id: number): void => {
+    if (states.get(id) === 1) {
+      throw new Error(`get_library_map: collection hierarchy contains a cycle at ${byId.get(id)?.key}`);
+    }
+    if (states.get(id) === 2) return;
+    states.set(id, 1);
+    const parentId = parentById.get(id);
+    if (parentId !== undefined) visit(parentId);
+    states.set(id, 2);
+  };
+  for (const id of byId.keys()) visit(id);
+
+  const compareIds = (left: number, right: number) => {
+    const a = byId.get(left);
+    const b = byId.get(right);
+    return String(a.name).localeCompare(String(b.name)) || String(a.key).localeCompare(String(b.key));
+  };
+  const toNode = (id: number): LibraryCollectionNode => {
+    const collection = byId.get(id);
+    return {
+      collectionKey: String(collection.key).toUpperCase(),
+      name: String(collection.name),
+      children: (childrenById.get(id) || []).sort(compareIds).map(toNode),
+    };
+  };
+  return [...byId.keys()]
+    .filter(id => parentById.get(id) === undefined)
+    .sort(compareIds)
+    .map(toNode);
+}
+
+interface ResolvedCollectionScope {
+  libraryId: number;
+  collectionId: number;
+  includeSubcollections: boolean;
+  candidateFilterKey: string;
+  candidateFilter: (identity: { libraryKey: string; itemKey: string }) => boolean;
+  empty: boolean;
+}
+
+async function resolveCollectionScope(
+  args: SearchToolArgs,
+  libraryId: number | undefined,
+): Promise<ResolvedCollectionScope | undefined> {
+  const suppliedCollection = args.collection_key !== undefined;
+  const suppliedRecursive = args.include_subcollections !== undefined;
+  if (!suppliedCollection) {
+    if (suppliedRecursive) {
+      throw new Error('search: include_subcollections requires collection_key');
+    }
+    return undefined;
+  }
+  if (typeof args.include_subcollections !== 'undefined' && typeof args.include_subcollections !== 'boolean') {
+    throw new Error('search: include_subcollections must be a boolean');
+  }
+  if (typeof args.library_key !== 'string' || !args.library_key.trim() || libraryId === undefined) {
+    throw new Error('search: collection_key requires an explicit library_key');
+  }
+  const collectionKey = normalizeCollectionKey(args.collection_key, 'search');
+  const includeSubcollections = args.include_subcollections !== false;
+  let collection: any;
+  try {
+    collection = Zotero.Collections.getByLibraryAndKey(libraryId, collectionKey);
+  } catch (error: any) {
+    throw new Error(`search: failed to resolve collection ${collectionKey}: ${error?.message || error}`);
+  }
+  if (!collection || Number(collection.libraryID) !== libraryId) {
+    throw new Error(`search: collection ${collectionKey} was not found in library ${args.library_key!.trim()}`);
+  }
+
+  const search = new Zotero.Search();
+  search.libraryID = libraryId;
+  search.addCondition('collectionID', 'is', String(collection.id));
+  if (includeSubcollections) search.addCondition('recursive', 'true');
+  search.addCondition('itemType', 'isNot', 'attachment');
+  search.addCondition('itemType', 'isNot', 'note');
+  let itemIds: number[];
+  try {
+    const rawIds = await search.search();
+    if (!Array.isArray(rawIds)) {
+      throw new Error('Zotero Search returned a non-array member list');
+    }
+    itemIds = [...new Set(rawIds.map(Number).filter(Number.isSafeInteger))];
+  } catch (error: any) {
+    throw new Error(`search: failed to read members of collection ${collectionKey}: ${error?.message || error}`);
+  }
+
+  let items: any[] = [];
+  try {
+    if (itemIds.length > 0) {
+      const resolved = await Zotero.Items.getAsync(itemIds);
+      items = Array.isArray(resolved) ? resolved : [resolved];
+    }
+  } catch (error: any) {
+    throw new Error(`search: failed to resolve members of collection ${collectionKey}: ${error?.message || error}`);
+  }
+  const itemsById = new Map(items.filter(Boolean).map(item => [Number(item.id), item]));
+  const unresolvedIds = itemIds.filter(itemId => !itemsById.has(itemId));
+  if (unresolvedIds.length > 0) {
+    throw new Error(
+      `search: failed to resolve ${unresolvedIds.length} member(s) of collection ${collectionKey}`,
+    );
+  }
+  const identities = new Set<string>();
+  for (const item of items) {
+    if (!item?.isRegularItem?.() || item.deleted || Number(item.libraryID) !== libraryId) continue;
+    const identity = identityFromItem(item);
+    if (!identity) {
+      throw new Error(`search: stable identity unavailable for collection member ${String(item?.id || '')}`);
+    }
+    identities.add(`${identity.libraryKey}|${identity.itemKey}`);
+  }
+  const libraryKey = canonicalLibraryKey(args.library_key);
+  return {
+    libraryId,
+    collectionId: Number(collection.id),
+    includeSubcollections,
+    candidateFilterKey: `${libraryKey}:${collectionKey}:${includeSubcollections ? 'recursive' : 'direct'}`,
+    candidateFilter: identity => identities.has(`${identity.libraryKey}|${identity.itemKey}`),
+    empty: identities.size === 0,
+  };
+}
+
+export async function runGetLibraryMapTool(args: LibraryMapToolArgs = {}): Promise<LibraryMapResult> {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) {
+    throw new Error('get_library_map: arguments must be an object');
+  }
+  if (args.library_key !== undefined &&
+      (typeof args.library_key !== 'string' || !args.library_key.trim())) {
+    throw new Error('get_library_map: library_key must be "user" or "group:<groupID>"');
+  }
+  const requestedLibraryKey = args.library_key?.trim() || 'user';
+  const libraryId = resolveLibraryId(requestedLibraryKey, 'get_library_map');
+  if (libraryId === undefined) throw new Error('get_library_map: library_key is required');
+  const libraryKey = canonicalLibraryKey(requestedLibraryKey);
+  let collections: any[];
+  try {
+    const raw = Zotero.Collections.getByLibrary(libraryId);
+    if (!Array.isArray(raw)) {
+      throw new Error('Zotero Collections returned a non-array collection list');
+    }
+    collections = raw;
+  } catch (error: any) {
+    throw new Error(`get_library_map: failed to enumerate library ${libraryKey}: ${error?.message || error}`);
+  }
+  const libraryName = cleanField(Zotero.Libraries.get?.(libraryId)?.name) ||
+    (libraryKey === 'user' ? 'My Library' : libraryKey);
+  return {
+    libraryKey,
+    name: libraryName,
+    collections: buildLibraryCollectionTree(collections, libraryId),
+  };
+}
+
 function normalizeFilterText(value: string): string {
   return value.trim().normalize('NFC').toLocaleLowerCase();
 }
@@ -474,7 +720,7 @@ function validateSearchFilter(filter: SearchResultFilter | undefined): SearchRes
     }
     normalized[field] = value;
   }
-  for (const field of ['journal', 'author'] as const) {
+  for (const field of ['journal', 'author', 'tag'] as const) {
     const value = filter[field];
     if (value === undefined) continue;
     if (typeof value !== 'string' || !value.trim()) {
@@ -507,13 +753,17 @@ function creatorCandidates(creator: BibliographicCreator): string[] {
   ].filter((value): value is string => !!value);
 }
 
-/** Apply the documented post-filter to the already-ranked result window. */
-export function applySearchResultFilter(
-  results: ToolResultItem[],
-  rawFilter: SearchResultFilter | undefined,
-): ToolResultItem[] {
-  const filter = validateSearchFilter(rawFilter);
-  if (!filter) return results;
+function hasSearchFilterCriteria(filter: SearchResultFilter | undefined): filter is SearchResultFilter {
+  return !!filter && (filter.year_from !== undefined || filter.year_to !== undefined ||
+    filter.journal !== undefined || filter.author !== undefined || filter.tag !== undefined);
+}
+
+function matchesSearchFilter(
+  metadata: BibliographicMetadata | undefined,
+  fallbackYear: number | undefined,
+  tags: string[],
+  filter: SearchResultFilter,
+): boolean {
   const exact = filter.exact === true;
   const matches = (candidate: string, query: string) => {
     const normalizedCandidate = normalizeFilterText(candidate);
@@ -522,27 +772,44 @@ export function applySearchResultFilter(
       ? normalizedCandidate === normalizedQuery
       : normalizedCandidate.includes(normalizedQuery);
   };
+  const year = metadata?.year ?? fallbackYear;
+  if (filter.year_from !== undefined && (year === undefined || year < filter.year_from)) return false;
+  if (filter.year_to !== undefined && (year === undefined || year > filter.year_to)) return false;
 
-  return results.filter(result => {
-    const year = result.metadata?.year ?? result.year;
-    if (filter.year_from !== undefined && (year === undefined || year < filter.year_from)) return false;
-    if (filter.year_to !== undefined && (year === undefined || year > filter.year_to)) return false;
+  if (filter.journal !== undefined) {
+    const venues = [
+      metadata?.publicationTitle,
+      metadata?.bookTitle,
+      metadata?.proceedingsTitle,
+    ].filter((value): value is string => !!value);
+    if (!venues.some(venue => matches(venue, filter.journal!))) return false;
+  }
 
-    if (filter.journal !== undefined) {
-      const venues = [
-        result.metadata?.publicationTitle,
-        result.metadata?.bookTitle,
-        result.metadata?.proceedingsTitle,
-      ].filter((value): value is string => !!value);
-      if (!venues.some(venue => matches(venue, filter.journal!))) return false;
-    }
+  if (filter.author !== undefined) {
+    const candidates = (metadata?.creators || []).flatMap(creatorCandidates);
+    if (!candidates.some(candidate => matches(candidate, filter.author!))) return false;
+  }
 
-    if (filter.author !== undefined) {
-      const candidates = (result.metadata?.creators || []).flatMap(creatorCandidates);
-      if (!candidates.some(candidate => matches(candidate, filter.author!))) return false;
-    }
-    return true;
-  });
+  if (filter.tag !== undefined) {
+    const expected = filter.tag.normalize('NFC');
+    if (!tags.some(tag => tag.normalize('NFC') === expected)) return false;
+  }
+  return true;
+}
+
+/** Apply the documented post-filter while preserving the input ranking. */
+export function applySearchResultFilter(
+  results: ToolResultItem[],
+  rawFilter: SearchResultFilter | undefined,
+): ToolResultItem[] {
+  const filter = validateSearchFilter(rawFilter);
+  if (!hasSearchFilterCriteria(filter)) return results;
+  return results.filter(result => matchesSearchFilter(
+    result.metadata,
+    result.year,
+    (result as ToolResultItem & { tags?: string[] }).tags || [],
+    filter,
+  ));
 }
 
 /** MCP has a fixed threshold; legacy arguments cannot override it or UI prefs. */
@@ -557,6 +824,9 @@ export async function runSearchTool(args: SearchToolArgs): Promise<{ results: To
   const finalTopK = clampInt(args.max_results, 1, 100, 10);
   const filter = validateSearchFilter(args.filter);
   const mode: SearchMode = args.mode && VALID_MODES.includes(args.mode) ? args.mode : 'hybrid';
+  const libraryId = resolveLibraryId(args.library_key);
+  const collectionScope = await resolveCollectionScope(args, libraryId);
+  if (collectionScope?.empty) return { results: [] };
   const serverIssue = getSelectedServerModelConfigurationIssue();
   if (mode !== 'keyword' && serverIssue) {
     throw new Error(serverModelConfigurationErrorMessage(serverIssue));
@@ -566,13 +836,30 @@ export async function runSearchTool(args: SearchToolArgs): Promise<{ results: To
     args.min_similarity !== undefined
       ? clampFloat(args.min_similarity, 0, 1, prefMinSimilarity())
       : prefMinSimilarity();
-  const libraryId = resolveLibraryId(args.library_key);
   const indexingMode = normalizeProductIndexingMode(
     Zotero.Prefs.get('zotseek.indexingMode', true)
   );
   const options: any = { mode, finalTopK, returnAllChunks, minSimilarity, indexingMode };
   if (libraryId !== undefined) {
     options.libraryId = libraryId;
+  }
+  if (collectionScope) {
+    options.collectionId = collectionScope.collectionId;
+    options.includeSubcollections = collectionScope.includeSubcollections;
+    options.candidateFilterKey = collectionScope.candidateFilterKey;
+    options.candidateFilter = collectionScope.candidateFilter;
+  }
+  if (hasSearchFilterCriteria(filter)) {
+    options.postFilter = (result: HybridSearchResult) => {
+      const item = getLocalItem(result.itemId);
+      if (!item || item.deleted) return false;
+      return matchesSearchFilter(
+        buildBibliographicMetadata(item),
+        result.year || undefined,
+        readTags(item),
+        filter,
+      );
+    };
   }
   // UI, MCP and REST share the same paper ranking. Legacy smart-search
   // preferences do not change the fixed bounded bonus.
@@ -582,7 +869,11 @@ export async function runSearchTool(args: SearchToolArgs): Promise<{ results: To
       ? await hybridEngine.smartSearch(query, options)
       : await hybridEngine.search(query, options);
   const mapped = await Promise.all(results.map(mapHybridResult));
-  return { results: applySearchResultFilter(mapped, filter) };
+  // The engine applies live filters before finalTopK. Keep the old mapped
+  // metadata check as defence in depth, excluding tag because search results
+  // deliberately do not expose a new public tags field.
+  const mappedFilter = filter?.tag === undefined ? filter : { ...filter, tag: undefined };
+  return { results: applySearchResultFilter(mapped, mappedFilter) };
 }
 
 export async function runFindSimilarTool(args: FindSimilarToolArgs): Promise<{ results: ToolResultItem[] }> {

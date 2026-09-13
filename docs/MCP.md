@@ -1,6 +1,6 @@
 # ZotSeek MCP Server & REST API
 
-ZotSeek can expose read-only search plus stable-identity item, Note, and PDF reading to AI agents and scripts through a local MCP server and matching REST endpoints, served on Zotero's own HTTP server.
+ZotSeek can expose read-only library/collection navigation, search, and stable-identity item, Note, and PDF reading to AI agents and scripts through a local MCP server and matching REST endpoints, served on Zotero's own HTTP server.
 
 This needs no extra software: the endpoints run inside the Zotero you already have open. They are **opt-in** (off by default), expose **read-only** library operations, and are bound to **localhost only**. Search can prepare local caches. Localhost describes the MCP connection, not every downstream operation: semantic/Hybrid query embedding uses the selected provider and can send query text to a configured cloud service. Keyword search does not request query embeddings. The connected agent receives returned excerpts and metadata and handles them according to its own configuration.
 
@@ -47,11 +47,12 @@ Any other MCP client that supports the HTTP transport works the same way (for ex
 
 ## MCP Tools
 
-Documentation alignment (2026-09-10; merged to main in `211b22e`): the behavior below describes the current MCP contract. The `tools/list` search descriptions in `src/server/mcp-endpoint.ts` are aligned with this documentation. Restart Zotero to load the rebuilt plugin, then have the MCP client refresh its tool definitions.
+Documentation alignment (2026-09-13; Plan 74 implementation): the behavior below describes the current MCP contract. The `tools/list` descriptions in `src/server/mcp-endpoint.ts` are aligned with this documentation. Restart Zotero to load the rebuilt plugin, then have the MCP client refresh its tool definitions.
 
 | Tool | Arguments | Returns |
 |------|-----------|---------|
-| `search` | `query` *(required)*; `max_results` (1–100, default 10); `mode` (`hybrid` \| `semantic` \| `keyword`, default `hybrid`); `granularity` (`papers` \| `passages`, default `papers`); `library_key` (`user` or `group:<groupID>`, omit to search all indexed libraries); optional `filter` (`year_from`, `year_to`, `journal`, `author`, `exact`) | Ranked results, optionally post-filtered within the ranked result window |
+| `search` | `query` *(required)*; `max_results` (1–100, default 10); `mode` (`hybrid` \| `semantic` \| `keyword`, default `hybrid`); `granularity` (`papers` \| `passages`, default `papers`); `library_key` (`user` or `group:<groupID>`, omit to search all indexed libraries); optional `collection_key` plus `include_subcollections` (default `true`); optional `filter` (`year_from`, `year_to`, `journal`, `author`, `tag`, `exact`) | Ranked results from the selected live scope, optionally filtered before the final return cap |
+| `get_library_map` | `library_key` (`user` or `group:<groupID>`, default `user`) | Complete live ordinary-collection tree with stable keys and names |
 | `get_item` | `item_key` *(required)*; `library_key` (default `user`); `include_notes` (default `false`); `include_pdf` (`none` \| `pages` \| `full`, default `none`); `pdf_pages` (`3` or `3-5`, at most 20 pages); `pdf_attachment_key` | A normalized live Zotero item snapshot, optionally with complete Notes and exact, bounded PDF text |
 | `find_similar` | `item_key` *(required, 8-character Zotero key)*; `library_key` (`user` or `group:<groupID>`, default `user`); `max_results` (1–100, default 10) | Papers similar to a known library item, by its stored embeddings |
 | `index_status` | *(none)* | `{ready, modelLoaded, indexedPapers, totalChunks, modelId, activeModel, coverage, configurationError?, lastIndexed, storageUsedBytes}` |
@@ -64,8 +65,8 @@ The `search` and `get_item` tool descriptions guide evidence assessment: preserv
 - `max_results` defaults to **10**, independently of the UI's result-count preference. It is a return cap, not a promise to fill the window. Exploratory calls can explicitly request **20**. Increasing it does not expand internal channel depth: paper Hybrid normally uses S50 and K50, whose union may contain fewer than 100 distinct papers.
 - `mode` defaults to `hybrid`; `granularity` defaults to `papers`. Passage search may return several locations from one paper and retains its existing compatibility ranking. It is not the paper-ranking formula applied to chunks.
 - MCP `search` uses a fixed semantic candidate floor of **0** instead of the UI preference. The MCP schema does not expose `min_similarity`; if an older client still sends that field, the server ignores it and keeps the fixed floor. The normal S50 candidate depth and non-negative semantic eligibility rules still apply; a zero floor does not return every scored paper. K50 candidates are still included through the keyword channel. The REST `minSimilarity` parameter retains its separate behavior described in the REST section below.
-- `library_key` limits the library, not a collection. Omitting it searches all indexed libraries. The indexing content mode (`abstract`, `notes`, `full`) follows ZotSeek settings; `search` does not expose an indexing-mode override.
-- `filter` operates after the ranked `max_results` window is obtained, as detailed below. No collection filter, candidate-depth control, semantic threshold, lexical-bonus coefficient or RRF-weight parameter is exposed by this tool.
+- `library_key` limits the library. Omitting it searches all indexed libraries. `collection_key` is an 8-character stable key returned by `get_library_map`; it requires an explicit `library_key`. Collection membership is resolved from live Zotero data before semantic/keyword TopK, includes all descendants by default, and can be restricted to direct members with `include_subcollections:false`. An unknown collection or a failed membership read returns an explicit error rather than widening the scope. The indexing content mode (`abstract`, `notes`, `full`) follows ZotSeek settings; `search` does not expose an indexing-mode override.
+- `filter` inspects the normal bounded ranked candidate pool, then `max_results` is applied, as detailed below. It does not expose candidate-depth control, semantic threshold, lexical-bonus coefficient or RRF-weight parameters.
 
 `mode` mirrors the ZotSeek UI. Paper-level **hybrid** first attempts explicit
 metadata identity navigation. Content queries independently retrieve semantic
@@ -79,9 +80,11 @@ compatibility paths, which have not been replaced by the paper-level experiment.
 
 If the fixed Server model slot is selected but its profile JSON template is `NONE` or `UNKNOWN`, semantic/hybrid `search` and `find_similar` return a configuration error containing the template path; keyword-only search remains available. `index_status` remains callable and reports `ready: false`, zero usable coverage and the same text in `configurationError`. This state never falls back to a local model.
 
-`library_key` narrows `search` to a single library; when omitted, results come from every indexed library. Note the different default on `find_similar`: there `library_key` identifies the library of the *source* item and defaults to `user`.
+`get_library_map` defaults to the personal library. It returns `{libraryKey, name, collections}`, where every collection node is `{collectionKey, name, children}`. The tree includes nested and empty ordinary collections exactly once; it deliberately omits saved searches, item lists, tags and index-coverage claims. Use the returned `collectionKey` with the same `library_key` in `search`. A hierarchy that cannot be read completely returns an error instead of a partial tree.
 
-`search.filter` is deliberately a **post-filter**. ZotSeek first obtains the normal ranked `max_results` window and then filters it without changing order. It is not an exhaustive database field query, so the result can contain fewer than `max_results` items or be empty even when another matching item exists below the original window. `journal` checks publication, book, and proceedings titles. `author` checks first name, last name, `First Last`, `Last, First`, and institutional creator names. Matching trims values, normalizes Unicode NFC, and ignores case; `exact:true` switches the two string filters from substring to whole-candidate matching.
+`search.filter` is deliberately a **bounded-candidate filter**, not an exhaustive Zotero field query. Collection/library scope is applied first; the selected retrieval mode then produces its normal bounded candidates; live metadata/tag conditions remove candidates without changing their order; finally `max_results` truncates the surviving list. This lets lower-ranked candidates fill the requested window when earlier candidates fail, but never searches beyond the mode's existing pool. Paper Hybrid filters the S50∪K50 union; Semantic filters S50; Keyword filters K50; identity navigation filters its complete identity match set. Passage mode filters its existing compatibility candidate lists and does not adopt a new paper formula.
+
+`journal` checks publication, book, and proceedings titles. `author` checks first name, last name, `First Last`, `Last, First`, and institutional creator names. These string fields trim values, normalize Unicode NFC, ignore case, and use substring matching unless `exact:true`. `tag` matches one complete live Zotero tag after NFC normalization and remains case-sensitive; `exact` does not change tag semantics. Because the filter reads live Zotero items, stale/missing results cannot satisfy it.
 
 For `index_status`, `ready` is `true` when the index contains papers and the selected model has an operational identity. `modelLoaded` reports pipeline initialization, not whether BM25 and vector caches are both warm. A first semantic/Hybrid request can incur provider initialization, query embedding and local cache preparation; timing depends on the provider and library, and readiness does not guarantee request success or a fixed delay. `activeModel` is the short identifier of the currently configured embedding model (e.g. `"bge-m3"`), or `"server-slot"` while an incomplete Server choice is retained. `coverage` is `{ covered, total }` — the number of library items indexed under the operational model vs. the total items in the index, letting agents detect when a model switch has left items to be re-indexed.
 
@@ -192,7 +195,8 @@ REST keeps its existing `minSimilarity` query parameter and preference-based def
 
 | Endpoint | Query parameters |
 |----------|------------------|
-| `GET /zotseek/search` | `q` *(required)*, `topK`, `mode`, `granularity`, `minSimilarity`, `libraryKey`, plus `yearFrom`, `yearTo`, `journal`, `author`, `exact` (`true`/`false`) |
+| `GET /zotseek/search` | `q` *(required)*, `topK`, `mode`, `granularity`, `minSimilarity`, `libraryKey`, optional `collectionKey` and `includeSubcollections` (`true`/`false`), plus `yearFrom`, `yearTo`, `journal`, `author`, `tag`, `exact` (`true`/`false`) |
+| `GET /zotseek/library-map` | `libraryKey` (default `user`) |
 | `GET /zotseek/item` | `itemKey` *(required)*, `libraryKey`, `includeNotes`, `includePdf` (`none`/`pages`/`full`), `pdfPages`, `pdfAttachmentKey` |
 | `GET /zotseek/similar` | `itemKey` *(required)*, `libraryKey` (`user` or `group:N`), `topK` |
 | `GET /zotseek/stats` | *(none)* |
@@ -202,6 +206,13 @@ Example:
 
 ```bash
 curl 'http://localhost:23119/zotseek/search?q=transformer+attention&topK=2&mode=hybrid'
+```
+
+Discover a collection key and search its whole subtree with a complete live tag:
+
+```bash
+curl 'http://localhost:23119/zotseek/library-map?libraryKey=user'
+curl 'http://localhost:23119/zotseek/search?q=neural+synchrony&libraryKey=user&collectionKey=ABCD2345&includeSubcollections=true&tag=Review'
 ```
 
 ```json

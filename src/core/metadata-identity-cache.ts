@@ -10,6 +10,8 @@ export const METADATA_IDENTITY_CACHE_MAX_BYTES = 32 * 1024 * 1024;
 export interface MetadataIdentityScope {
   libraryId?: number;
   collectionId?: number;
+  includeSubcollections?: boolean;
+  candidateFilterKey?: string;
   excludeBooks: boolean;
 }
 
@@ -76,6 +78,8 @@ export function metadataIdentityScopeKey(scope: MetadataIdentityScope): string {
   return [
     `library:${scope.libraryId ?? '*'}`,
     `collection:${scope.collectionId ?? '*'}`,
+    `recursive:${scope.collectionId && scope.includeSubcollections ? '1' : '0'}`,
+    `candidateFilter:${scope.candidateFilterKey ?? '*'}`,
     `excludeBooks:${scope.excludeBooks ? '1' : '0'}`,
   ].join('|');
 }

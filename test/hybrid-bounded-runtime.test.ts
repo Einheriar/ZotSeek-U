@@ -128,7 +128,7 @@ test('paper Hybrid scans globally, excludes books before S50 and hydrates a K-on
     getChunkTexts: async () => new Map([['112:7', { text: 'Winning PDF passage', pdfAttachmentKey: 'PDF00001' }]]),
   };
   const hybrid = new HybridSearchEngine(semantic) as any;
-  hybrid.identityNavigationSearch = async () => [];
+  hybrid.identityNavigationSearch = async () => ({ matched: false, results: [] });
   hybrid.populateItemMetadata = async () => {};
   const results = await hybrid.search('coupling', {
     mode: 'hybrid', indexingMode: 'full', minSimilarity: 0, finalTopK: 55,
@@ -147,4 +147,103 @@ test('paper Hybrid scans globally, excludes books before S50 and hydrates a K-on
   assert.equal(results[0].pageNumber, 12);
   assert.equal(results[0].chunkText, 'Winning PDF passage');
   assert.equal(results[0].pdfAttachmentKey, 'PDF00001');
+});
+
+test('structured filters inspect the bounded union before the final result cap', async () => {
+  installZoteroStub();
+  const engine = new HybridSearchEngine({} as any) as any;
+  const candidates = Array.from({ length: 12 }, (_, index) => ({
+    itemId: index + 1,
+    itemKey: `P${String(index + 1).padStart(7, '0')}`,
+    libraryKey: 'user',
+    title: `Paper ${index + 1}`,
+    creators: '',
+    year: 2020,
+    semanticScore: 1 - index / 20,
+    keywordScore: null,
+    bm25Score: null,
+    rrfScore: 1 - index / 20,
+    semanticRank: index + 1,
+    keywordRank: null,
+    source: 'semantic',
+    textSource: 'summary',
+  }));
+  engine.semanticSearchQueryWithScores = async () => ({ results: [], scores: new Map() });
+  engine.keywordSearchQuery = async () => [];
+  engine.boundedLexicalBonusFusion = () => candidates;
+  let hydrated: number[] = [];
+  engine.populateItemMetadata = async (results: any[]) => { hydrated = results.map(result => result.itemId); };
+
+  const results = await engine.fixedHybridSearch('topic', {
+    semanticTopK: 50,
+    keywordTopK: 50,
+    finalTopK: 2,
+    minSimilarity: 0,
+    rrfK: 60,
+    semanticWeight: 0.5,
+    keywordWeight: 0.5,
+    returnAllChunks: false,
+    indexingMode: 'notes',
+    includeSubcollections: false,
+    postFilter: (result: any) => result.itemId >= 10,
+  });
+
+  assert.deepEqual(results.map((result: any) => result.itemId), [10, 11]);
+  assert.deepEqual(hydrated, [10, 11], 'only the filtered final window is hydrated');
+});
+
+test('explicit collection candidates reach semantic and passage ranking before top-K', async () => {
+  const zotero = installZoteroStub({ 'zotseek.excludeBooks': false });
+  const item = {
+    id: 1, key: 'P0000001', libraryID: 1, itemType: 'journalArticle',
+    isRegularItem: () => true, isNote: () => false,
+    getField: () => '', getCreators: () => [],
+  };
+  zotero.Items = { get: () => item, getAsync: async () => [item] };
+  zotero.Libraries = { userLibraryID: 1, get: () => ({ libraryType: 'user' }) };
+  const conditions: Array<[string, string, string?]> = [];
+  zotero.Search = class {
+    addCondition(...condition: [string, string, string?]) { conditions.push(condition); }
+    async search() { return []; }
+  };
+
+  const semanticCalls: any[] = [];
+  const semantic = {
+    isReady: () => true,
+    search: async (_query: string, options: any) => {
+      semanticCalls.push(options);
+      return [];
+    },
+    searchPartitionsWithScores: async (_query: string, partitions: any[], options: any) => {
+      semanticCalls.push(options);
+      return {
+        resultsByPartition: new Map(partitions.map(partition => [partition.key, []])),
+        scoresByPartition: new Map(partitions.map(partition => [partition.key, new Map()])),
+      };
+    },
+    searchIndexedText: async () => [],
+  };
+  const engine = new HybridSearchEngine(semantic as any) as any;
+  engine.identityNavigationSearch = async () => ({ matched: false, results: [] });
+  engine.populateItemMetadata = async () => {};
+  const candidateFilter = (identity: any) => identity.itemKey === 'P0000001';
+
+  await engine.search('topic', {
+    mode: 'semantic', collectionId: 10, includeSubcollections: true,
+    candidateFilter, candidateFilterKey: 'user:ROOT0001:recursive',
+  });
+  await engine.search('topic', {
+    mode: 'hybrid', indexingMode: 'full', returnAllChunks: true,
+    collectionId: 10, includeSubcollections: true,
+    candidateFilter, candidateFilterKey: 'user:ROOT0001:recursive',
+  });
+
+  assert.equal(semanticCalls.length, 2);
+  for (const options of semanticCalls) {
+    assert.equal(typeof options.candidateFilter, 'function');
+    assert.equal(options.candidateFilter({ libraryKey: 'user', itemKey: 'P0000001', itemId: 1 }), true);
+    assert.equal(options.candidateFilter({ libraryKey: 'user', itemKey: 'OUTSIDE1', itemId: 99 }), false);
+  }
+  assert.ok(conditions.some(([field]) => field === 'collectionID'));
+  assert.ok(conditions.some(([field]) => field === 'recursive'));
 });

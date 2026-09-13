@@ -47,6 +47,10 @@ Plan 62 已接入启动末尾与现有“检查并更新索引”入口。BM25 �
 
 UI、MCP 和 REST 复用同一搜索引擎与文献级排序。三者的入口参数边界独立：UI 继续使用现有相似度偏好；MCP `search` 固定语义候选门槛为 0，不暴露 `min_similarity`（旧客户端发送该字段时忽略）；REST 继续保留 `minSimilarity` 参数及其原有偏好默认。MCP/REST 结果提供最终 `score`、原始 `semanticScore` 和原始未归一化 `bm25Score`，无对应计算或命中时为 `null`。
 
+MCP/REST 还可以用稳定的 `library_key + collection_key` 限定范围。服务层先从实时 Zotero collection 成员解析一份稳定身份集合，再把资格判断送入语义扫描、BM25、Quick Search 和身份导航，因此不属于 collection 的高分条目不能占掉 TopK。MCP 默认递归包含所有后代 collection，可显式改为仅直接成员；现有 UI 调用未显式请求递归时仍保持直接 collection 语义。`get_library_map` 与 REST `/zotseek/library-map` 只负责返回实时完整 collection 树，不返回条目清单、标签或索引覆盖率。身份快照的 scope key 同时区分库、collection、是否递归以及候选集合标识，collection/item Notifier 变化会使其失效。
+
+结构化过滤的执行顺序固定为：**实时库/collection 范围 → 当前模式的有界候选与排序 → 实时 year/journal/author/tag 过滤 → `max_results` 截断**。过滤不改变相对顺序，也不扩张候选深度：文献级 Hybrid 看 S50∪K50，Semantic 看 S50，Keyword 看 K50，身份导航看完整身份匹配集；passages 在各自既有兼容候选上过滤。这样排在前面的不匹配条目被剔除后，候选池中更靠后的匹配条目仍可补足结果，但候选池之外的文献不会被补搜。`tag` 是 NFC 规范化后的完整标签、区分大小写匹配；`exact` 只改变 journal/author 的子串或全值匹配，不改变标签语义。
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                  SEARCH ARCHITECTURE OVERVIEW (ZotSeek-U)                   │
@@ -70,7 +74,7 @@ UI、MCP 和 REST 复用同一搜索引擎与文献级排序。三者的入口�
 │                  └───────────────┬─────────────────┘                        │
 │                                  ▼                                          │
 │             S50 ∪ K50 → semantic score + bounded lexical bonus             │
-│                         → stable paper ranking                             │
+│                         → stable paper ranking                              │
 │                                                                             │
 │Index modes: abstract = metadata; notes = metadata + Child Notes;            │
 │full = metadata + Child Notes + PDF.                                         │

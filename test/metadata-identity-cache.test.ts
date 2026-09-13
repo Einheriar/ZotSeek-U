@@ -46,6 +46,14 @@ describe('bounded metadata identity cache', () => {
       metadataIdentityScopeKey({ libraryId: 1, collectionId: 11, excludeBooks: true }),
     );
     assert.notEqual(
+      metadataIdentityScopeKey({ libraryId: 1, collectionId: 10, includeSubcollections: false, excludeBooks: true }),
+      metadataIdentityScopeKey({ libraryId: 1, collectionId: 10, includeSubcollections: true, excludeBooks: true }),
+    );
+    assert.notEqual(
+      metadataIdentityScopeKey({ libraryId: 1, collectionId: 10, candidateFilterKey: 'scope-a', excludeBooks: true }),
+      metadataIdentityScopeKey({ libraryId: 1, collectionId: 10, candidateFilterKey: 'scope-b', excludeBooks: true }),
+    );
+    assert.notEqual(
       metadataIdentityScopeKey({ libraryId: 1, excludeBooks: true }),
       metadataIdentityScopeKey({ libraryId: 1, excludeBooks: false }),
     );

@@ -7,11 +7,13 @@ import assert from 'node:assert/strict';
 import { installZoteroStub } from './helpers/zotero-stub';
 import {
   applySearchResultFilter,
+  buildLibraryCollectionTree,
   GET_ITEM_PDF_FULL_READ_LIMITS,
   isAllowedOrigin,
   parsePdfPageRange,
   runFindSimilarTool,
   runGetItemTool,
+  runGetLibraryMapTool,
   runSearchTool,
   type ToolResultItem,
 } from '../src/server/http-tools';
@@ -358,5 +360,69 @@ describe('get_item normalized read contract', () => {
     assert.equal(response.pdf?.nextPage, 101);
     assert.equal(response.pdf?.pages.length, 100);
     assert.equal(calls.length, 5);
+  });
+
+  test('matches one complete Unicode-normalized tag with case preserved', () => {
+    const tagged = result() as ToolResultItem & { tags: string[] };
+    tagged.tags = ['Méthodes', 'Review'];
+    assert.equal(applySearchResultFilter([tagged], { tag: 'Méthodes' }).length, 1);
+    assert.equal(applySearchResultFilter([tagged], { tag: 'review' }).length, 0);
+    assert.equal(applySearchResultFilter([tagged], { tag: 'Rev' }).length, 0);
+  });
+});
+
+describe('library map and collection scope', () => {
+  test('builds every collection into a deterministic nested tree', () => {
+    const tree = buildLibraryCollectionTree([
+      { id: 3, key: 'CHILD002', name: 'Beta', libraryID: 1, parentID: 1 },
+      { id: 1, key: 'ROOT0001', name: 'Root', libraryID: 1 },
+      { id: 4, key: 'ROOT0002', name: 'Another root', libraryID: 1 },
+      { id: 2, key: 'CHILD001', name: 'Alpha', libraryID: 1, parentKey: 'ROOT0001' },
+    ], 1);
+    assert.deepEqual(tree, [
+      { collectionKey: 'ROOT0002', name: 'Another root', children: [] },
+      {
+        collectionKey: 'ROOT0001', name: 'Root', children: [
+          { collectionKey: 'CHILD001', name: 'Alpha', children: [] },
+          { collectionKey: 'CHILD002', name: 'Beta', children: [] },
+        ],
+      },
+    ]);
+  });
+
+  test('rejects missing parents and cycles instead of returning a partial map', () => {
+    assert.throws(() => buildLibraryCollectionTree([
+      { id: 1, key: 'ROOT0001', name: 'Broken', libraryID: 1, parentID: 99 },
+    ], 1), /missing parent/);
+    assert.throws(() => buildLibraryCollectionTree([
+      { id: 1, key: 'ROOT0001', name: 'One', libraryID: 1, parentID: 2 },
+      { id: 2, key: 'ROOT0002', name: 'Two', libraryID: 1, parentID: 1 },
+    ], 1), /cycle/);
+  });
+
+  test('returns a live library name and complete collection tree', async () => {
+    const zotero = installZoteroStub();
+    zotero.Libraries = {
+      userLibraryID: 1,
+      get: () => ({ libraryType: 'user', name: 'Personal Library' }),
+    };
+    zotero.Collections = {
+      getByLibrary: () => [{ id: 1, key: 'ROOT0001', name: 'Root', libraryID: 1 }],
+    };
+    assert.deepEqual(await runGetLibraryMapTool({}), {
+      libraryKey: 'user',
+      name: 'Personal Library',
+      collections: [{ collectionKey: 'ROOT0001', name: 'Root', children: [] }],
+    });
+  });
+
+  test('canonicalizes a valid group library identity in map output', async () => {
+    const zotero = installZoteroStub();
+    zotero.Groups = { getLibraryIDFromGroupID: (groupId: number) => groupId === 42 ? 7 : false };
+    zotero.Libraries = { userLibraryID: 1, get: () => ({ name: 'Research Group' }) };
+    zotero.Collections = { getByLibrary: () => [] };
+    assert.deepEqual(await runGetLibraryMapTool({ library_key: 'group: 42' }), {
+      libraryKey: 'group:42', name: 'Research Group', collections: [],
+    });
   });
 });

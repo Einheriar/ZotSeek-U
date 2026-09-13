@@ -62,6 +62,8 @@ test('advertised MCP tools omit threshold tuning and explain evidence/PDF readin
   assert.equal('min_similarity' in search.inputSchema.properties, false);
   assert.equal(search.inputSchema.properties.max_results.default, 10);
   assert.equal(search.inputSchema.properties.max_results.maximum, 100);
+  assert.equal(search.inputSchema.properties.include_subcollections.default, true);
+  assert.ok(search.inputSchema.properties.filter.properties.tag);
   assert.match(search.description, /semanticScore/);
   assert.match(search.description, /bm25Score/);
   assert.match(search.description, /Read the results before deciding/);
@@ -72,6 +74,99 @@ test('advertised MCP tools omit threshold tuning and explain evidence/PDF readin
   assert.match(item.description, /at most 100 pages/);
   assert.match(item.description, /status=partial/);
   assert.match(item.inputSchema.properties.include_pdf.description, /bounded leading prefix/);
+  const libraryMap = response.result.tools.find((t: any) => t.name === 'get_library_map');
+  assert.match(libraryMap.description, /complete live collection tree/);
+});
+
+test('collection scope is resolved once and live tag filtering fills the final window', async () => {
+  const z = installZoteroStub({ 'zotseek.indexingMode': 'notes' });
+  const makeItem = (id: number, key: string, year: string, tags: string[]) => ({
+    id, key, libraryID: 1, itemType: 'journalArticle', deleted: false,
+    isRegularItem: () => true,
+    getField: (field: string) => ({ title: `Paper ${id}`, date: year } as Record<string, string>)[field] || '',
+    getCreators: () => [],
+    getTags: () => tags.map(tag => ({ tag })),
+    getBestAttachment: async () => null,
+  });
+  const items = new Map<number, any>([
+    [1, makeItem(1, 'PAPER001', '2019', [])],
+    [2, makeItem(2, 'PAPER002', '2024', ['Review'])],
+    [3, makeItem(3, 'PAPER003', '2023', ['Review'])],
+  ]);
+  const searchConditions: Array<Array<[string, string, string]>> = [];
+  z.Libraries = {
+    userLibraryID: 1,
+    get: () => ({ libraryType: 'user', name: 'Personal Library' }),
+  };
+  z.Collections = {
+    getByLibraryAndKey: (libraryId: number, key: string) =>
+      libraryId === 1 && key === 'ROOT0001'
+        ? { id: 10, key, name: 'Root', libraryID: 1 }
+        : null,
+  };
+  z.Search = class {
+    private conditions: Array<[string, string, string]> = [];
+    constructor() { searchConditions.push(this.conditions); }
+    addCondition(field: string, operator: string, value: string): void {
+      this.conditions.push([field, operator, value]);
+    }
+    async search(): Promise<number[]> { return [1, 2, 3]; }
+  };
+  z.Items = {
+    get: (id: number) => items.get(id),
+    getAsync: async (ids: number[]) => ids.map(id => items.get(id)),
+    getByLibraryAndKey: () => null,
+  };
+
+  const originalSearch = HybridSearchEngine.prototype.search;
+  const originalSmart = HybridSearchEngine.prototype.smartSearch;
+  const calls: any[] = [];
+  const stub = async (_query: string, options: any): Promise<any[]> => {
+    calls.push(options);
+    assert.equal(options.candidateFilter({ libraryKey: 'user', itemKey: 'PAPER002', itemId: 2 }), true);
+    assert.equal(options.candidateFilter({ libraryKey: 'user', itemKey: 'OUTSIDE1', itemId: 99 }), false);
+    const ranked = [1, 2, 3].map((id, index) => ({
+      itemId: id,
+      itemKey: items.get(id).key,
+      libraryKey: 'user',
+      title: `Paper ${id}`,
+      creators: '',
+      year: Number(items.get(id).getField('date')),
+      rrfScore: 1 - index * 0.1,
+      semanticScore: 1 - index * 0.1,
+      keywordScore: null,
+      source: 'semantic',
+    }));
+    return ranked.filter(options.postFilter).slice(0, options.finalTopK);
+  };
+  HybridSearchEngine.prototype.search = stub;
+  HybridSearchEngine.prototype.smartSearch = stub;
+  try {
+    const response = await rpc('tools/call', {
+      name: 'search',
+      arguments: {
+        query: 'topic', library_key: 'user', collection_key: 'ROOT0001',
+        max_results: 2, filter: { tag: 'Review' },
+      },
+    });
+    const payload = JSON.parse(response.result.content[0].text);
+    assert.deepEqual(payload.results.map((entry: any) => entry.itemKey), ['PAPER002', 'PAPER003']);
+    assert.equal(calls[0].includeSubcollections, true);
+    assert.ok(searchConditions[0].some(([field]) => field === 'recursive'));
+
+    const [restStatus] = await handleSearchRequest({
+      headers: {},
+      searchParams: new URLSearchParams(
+        'q=topic&libraryKey=user&collectionKey=ROOT0001&includeSubcollections=false&tag=Review',
+      ),
+    });
+    assert.equal(restStatus, 200);
+    assert.equal(calls[1].includeSubcollections, false);
+    assert.ok(!searchConditions[1].some(([field]) => field === 'recursive'));
+  } finally {
+    HybridSearchEngine.prototype.search = originalSearch;
+    HybridSearchEngine.prototype.smartSearch = originalSmart;
+  }
 });
 
 test('MCP 2025-03-26 receives mixed JSON-RPC batches and omits notification responses', async () => {
@@ -90,7 +185,7 @@ test('MCP 2025-03-26 receives mixed JSON-RPC batches and omits notification resp
   assert.equal(contentType, 'application/json');
   const responses = JSON.parse(body);
   assert.deepEqual(responses.map((entry: any) => entry.id), ['list', 2, null]);
-  assert.equal(responses[0].result.tools.length, 4);
+  assert.equal(responses[0].result.tools.length, 5);
   assert.deepEqual(responses[1].result, {});
   assert.equal(responses[2].error.code, -32600);
 

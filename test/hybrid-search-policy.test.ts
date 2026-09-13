@@ -27,7 +27,7 @@ describe('HybridSearchEngine product dispatch', () => {
   function engineWithSpies() {
     const engine = new HybridSearchEngine({} as any) as any;
     const calls: string[] = [];
-    engine.identityNavigationSearch = async () => [];
+    engine.identityNavigationSearch = async () => ({ matched: false, results: [] });
     engine.semanticOnlySearch = async () => { calls.push('semantic'); return []; };
     engine.keywordOnlySearch = async () => { calls.push('keyword'); return []; };
     engine.fixedHybridSearch = async () => { calls.push('notes-h1'); return []; };
@@ -59,9 +59,17 @@ describe('HybridSearchEngine product dispatch', () => {
 
   test('returns identity navigation without invoking a content specialist', async () => {
     const { engine, calls } = engineWithSpies();
-    engine.identityNavigationSearch = async () => [{ itemId: 1 }];
+    engine.identityNavigationSearch = async () => ({ matched: true, results: [{ itemId: 1 }] });
     const results = await engine.search('Exact Title', { mode: 'hybrid', indexingMode: 'full' });
     assert.equal(results[0].itemId, 1);
+    assert.deepEqual(calls, []);
+  });
+
+  test('does not fall through to content search when filters remove an identity match', async () => {
+    const { engine, calls } = engineWithSpies();
+    engine.identityNavigationSearch = async () => ({ matched: true, results: [] });
+    const results = await engine.search('Exact Title', { mode: 'hybrid', indexingMode: 'full' });
+    assert.deepEqual(results, []);
     assert.deepEqual(calls, []);
   });
 
@@ -501,7 +509,8 @@ describe('HybridSearchEngine product dispatch', () => {
       libraryId: 1,
     });
 
-    assert.deepEqual(results.map((entry: any) => entry.itemKey), ['PAPER007']);
+    assert.equal(results.matched, true);
+    assert.deepEqual(results.results.map((entry: any) => entry.itemKey), ['PAPER007']);
     metadataIdentityCache.invalidate('fallback fixture cleanup');
   });
 });
