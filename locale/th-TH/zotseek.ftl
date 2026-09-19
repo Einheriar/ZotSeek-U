@@ -221,6 +221,7 @@ zotseek-pref-dangerZone = พื้นที่อันตราย
 zotseek-pref-destructive = ⚠ ทำลายข้อมูล
 zotseek-pref-clearIndexDesc = ลบ embedding ทั้งหมดออกจากฐานข้อมูล คุณจะต้องจัดทำดัชนีใหม่ภายหลัง
 zotseek-pref-about = เกี่ยวกับ
+zotseek-pref-version = เวอร์ชัน:
 zotseek-pref-githubRepo =
     .value = ที่เก็บ GitHub
 zotseek-pref-modelLine = โมเดล: { $model }

@@ -221,6 +221,7 @@ zotseek-pref-dangerZone = Gefahrenzone
 zotseek-pref-destructive = ⚠ Nicht rückgängig zu machen
 zotseek-pref-clearIndexDesc = Entfernt alle Embeddings aus der Datenbank. Anschließend müssen Sie die Bibliothek neu indizieren.
 zotseek-pref-about = Über
+zotseek-pref-version = Version:
 zotseek-pref-githubRepo =
     .value = GitHub-Repository
 zotseek-pref-modelLine = Modell: { $model }

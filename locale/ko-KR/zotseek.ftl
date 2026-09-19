@@ -216,6 +216,7 @@ zotseek-pref-dangerZone = 위험 영역
 zotseek-pref-destructive = ⚠ 되돌릴 수 없는 작업
 zotseek-pref-clearIndexDesc = 데이터베이스에서 모든 임베딩을 제거합니다. 이후 다시 색인해야 합니다.
 zotseek-pref-about = 정보
+zotseek-pref-version = 버전:
 zotseek-pref-githubRepo =
     .value = GitHub 저장소
 zotseek-pref-modelLine = 모델: { $model }

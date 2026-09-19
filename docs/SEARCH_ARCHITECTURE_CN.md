@@ -816,6 +816,8 @@ Full 索引使用版本化的 `zotseek-pdf-main-text-indexing-v1` 管线：
 4. 把书目标题加入 PDF 嵌入上下文，然后在同一物理页内贪心装箱兼容的相邻短段落。装箱绝不跨页、绝不跨过滤边界或粗粒度章节类型。
 5. 执行活动模型的精确带前缀 token 预算、字符上限，以及共享的 Summary/Note/PDF `maxChunksPerPaper` 配额。
 
+`get_item.include_pdf="references"` 复用第 3 步的 References v2 判定，但读取方向与索引方向相反：索引保留正文并排除参考文献，专用读取只返回被识别出的参考文献区域。服务器从 PDF 文末按最多 20 页一批反向扫描，最多扫描 100 个物理页或约 300,000 个源字符；返回文本按真实物理页对齐，不解析成结构化引用。完整扫描无可靠区域返回 `not_found`，先触及扫描上限返回 `partial`，`referenceDetection` 记录检测器版本和扫描区间。`pages` 与 `full` 的既有未过滤行为不变。
+
 Full 模式按严格来源顺序分配该共享配额：先保留所有放得下的 Summary chunk，其次最多 30 个 Note chunk，PDF chunk 只使用剩余名额。30-chunk Note 上限只在合并 Full 模式来源时生效；Metadata + Notes 模式仍可使用 Summary 之后剩余的全部名额。如果 Notes 超过 Full 模式上限，即使没有 PDF 去消耗剩余总容量，该条目也会报告为截断。
 
 Full 模式的完整提取和 Child Note 增量替换共用同一个配额分配器，因而 Summary / Note / PDF 的保留数量与 `wasTruncated` 判定不会随入口变化。若现有 Full 条目已标记为截断，后续 Note 内容变化会改走整条目重建并重新提取 PDF；这是为了让 Note 增减后释放或占用的名额能由 PDF 正确回填，同时重新计算页数覆盖与截断状态。

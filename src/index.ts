@@ -1006,7 +1006,7 @@ class ZotSeekPlugin {
     switch (type) {
       case 'load':
         this.logger.info('Preference pane loaded');
-        await preferencesManager.init(data.window);
+        await preferencesManager.init(data.window, this.info?.version);
         break;
       case 'unload':
         this.logger.info('Preference pane unloaded');

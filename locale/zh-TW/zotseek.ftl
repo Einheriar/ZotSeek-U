@@ -214,6 +214,7 @@ zotseek-pref-dangerZone = 危險區域
 zotseek-pref-destructive = ⚠ 破壞性操作
 zotseek-pref-clearIndexDesc = 從資料庫移除所有 Embedding。之後必須重新建立索引。
 zotseek-pref-about = 關於
+zotseek-pref-version = 版本：
 zotseek-pref-githubRepo =
     .value = GitHub 儲存庫
 zotseek-pref-modelLine = 模型：{ $model }

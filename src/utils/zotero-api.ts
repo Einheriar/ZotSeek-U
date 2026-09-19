@@ -60,7 +60,8 @@ export interface SelectedMainPdfText {
   selectedText: PdfAttachmentText | null;
 }
 
-export type PdfReadStatus = 'ok' | 'partial' | 'missing' | 'unresolved' | 'empty' | 'failed';
+export type PdfReadStatus =
+  'ok' | 'partial' | 'not_found' | 'missing' | 'unresolved' | 'empty' | 'failed';
 export type PdfReadSource = 'zotero-fulltext-cache' | 'pdfworker' | 'cache+pdfworker';
 export type PdfReadLimitReason = 'page_limit' | 'character_limit';
 
@@ -85,6 +86,12 @@ export interface PdfReadResult {
   pages: PdfReadPage[];
   limitReason?: PdfReadLimitReason;
   nextPage?: number;
+  referenceDetection?: {
+    strategyId: string;
+    strategyVersion: string;
+    scannedFromPage: number;
+    scannedToPage: number;
+  };
   error?: string;
 }
 

@@ -248,7 +248,7 @@ MCP 工具说明补充通用证据判断提醒：判断结果时保留用户的�
 在上游 `search` / `find_similar` / `index_status` 基础上新增（完整用法见 [MCP.md](MCP.md)）：
 
 - **`get_library_map` 工具**：按稳定 `library_key` 返回实时完整普通 collection 树，每个节点只有 `collectionKey`、`name` 和 `children`；包括空 collection，不返回 saved search、条目列表、标签或索引覆盖率。REST 对应 `GET /zotseek/library-map`。
-- **`get_item` 工具**：按 `library_key + item_key` 读取规范化书目、tags、collections、relatedItems 与附件清单；`include_notes: true` 返回全部 Child Notes 的完整未过滤文本（不应用索引侧的"基本信息"/References 排除规则）及实时 `sections` / `sectionPaths`；`include_pdf: "pages" | "full"` 支持指定附件，显式范围每次 ≤20 连续页，`full` 以 ≤20 页批次返回最多 100 页或约 300,000 字符的开头前缀。超限时返回 `partial`、`limitReason` 与 `nextPage`，MCP/REST 合同一致；PDF 读取优先 Zotero 全文缓存、缺页时批量 `PDFWorker` 兜底，不虚假承诺底层队列可取消；不暴露本机文件路径。REST 对应 `GET /zotseek/item`。
+- **`get_item` 工具**：按 `library_key + item_key` 读取规范化书目、tags、collections、relatedItems 与附件清单；`include_notes: true` 返回全部 Child Notes 的完整未过滤文本（不应用索引侧的"基本信息"/References 排除规则）及实时 `sections` / `sectionPaths`；`include_pdf: "pages" | "full" | "references"` 支持指定附件，显式范围每次 ≤20 连续页，`full` 以 ≤20 页批次返回最多 100 页或约 300,000 字符的开头前缀。`references` 从文末按同样的批次、页数与近似字符上限反向探测，复用生产 References v2，只返回检测区域及真实物理页码；完整扫描未检测到时为 `not_found`，扫描上限内无法确认时为 `partial`，并以 `referenceDetection` 公开策略版本与扫描区间。它不把引用强行拆成结构化字段，也不承诺同比例降低 PDFWorker 工作量。MCP/REST 合同一致；PDF 读取优先 Zotero 全文缓存、缺页时批量 `PDFWorker` 兜底，不虚假承诺底层队列可取消；不暴露本机文件路径。REST 对应 `GET /zotseek/item`。
 - **`search` 范围与结构化过滤**：可选 `collection_key` 在 live collection 身份集合内执行候选检索；可选 `filter`（`year_from` / `year_to` / `journal` / `author` / `tag` + `exact`）作用于既有有界候选、先于最终 `max_results`，不改变排序也不扩张候选深度。REST 使用对应 camelCase 参数。
 - **精确 PDF 回链**：`matchedChunk.pdfAttachmentKey` 端到端透传，深链接打开产生命中的确切附件，而非启发式选择。
 - MCP 授权文案更新为"允许本地 AI 智能体只读搜索并读取条目、Notes 和 PDF"，同步全部 10 个语言包。
@@ -266,7 +266,7 @@ MCP 工具说明补充通用证据判断提醒：判断结果时保留用户的�
 - 数字设置在提交时拒绝空值、非整数和越界值，并由浏览器原生校验给出可见反馈；核心读取也统一规范化外部或历史偏好。`maxChunksPerPaper` 固定为 1–200（默认 100），搜索结果数为 5–100（默认 20），相似度百分比为 0–100（默认 70）；非法 `maxTokens` 回退活动模型推荐值。索引运行时与配置指纹复用同一规范化结果，避免“实际分块与新鲜度记录不同”。
 - 搜索设置新增"默认搜索模式"下拉（Semantic / Keyword / Hybrid，默认 `hybrid`，复用既有偏好键）；下拉列宽调整避免中文截断。
 - 已打开的 VTable 搜索窗口会通过控制器接收新的初始查询和 `excludeItemId`，不再依赖错误的静态输入框 ID；因此“查找相关文献”复用窗口时仍会更新查询并排除源条目。
-- 关于页链接指向本 fork 仓库 `https://github.com/Einheriar/ZotSeek-U`。
+- 关于页显示 bootstrap 传入的运行时插件版本，并链接本 fork 仓库 `https://github.com/Einheriar/ZotSeek-U`；版本不在 XHTML 或语言包中写死。
 - 分块策略升级提示等旧式 `alert` 改为可关闭的 `confirm`（关闭不触发重建）。
 - 已知非阻断 UI 问题：多个右下角通知窗口可能重叠遮挡，经评估接受现状。
 

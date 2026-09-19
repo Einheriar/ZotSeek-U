@@ -966,13 +966,16 @@ class PreferencesManager {
   /**
    * Initialize the preference pane
    */
-  async init(window: Window): Promise<void> {
+  async init(window: Window, pluginVersion?: string): Promise<void> {
     this.window = window;
     this.logger.info('Initializing preference pane');
 
     try {
       // Register FTL for localization (linkset in sub-pane XHTML isn't processed)
       (window as any).MozXULElement?.insertFTLIfNeeded('zotseek.ftl');
+
+      const version = window.document.getElementById('zotseek-about-version-value');
+      if (version) version.textContent = pluginVersion || '—';
 
       // Initialize preferences
       this.initPreferences();

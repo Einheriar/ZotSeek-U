@@ -74,6 +74,9 @@ test('advertised MCP tools omit threshold tuning and explain evidence/PDF readin
   assert.match(item.description, /at most 100 pages/);
   assert.match(item.description, /status=partial/);
   assert.match(item.inputSchema.properties.include_pdf.description, /bounded leading prefix/);
+  assert.deepEqual(item.inputSchema.properties.include_pdf.enum,
+    ['none', 'pages', 'full', 'references']);
+  assert.match(item.description, /not_found/);
   const libraryMap = response.result.tools.find((t: any) => t.name === 'get_library_map');
   assert.match(libraryMap.description, /complete live collection tree/);
 });

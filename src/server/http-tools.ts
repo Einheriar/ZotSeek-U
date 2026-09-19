@@ -17,7 +17,17 @@ import {
 } from '../core/server-model-config';
 import { identityFromItem } from '../core/identity-resolver';
 import { noteHTMLFirstHeading, noteHTMLToStructuredText } from '../utils/note-text';
-import { PdfFullReadLimits, PdfReadResult, ZoteroAPI } from '../utils/zotero-api';
+import {
+  PdfFullReadLimits,
+  PdfReadResult,
+  PdfReadSource,
+  ZoteroAPI,
+} from '../utils/zotero-api';
+import {
+  extractPdfReferencePages,
+  PDF_REFERENCE_REGION_STRATEGY_ID,
+  PDF_REFERENCE_REGION_STRATEGY_VERSION,
+} from '../utils/pdf-preprocessor';
 import { OPEN_PATH } from './open-endpoint';
 import { normalizeProductIndexingMode } from '../core/search-policy';
 import {
@@ -36,6 +46,12 @@ const hybridEngine = new HybridSearchEngine(searchEngine);
 const zoteroAPI = new ZoteroAPI();
 
 export const GET_ITEM_PDF_FULL_READ_LIMITS: Readonly<PdfFullReadLimits> = Object.freeze({
+  batchPages: 20,
+  maxPages: 100,
+  maxCharacters: 300_000,
+});
+
+export const GET_ITEM_PDF_REFERENCE_READ_LIMITS: Readonly<PdfFullReadLimits> = Object.freeze({
   batchPages: 20,
   maxPages: 100,
   maxCharacters: 300_000,
@@ -165,7 +181,7 @@ export interface GetItemToolArgs {
   item_key: string;
   library_key?: string;
   include_notes?: boolean;
-  include_pdf?: 'none' | 'pages' | 'full';
+  include_pdf?: 'none' | 'pages' | 'full' | 'references';
   pdf_pages?: string;
   pdf_attachment_key?: string;
 }
@@ -907,6 +923,141 @@ export function parsePdfPageRange(value: string | undefined, maxPages = 20): num
   return Array.from({ length: end - start + 1 }, (_, index) => start + index);
 }
 
+function mergePdfReadSources(sources: Set<PdfReadSource>): PdfReadSource | undefined {
+  if (sources.has('cache+pdfworker') ||
+      (sources.has('zotero-fulltext-cache') && sources.has('pdfworker'))) {
+    return 'cache+pdfworker';
+  }
+  if (sources.has('pdfworker')) return 'pdfworker';
+  if (sources.has('zotero-fulltext-cache')) return 'zotero-fulltext-cache';
+  return undefined;
+}
+
+/**
+ * Scan a bounded physical-page tail backwards until References v2 finds a
+ * citation region. Only the detected region is returned to the client; the
+ * scan bound limits PDFWorker work without pretending a partial scan found no
+ * references.
+ */
+async function readPdfReferenceRegion(attachment: any): Promise<PdfReadResult> {
+  const limits = GET_ITEM_PDF_REFERENCE_READ_LIMITS;
+  const probe = await zoteroAPI.readPdfAttachment(attachment, [1]);
+  if (probe.status === 'failed') return probe;
+  const totalPages = Number(probe.totalPages ?? 0);
+  if (!Number.isSafeInteger(totalPages) || totalPages <= 0) {
+    return {
+      status: 'failed',
+      attachmentKey: String(attachment.key || ''),
+      complete: false,
+      pages: [],
+      error: 'Unable to determine the PDF page count',
+    };
+  }
+
+  const available = new Map(probe.pages.map(page => [page.page, page]));
+  const scanned = new Map<number, { page: number; text: string }>();
+  const sources = new Set<PdfReadSource>();
+  if (probe.source) sources.add(probe.source);
+  let indexedPages = probe.indexedPages ?? 0;
+  let cursor = totalPages;
+  let scannedCharacters = 0;
+
+  while (cursor >= 1 && scanned.size < limits.maxPages &&
+      scannedCharacters < limits.maxCharacters) {
+    const remaining = limits.maxPages - scanned.size;
+    const start = Math.max(1, cursor - limits.batchPages + 1, cursor - remaining + 1);
+    const pageNumbers = Array.from(
+      { length: cursor - start + 1 },
+      (_, index) => start + index,
+    );
+    const missing = pageNumbers.filter(page => !available.has(page));
+    if (missing.length > 0) {
+      const read = await zoteroAPI.readPdfAttachment(attachment, missing);
+      if (read.status === 'failed') return read;
+      if (read.source) sources.add(read.source);
+      indexedPages = Math.max(indexedPages, read.indexedPages ?? 0);
+      for (const page of read.pages) available.set(page.page, page);
+    }
+    for (const pageNumber of pageNumbers) {
+      const page = available.get(pageNumber);
+      if (!page) {
+        return {
+          status: 'failed',
+          attachmentKey: String(attachment.key || ''),
+          indexedPages,
+          totalPages,
+          complete: false,
+          pages: [],
+          error: `PDF read did not return physical page ${pageNumber}`,
+        };
+      }
+      if (!scanned.has(pageNumber)) {
+        scanned.set(pageNumber, page);
+        scannedCharacters += page.text.length;
+      }
+    }
+
+    const scannedPages = [...scanned.values()].sort((a, b) => a.page - b.page);
+    const extracted = extractPdfReferencePages(scannedPages.map(page => ({
+      pageNumber: page.page,
+      text: page.text,
+    })));
+    if (extracted.regions.length > 0) {
+      const pages = extracted.pages.map(page => ({ page: page.pageNumber, text: page.text }));
+      const returned: typeof pages = [];
+      let returnedCharacters = 0;
+      let nextPage: number | undefined;
+      for (const page of pages) {
+        if (returned.length >= limits.maxPages ||
+            (returned.length > 0 && returnedCharacters + page.text.length > limits.maxCharacters)) {
+          nextPage = page.page;
+          break;
+        }
+        returned.push(page);
+        returnedCharacters += page.text.length;
+      }
+      const complete = nextPage === undefined;
+      return {
+        status: complete ? (returned.some(page => page.text.trim()) ? 'ok' : 'empty') : 'partial',
+        source: mergePdfReadSources(sources),
+        attachmentKey: String(attachment.key || ''),
+        indexedPages,
+        totalPages,
+        complete,
+        pages: returned,
+        ...(!complete ? { limitReason: 'character_limit' as const, nextPage } : {}),
+        referenceDetection: {
+          strategyId: PDF_REFERENCE_REGION_STRATEGY_ID,
+          strategyVersion: PDF_REFERENCE_REGION_STRATEGY_VERSION,
+          scannedFromPage: scannedPages[0].page,
+          scannedToPage: scannedPages[scannedPages.length - 1].page,
+        },
+      };
+    }
+    cursor = start - 1;
+  }
+
+  const scannedPages = [...scanned.values()].sort((a, b) => a.page - b.page);
+  const fullyScanned = cursor < 1;
+  const limitReason = scanned.size >= limits.maxPages ? 'page_limit' : 'character_limit';
+  return {
+    status: fullyScanned ? 'not_found' : 'partial',
+    source: mergePdfReadSources(sources),
+    attachmentKey: String(attachment.key || ''),
+    indexedPages,
+    totalPages,
+    complete: fullyScanned,
+    pages: [],
+    ...(!fullyScanned ? { limitReason: limitReason as 'page_limit' | 'character_limit' } : {}),
+    referenceDetection: {
+      strategyId: PDF_REFERENCE_REGION_STRATEGY_ID,
+      strategyVersion: PDF_REFERENCE_REGION_STRATEGY_VERSION,
+      scannedFromPage: scannedPages[0]?.page ?? 1,
+      scannedToPage: scannedPages[scannedPages.length - 1]?.page ?? totalPages,
+    },
+  };
+}
+
 function itemKeyArg(value: unknown, operation: string, argumentName = 'item_key'): string {
   const key = typeof value === 'string' ? value.trim().toUpperCase() : '';
   if (!/^[A-Z0-9]{8}$/.test(key)) {
@@ -1051,8 +1202,8 @@ export async function runGetItemTool(rawArgs: GetItemToolArgs): Promise<GetItemR
   if (libraryId === undefined) throw new Error('get_item: unable to resolve library');
 
   const includePdf = args.include_pdf ?? 'none';
-  if (!['none', 'pages', 'full'].includes(includePdf)) {
-    throw new Error('get_item: "include_pdf" must be "none", "pages", or "full"');
+  if (!['none', 'pages', 'full', 'references'].includes(includePdf)) {
+    throw new Error('get_item: "include_pdf" must be "none", "pages", "full", or "references"');
   }
   if (args.include_notes !== undefined && typeof args.include_notes !== 'boolean') {
     throw new Error('get_item: "include_notes" must be a boolean');
@@ -1122,11 +1273,13 @@ export async function runGetItemTool(rawArgs: GetItemToolArgs): Promise<GetItemR
     } else if (!selectedAttachment) {
       result.pdf = { status: 'unresolved', complete: false, pages: [] };
     } else {
-      const pdf = await zoteroAPI.readPdfAttachment(
-        selectedAttachment,
-        includePdf === 'pages' ? requestedPages : null,
-        includePdf === 'full' ? GET_ITEM_PDF_FULL_READ_LIMITS : undefined,
-      );
+      const pdf = includePdf === 'references'
+        ? await readPdfReferenceRegion(selectedAttachment)
+        : await zoteroAPI.readPdfAttachment(
+            selectedAttachment,
+            includePdf === 'pages' ? requestedPages : null,
+            includePdf === 'full' ? GET_ITEM_PDF_FULL_READ_LIMITS : undefined,
+          );
       if (pdf.status === 'failed' && pdf.error?.startsWith('Requested PDF page exceeds')) {
         throw new Error(`get_item: ${pdf.error}`);
       }

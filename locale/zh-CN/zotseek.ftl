@@ -221,6 +221,7 @@ zotseek-pref-dangerZone = 危险操作
 zotseek-pref-destructive = ⚠ 破坏性操作
 zotseek-pref-clearIndexDesc = 从数据库中删除所有嵌入向量。之后需要重新索引。
 zotseek-pref-about = 关于
+zotseek-pref-version = 版本：
 zotseek-pref-githubRepo =
     .value = GitHub 仓库
 zotseek-pref-modelLine = 模型：{ $model }

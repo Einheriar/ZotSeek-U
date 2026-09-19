@@ -875,6 +875,17 @@ Full indexing uses the versioned `zotseek-pdf-main-text-indexing-v1` pipeline:
 5. Enforce the active model's exact prefixed token budget, character ceiling
    and the shared Summary/Note/PDF `maxChunksPerPaper` quota.
 
+`get_item.include_pdf="references"` reuses the References v2 decision in step
+3 but exposes its inverse view: indexing retains body text and excludes the
+reference region, whereas the explicit read returns only that detected region.
+The server scans backwards from the PDF tail in batches of at most 20 pages,
+up to 100 physical pages or about 300,000 source characters. Returned plain
+text remains aligned to real physical pages and is not parsed into structured
+citations. A complete scan with no reliable region is `not_found`; reaching a
+scan bound first is `partial`; `referenceDetection` records the detector
+version and scanned interval. Existing unfiltered `pages` and `full` behavior
+does not change.
+
 Full mode assigns that shared quota in strict source order: all Summary chunks
 that fit are kept first, up to 30 Note chunks are kept next, and PDF chunks use
 only the remaining slots. The 30-chunk Note cap applies only while combining

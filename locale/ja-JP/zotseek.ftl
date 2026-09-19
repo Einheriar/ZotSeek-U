@@ -216,6 +216,7 @@ zotseek-pref-dangerZone = 危険な操作
 zotseek-pref-destructive = ⚠ 破壊的操作
 zotseek-pref-clearIndexDesc = データベースからすべての埋め込みを削除します。その後、再度インデックス化が必要です。
 zotseek-pref-about = 情報
+zotseek-pref-version = バージョン：
 zotseek-pref-githubRepo =
     .value = GitHub リポジトリ
 zotseek-pref-modelLine = モデル: { $model }

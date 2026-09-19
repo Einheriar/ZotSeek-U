@@ -221,6 +221,7 @@ zotseek-pref-dangerZone = Опасная зона
 zotseek-pref-destructive = ⚠ Разрушительное действие
 zotseek-pref-clearIndexDesc = Удаляет все embedding из базы данных. После этого потребуется повторно проиндексировать библиотеку.
 zotseek-pref-about = О программе
+zotseek-pref-version = Версия:
 zotseek-pref-githubRepo =
     .value = Репозиторий GitHub
 zotseek-pref-modelLine = Модель: { $model }

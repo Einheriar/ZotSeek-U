@@ -167,13 +167,13 @@ const TOOL_DEFINITIONS = [
   {
     name: 'get_item',
     description:
-      'Read one Zotero parent item by stable library_key + item_key. Returns a normalized metadata snapshot and attachment list; optionally includes complete, unfiltered Child Notes and exact PDF pages or a bounded leading PDF prefix. ' +
+      'Read one Zotero parent item by stable library_key + item_key. Returns a normalized metadata snapshot and attachment list; optionally includes complete, unfiltered Child Notes, exact PDF pages, a bounded leading PDF prefix, or only a detected reference-list region. ' +
       'When Zotero Style is loaded and its cache already contains valid data, the result may include optional journalMetrics with impactFactor and JCR SCI sciQuartile (Q1-Q4); no refresh is triggered. ' +
       'For a selected search hit, begin with its matched PDF page and necessary adjacent pages; request the bounded full prefix only when the question requires broader reading. ' +
       'Verify passages supporting key claims before issuing near-duplicate searches. ' +
       'PDF content is extracted text, not a faithful rendering: Greek letters, mathematical symbols, superscripts, subscripts, column order and tables may be incorrect. ' +
       'Do not guess missing symbols or treat extraction artifacts as the paper\'s claims. Distinguish the source\'s direct claims, studies reported by a review, and your own inference; identify background or insufficient evidence and cite material actually read. ' +
-      'PDF reads use the exact attachment selected during Full indexing when available and prefer Zotero\'s full-text cache. Explicit pages use one PDFWorker batch; full reads use batches of at most 20 pages and return at most 100 pages or about 300,000 text characters. A limited result has status=partial, complete=false, limitReason, and nextPage for a follow-up pages request. Read-only and local.',
+      'PDF reads use the exact attachment selected during Full indexing when available and prefer Zotero\'s full-text cache. Explicit pages use one PDFWorker batch; full reads use batches of at most 20 pages and return at most 100 pages or about 300,000 text characters. references scans backwards in the same bounded batches and returns only the References v2 region with physical page numbers; not_found means a complete scan found none, while partial with empty pages means the scan limit was reached without a reliable region. A limited result has status=partial, complete=false, limitReason, and may provide nextPage for a follow-up pages request. Read-only and local.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -193,9 +193,9 @@ const TOOL_DEFINITIONS = [
         },
         include_pdf: {
           type: 'string',
-          enum: ['none', 'pages', 'full'],
+          enum: ['none', 'pages', 'full', 'references'],
           default: 'none',
-          description: 'Read no PDF text, a page range, or a bounded leading prefix of the exact PDF attachment',
+          description: 'Read no PDF text, a page range, a bounded leading prefix, or only the detected reference-list region of the exact PDF attachment',
         },
         pdf_pages: {
           type: 'string',

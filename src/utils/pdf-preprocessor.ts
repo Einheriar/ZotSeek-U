@@ -94,6 +94,11 @@ export interface PdfPreprocessResult {
   diagnostics: PdfPreprocessDiagnostics;
 }
 
+export interface PdfReferenceExtractionResult {
+  pages: PageText[];
+  regions: PdfReferenceRegionDiagnostic[];
+}
+
 /** Prevent References v2 output from being filtered again by legacy chunker rules. */
 export function assertPdfReferencePipelineModes(
   referenceMode: PdfReferenceRegionFiltering,
@@ -795,5 +800,36 @@ export function preprocessPdfPages(
         .reduce((sum, item) => sum + item.text.length, 0),
       pageSlotsPreserved,
     },
+  };
+}
+
+/**
+ * Return only the page-aligned text classified as a References v2 region.
+ * This is the inverse view of index preprocessing: indexing keeps body text,
+ * while explicit reference reads faithfully expose the detected region.
+ */
+export function extractPdfReferencePages(
+  inputPages: readonly PageText[],
+): PdfReferenceExtractionResult {
+  const result = preprocessPdfPages(inputPages, {
+    pdfReferenceRegionFiltering: 'v2',
+    pdfPageFurnitureFiltering: 'off',
+  });
+  const blocksByPage = new Map<number, PdfIgnoredBlock[]>();
+  for (const block of result.ignoredBlocks) {
+    if (block.strategyId !== PDF_REFERENCE_REGION_STRATEGY_ID) continue;
+    const blocks = blocksByPage.get(block.pageNumber) ?? [];
+    blocks.push(block);
+    blocksByPage.set(block.pageNumber, blocks);
+  }
+  return {
+    pages: inputPages.flatMap(page => {
+      const text = (blocksByPage.get(page.pageNumber) ?? [])
+        .sort((a, b) => a.sourceLine - b.sourceLine)
+        .map(block => block.text)
+        .join('\n');
+      return text.trim() ? [{ pageNumber: page.pageNumber, text }] : [];
+    }),
+    regions: result.diagnostics.referenceRegions,
   };
 }

@@ -114,6 +114,8 @@ selfTest.register('mcp-server', async () => {
     const getItem = json.result.tools.find((tool: any) => tool.name === 'get_item');
     assertTrue(getItem.description.includes('at most 100 pages'), 'get_item advertises bounded full reads');
     assertTrue(getItem.description.includes('nextPage'), 'get_item advertises continuation page');
+    assertTrue(getItem.inputSchema.properties.include_pdf.enum.includes('references'),
+      'get_item advertises references-only PDF reads');
     const search = json.result.tools.find((tool: any) => tool.name === 'search');
     assertTrue(
       !Object.prototype.hasOwnProperty.call(search.inputSchema.properties, 'min_similarity'),

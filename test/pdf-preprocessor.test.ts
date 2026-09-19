@@ -4,6 +4,7 @@ import {
   PDF_PAGE_FURNITURE_STRATEGY_ID,
   PDF_REFERENCE_REGION_STRATEGY_ID,
   assertPdfReferencePipelineModes,
+  extractPdfReferencePages,
   preprocessPdfPages,
 } from '../src/utils/pdf-preprocessor';
 import type { PageText } from '../src/utils/chunker';
@@ -60,6 +61,35 @@ describe('PDF main-text preprocessor', () => {
     assert.ok(result.ignoredBlocks.every(block => block.strategyId === PDF_REFERENCE_REGION_STRATEGY_ID));
     assert.equal(JSON.stringify(pages), before);
     assert.deepEqual(result.pages.map(item => item.pageNumber), [1, 2, 3, 4, 5, 6]);
+  });
+
+  test('returns the inverse page-aligned References v2 view for explicit reads', () => {
+    const result = extractPdfReferencePages([
+      page(21, ['Discussion', 'Body conclusion']),
+      page(22, [
+        'References',
+        '[1] Smith, A. (2021). Journal 2(1), 10-20. doi:10.1000/one',
+      ]),
+      page(23, ['[2] Jones, B. (2022). University Press.']),
+      page(24, ['Acknowledgements', 'Thanks to the participants.']),
+    ]);
+
+    assert.equal(result.regions.length, 1);
+    assert.deepEqual(result.pages, [
+      page(22, [
+        'References',
+        '[1] Smith, A. (2021). Journal 2(1), 10-20. doi:10.1000/one',
+      ]),
+      page(23, ['[2] Jones, B. (2022). University Press.']),
+    ]);
+  });
+
+  test('does not invent a reference list when References v2 has no reliable heading', () => {
+    const result = extractPdfReferencePages([
+      page(1, ['Body cites Smith (2021) and includes doi:10.1000/body.']),
+      page(2, ['Discussion of references in ordinary prose.']),
+    ]);
+    assert.deepEqual(result, { pages: [], regions: [] });
   });
 
   test('keeps References content byte-for-byte when the component is explicitly off', () => {

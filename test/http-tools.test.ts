@@ -362,6 +362,87 @@ describe('get_item normalized read contract', () => {
     assert.equal(calls.length, 5);
   });
 
+  test('returns only the detected reference-list pages from a bounded tail scan', async () => {
+    const zotero = installZoteroStub();
+    const calls: number[][] = [];
+    const pdf = {
+      id: 10,
+      key: 'PDF00001',
+      libraryID: 1,
+      parentID: 1,
+      attachmentContentType: 'application/pdf',
+      attachmentFilename: 'paper.pdf',
+      isAttachment: () => true,
+      isPDFAttachment: () => true,
+    };
+    const parent = {
+      id: 1,
+      key: 'PARENT01',
+      libraryID: 1,
+      itemType: 'journalArticle',
+      isRegularItem: () => true,
+      isNote: () => false,
+      isAttachment: () => false,
+      getField: (field: string) => field === 'title' ? 'Paper with references' : '',
+      getCreators: () => [],
+      getTags: () => [],
+      getCollections: () => [],
+      getAttachments: () => [10],
+      getNotes: () => [],
+      relatedItems: [],
+    };
+    zotero.Libraries = { userLibraryID: 1 };
+    zotero.Items = {
+      get: (id: number) => id === 1 ? parent : id === 10 ? pdf : null,
+      getByLibraryAndKey: (libraryId: number, key: string) => {
+        if (libraryId !== 1) return null;
+        if (key === 'PARENT01') return parent;
+        if (key === 'PDF00001') return pdf;
+        return null;
+      },
+    };
+    zotero.Collections = { get: () => null };
+    zotero.Fulltext = {
+      getPages: async () => ({ indexedPages: 0, total: 30 }),
+      getItemCacheFile: () => ({ path: 'missing', exists: () => false }),
+    };
+    const textForPage = (physicalPage: number) => {
+      if (physicalPage === 25) {
+        return 'References\n[1] Smith, A. (2021). Journal 2(1), 10-20. doi:10.1000/one';
+      }
+      if (physicalPage === 26) return '[2] Jones, B. (2022). University Press.';
+      if (physicalPage === 29) return 'Acknowledgements\nThanks to the participants.';
+      if (physicalPage >= 27) return '';
+      return `Body page ${physicalPage}`;
+    };
+    zotero.PDFWorker = {
+      getFullText: async (_id: number, pages: number[]) => {
+        calls.push(pages);
+        return {
+          totalPages: 30,
+          text: pages.map(page => textForPage(page + 1)).join('\f'),
+          extractedPages: pages.length,
+        };
+      },
+    };
+
+    const response = await runGetItemTool({
+      item_key: 'PARENT01',
+      pdf_attachment_key: 'PDF00001',
+      include_pdf: 'references',
+    });
+
+    assert.equal(response.pdf?.status, 'ok');
+    assert.deepEqual(response.pdf?.pages.map(page => page.page), [25, 26]);
+    assert.match(response.pdf?.pages[0].text || '', /^References/);
+    assert.equal(response.pdf?.pages.some(page => page.text.includes('Body page')), false);
+    assert.deepEqual(response.pdf?.referenceDetection && {
+      from: response.pdf.referenceDetection.scannedFromPage,
+      to: response.pdf.referenceDetection.scannedToPage,
+    }, { from: 11, to: 30 });
+    assert.equal(calls.length, 2);
+  });
+
   test('matches one complete Unicode-normalized tag with case preserved', () => {
     const tagged = result() as ToolResultItem & { tags: string[] };
     tagged.tags = ['Méthodes', 'Review'];
