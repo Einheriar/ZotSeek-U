@@ -55,8 +55,17 @@ test('MCP fixes threshold zero without changing UI preferences or REST; componen
   }
 });
 
-test('advertised MCP tools omit threshold tuning and explain evidence/PDF reading', async () => {
+test('initialize exposes soft workflow instructions while tools retain concise standalone guidance', async () => {
   installZoteroStub();
+  const initialized = await rpc('initialize', {
+    protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '0' },
+  });
+  const instructions = initialized.result.instructions;
+  assert.match(instructions, /up to 5 meaningfully different searches/);
+  assert.match(instructions, /up to 5 more searches/);
+  assert.match(instructions, /no more than 4 papers/);
+  assert.match(instructions, /Stop when the evidence answers/);
+  assert.match(instructions, /soft guidelines, not server quotas/);
   const response = await rpc('tools/list');
   const search = response.result.tools.find((t: any) => t.name === 'search');
   assert.equal('min_similarity' in search.inputSchema.properties, false);
@@ -64,12 +73,12 @@ test('advertised MCP tools omit threshold tuning and explain evidence/PDF readin
   assert.equal(search.inputSchema.properties.max_results.maximum, 100);
   assert.equal(search.inputSchema.properties.include_subcollections.default, true);
   assert.ok(search.inputSchema.properties.filter.properties.tag);
-  assert.match(search.description, /semanticScore/);
-  assert.match(search.description, /bm25Score/);
-  assert.match(search.description, /Read the results before deciding/);
+  assert.match(search.description, /hybrid\/papers and 10 results/);
+  assert.match(search.description, /missing angle/);
+  assert.match(search.description, /cloud embedding provider/);
+  assert.ok(search.description.length < 900);
   const item = response.result.tools.find((t: any) => t.name === 'get_item');
   assert.match(item.description, /extracted text/);
-  assert.match(item.description, /Greek letters/);
   assert.match(item.description, /batches of at most 20 pages/);
   assert.match(item.description, /at most 100 pages/);
   assert.match(item.description, /status=partial/);
@@ -77,6 +86,8 @@ test('advertised MCP tools omit threshold tuning and explain evidence/PDF readin
   assert.deepEqual(item.inputSchema.properties.include_pdf.enum,
     ['none', 'pages', 'full', 'references']);
   assert.match(item.description, /not_found/);
+  assert.match(item.description, /include_pdf=full for no more than 4 papers/);
+  assert.ok(item.description.length < 900);
   const libraryMap = response.result.tools.find((t: any) => t.name === 'get_library_map');
   assert.match(libraryMap.description, /complete live collection tree/);
 });

@@ -72,6 +72,8 @@ selfTest.register('mcp-server', async () => {
     assertEq(json.result.protocolVersion, '2025-06-18', 'echoes known protocolVersion');
     assertEq(json.result.serverInfo.name, 'zotseek', 'serverInfo.name');
     assertTrue(!!json.result.capabilities.tools, 'declares tools capability');
+    assertTrue(json.result.instructions.includes('up to 5 more searches'), 'advertises staged search guidance');
+    assertTrue(json.result.instructions.includes('no more than 4 papers'), 'advertises full-read guidance');
   }));
 
   scenarios.push(await scenario('notifications/initialized returns 202', async () => {

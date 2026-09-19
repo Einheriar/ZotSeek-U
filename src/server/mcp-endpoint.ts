@@ -32,40 +32,23 @@ const LATEST_PROTOCOL_VERSION = '2025-06-18';
 // for anything outside this set is answered with LATEST_PROTOCOL_VERSION.
 const SUPPORTED_PROTOCOL_VERSIONS = ['2024-11-05', '2025-03-26', '2025-06-18'];
 
+// Cross-tool workflow guidance is optional for MCP hosts; keep tool descriptions usable alone.
+const SERVER_INSTRUCTIONS =
+  'For literature research, search in two stages: usually use up to 5 meaningfully different searches to find candidates. ' +
+  'Read the strongest candidates with get_item; only if a key condition remains unresolved, use up to 5 more searches without synonym-only repeats. ' +
+  'Prefer metadata, Notes and relevant PDF pages; generally read no more than 4 papers with include_pdf=full. ' +
+  'Stop when the evidence answers the question or the remaining uncertainty can be stated honestly. Reuse candidates in follow-ups. These are soft guidelines, not server quotas.';
+
 const TOOL_DEFINITIONS = [
   {
     name: 'search',
     description:
-      "Search the user's Zotero library by keywords, semantic similarity or Hybrid ranking. " +
-      'Start with hybrid/papers and 10 results. Turn informal requests into focused queries, preserving ' +
-      'research objects, relationships and reliable clues. Do not invent missing details or turn uncertain ' +
-      'years into hard filters. An acronym alone does not make a relationship question a keyword query. ' +
-      'Read the results before deciding to stop, request more, search a missing angle, or use get_item ' +
-      'to verify selected papers. Do not routinely run every mode or translate every query. ' +
-      'When assessing results, check the user\'s research objects, relationships and material constraints, not just topical similarity. ' +
-      'Returns ranked results with bounded matched text ' +
-      'excerpts and page numbers where available. Each resolvable result also ' +
-      'includes structured metadata with the full creator list, date, journal ' +
-      'or book title, volume, issue, pages, DOI, and other citation fields. ' +
-      'Use these fields when the user requests a bibliography or a citation ' +
-      'style such as APA; do not guess missing or conflicting bibliographic details. Resolvable results carry available ' +
-      'zotero:// deep links: links.select opens the item in Zotero, ' +
-      'links.openPdf opens the PDF at the matched page — include them when ' +
-      'citing results to the user. If your client does not render zotero:// ' +
-      'URIs as clickable links, use links.selectHttp / links.openPdfHttp ' +
-      'instead (same action via a local http launcher). The MCP endpoint is local and read-only; ' +
-      'semantic/Hybrid query embedding can send query text to the selected cloud provider. ' +
-      'Keyword search does not request query embeddings. ' +
-      'Paper Hybrid content scores are semantic MaxSim plus a bounded lexical bonus, possibly above 1, ' +
-      'not probabilities. Keyword scores are equal Quick/BM25 RRF with k=10, not the normalized UI percentage. ' +
-      'semanticScore is the unrounded cosine similarity and bm25Score is the unnormalized BM25 score; ' +
-      'null means that component was not computed or did not match. These fields do not trigger extra searches. ' +
-      'When Zotero Style is loaded and already has valid cached data, resolvable items may also include ' +
-      'journalMetrics with impactFactor and JCR SCI sciQuartile (Q1-Q4). This optional enrichment is omitted ' +
-      'otherwise, never triggers a journal-data refresh, and never changes ranking. ' +
-      'Use excerpts and source evidence to assess relevance, not scores as confidence. ' +
-      'Identity navigation and ' +
-      'passage paths retain their own score conventions. Compare scores only within the same query and policy.',
+      "Search the user's Zotero library by keyword, semantic or Hybrid ranking. Start with hybrid/papers and 10 results. " +
+      'Use focused queries that preserve the user\'s research objects and conditions; avoid routine mode sweeps. ' +
+      'Read the results before searching again; a second search should address a missing angle, not just change synonyms. ' +
+      'Returns bounded excerpts, page numbers, citation metadata and Zotero deep links when available. ' +
+      'Use evidence, not scores, to judge relevance; semanticScore and bm25Score are not confidence values. ' +
+      'Semantic/Hybrid queries may send query text to the configured cloud embedding provider; Keyword does not.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -167,13 +150,11 @@ const TOOL_DEFINITIONS = [
   {
     name: 'get_item',
     description:
-      'Read one Zotero parent item by stable library_key + item_key. Returns a normalized metadata snapshot and attachment list; optionally includes complete, unfiltered Child Notes, exact PDF pages, a bounded leading PDF prefix, or only a detected reference-list region. ' +
-      'When Zotero Style is loaded and its cache already contains valid data, the result may include optional journalMetrics with impactFactor and JCR SCI sciQuartile (Q1-Q4); no refresh is triggered. ' +
-      'For a selected search hit, begin with its matched PDF page and necessary adjacent pages; request the bounded full prefix only when the question requires broader reading. ' +
-      'Verify passages supporting key claims before issuing near-duplicate searches. ' +
-      'PDF content is extracted text, not a faithful rendering: Greek letters, mathematical symbols, superscripts, subscripts, column order and tables may be incorrect. ' +
-      'Do not guess missing symbols or treat extraction artifacts as the paper\'s claims. Distinguish the source\'s direct claims, studies reported by a review, and your own inference; identify background or insufficient evidence and cite material actually read. ' +
-      'PDF reads use the exact attachment selected during Full indexing when available and prefer Zotero\'s full-text cache. Explicit pages use one PDFWorker batch; full reads use batches of at most 20 pages and return at most 100 pages or about 300,000 text characters. references scans backwards in the same bounded batches and returns only the References v2 region with physical page numbers; not_found means a complete scan found none, while partial with empty pages means the scan limit was reached without a reliable region. A limited result has status=partial, complete=false, limitReason, and may provide nextPage for a follow-up pages request. Read-only and local.',
+      'Read one Zotero parent item by library_key + item_key. Returns metadata and attachments, optionally complete Child Notes, exact PDF pages, a bounded full prefix, or a detected references region. ' +
+      'Prefer the matched page and adjacent pages before full text; generally use include_pdf=full for no more than 4 papers. ' +
+      'PDF is extracted text, not a faithful rendering; verify suspicious symbols, tables and column order. ' +
+      'Full reads return at most 100 pages or about 300,000 characters, in batches of at most 20 pages; status=partial and nextPage indicate continuation. ' +
+      'A references result may be not_found or partial if detection or scanning is incomplete. Read-only and local.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -351,6 +332,7 @@ async function handleMcpMessage(msg: any, inBatch = false): Promise<EndpointResp
             name: 'zotseek',
             version: Zotero.ZotSeek?.info?.version || 'unknown',
           },
+          instructions: SERVER_INSTRUCTIONS,
         });
         break;
       }
