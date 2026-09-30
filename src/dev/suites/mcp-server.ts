@@ -135,11 +135,24 @@ selfTest.register('mcp-server', async () => {
     const nodes = flattenCollections(payload.collections);
     assertTrue(nodes.every(node => /^[A-Z0-9]{8}$/.test(node.collectionKey)), 'stable collection keys');
     assertEq(new Set(nodes.map(node => node.collectionKey)).size, nodes.length, 'no duplicate collections');
+    // Count descendants too, then check each edge against live parent metadata.
+    const liveCollections = Zotero.Collections.getByLibrary(Zotero.Libraries.userLibraryID, true) || [];
     assertEq(
       nodes.length,
-      (Zotero.Collections.getByLibrary(Zotero.Libraries.userLibraryID) || []).length,
+      liveCollections.length,
       'every live collection appears once',
     );
+    const liveByKey = new Map<string, any>(liveCollections.map((collection: any) => [String(collection.key), collection]));
+    const checkParents = (siblings: any[], parentKey = ''): void => {
+      for (const node of siblings) {
+        const collection = liveByKey.get(node.collectionKey);
+        assertTrue(!!collection, `collection ${node.collectionKey} exists in the live library`);
+        assertEq(node.name, collection.name, `name of ${node.collectionKey}`);
+        assertEq(String(collection.parentKey || ''), parentKey, `parent of ${node.collectionKey}`);
+        checkParents(node.children, node.collectionKey);
+      }
+    };
+    checkParents(payload.collections);
 
     const [status, , body] = await handleLibraryMapRequest({
       headers: {}, searchParams: new URLSearchParams('libraryKey=user'),

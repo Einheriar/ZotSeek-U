@@ -487,13 +487,30 @@ describe('library map and collection scope', () => {
       userLibraryID: 1,
       get: () => ({ libraryType: 'user', name: 'Personal Library' }),
     };
+    const collections = [
+      { id: 1, key: 'ROOT0001', name: 'Root', libraryID: 1, parentID: false },
+      { id: 2, key: 'CHILD001', name: '2026-09', libraryID: 1, parentID: 1 },
+      { id: 3, key: 'GRAND001', name: 'Empty grandchild', libraryID: 1, parentID: 2 },
+      { id: 4, key: 'ROOT0002', name: 'Empty root', libraryID: 1, parentID: false },
+    ];
     zotero.Collections = {
-      getByLibrary: () => [{ id: 1, key: 'ROOT0001', name: 'Root', libraryID: 1 }],
+      // Zotero returns only roots unless recursion is explicitly requested.
+      getByLibrary: (libraryId: number, recursive = false) => {
+        assert.equal(libraryId, 1);
+        return recursive ? collections : collections.filter(collection => !collection.parentID);
+      },
     };
     assert.deepEqual(await runGetLibraryMapTool({}), {
       libraryKey: 'user',
       name: 'Personal Library',
-      collections: [{ collectionKey: 'ROOT0001', name: 'Root', children: [] }],
+      collections: [
+        { collectionKey: 'ROOT0002', name: 'Empty root', children: [] },
+        { collectionKey: 'ROOT0001', name: 'Root', children: [
+          { collectionKey: 'CHILD001', name: '2026-09', children: [
+            { collectionKey: 'GRAND001', name: 'Empty grandchild', children: [] },
+          ] },
+        ] },
+      ],
     });
   });
 
@@ -501,9 +518,29 @@ describe('library map and collection scope', () => {
     const zotero = installZoteroStub();
     zotero.Groups = { getLibraryIDFromGroupID: (groupId: number) => groupId === 42 ? 7 : false };
     zotero.Libraries = { userLibraryID: 1, get: () => ({ name: 'Research Group' }) };
-    zotero.Collections = { getByLibrary: () => [] };
+    const collections = [
+      { id: 1, key: 'ROOT0001', name: 'Group root', libraryID: 7, parentID: false },
+      { id: 2, key: 'CHILD001', name: 'Group child', libraryID: 7, parentID: 1 },
+    ];
+    zotero.Collections = { getByLibrary: (libraryId: number, recursive = false) => {
+      assert.equal(libraryId, 7);
+      return recursive ? collections : collections.filter(collection => !collection.parentID);
+    } };
     assert.deepEqual(await runGetLibraryMapTool({ library_key: 'group: 42' }), {
-      libraryKey: 'group:42', name: 'Research Group', collections: [],
+      libraryKey: 'group:42', name: 'Research Group', collections: [
+        { collectionKey: 'ROOT0001', name: 'Group root', children: [
+          { collectionKey: 'CHILD001', name: 'Group child', children: [] },
+        ] },
+      ],
+    });
+  });
+
+  test('returns an empty tree for a library without collections', async () => {
+    const zotero = installZoteroStub();
+    zotero.Libraries = { userLibraryID: 1, get: () => ({ name: 'Empty Library' }) };
+    zotero.Collections = { getByLibrary: () => [] };
+    assert.deepEqual(await runGetLibraryMapTool({}), {
+      libraryKey: 'user', name: 'Empty Library', collections: [],
     });
   });
 });

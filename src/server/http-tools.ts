@@ -701,7 +701,8 @@ export async function runGetLibraryMapTool(args: LibraryMapToolArgs = {}): Promi
   const libraryKey = canonicalLibraryKey(requestedLibraryKey);
   let collections: any[];
   try {
-    const raw = Zotero.Collections.getByLibrary(libraryId);
+    // Zotero defaults to roots only; tree construction needs every descendant.
+    const raw = Zotero.Collections.getByLibrary(libraryId, true);
     if (!Array.isArray(raw)) {
       throw new Error('Zotero Collections returned a non-array collection list');
     }

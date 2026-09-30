@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { installZoteroStub } from './helpers/zotero-stub';
 import { HybridSearchEngine } from '../src/core/hybrid-search';
 import { handleMcpRequest, ZotSeekMCPEndpoint } from '../src/server/mcp-endpoint';
-import { handleSearchRequest } from '../src/server/rest-endpoints';
+import { handleLibraryMapRequest, handleSearchRequest } from '../src/server/rest-endpoints';
 
 async function rpc(method: string, params?: any): Promise<any> {
   const [status, , body] = await handleMcpRequest({ headers: {}, data: { jsonrpc: '2.0', id: 1, method, params } });
@@ -90,6 +90,46 @@ test('initialize exposes soft workflow instructions while tools retain concise s
   assert.ok(item.description.length < 900);
   const libraryMap = response.result.tools.find((t: any) => t.name === 'get_library_map');
   assert.match(libraryMap.description, /complete live collection tree/);
+});
+
+test('MCP and REST library maps include nested and empty collections in the requested library', async () => {
+  const z = installZoteroStub();
+  z.Libraries = { userLibraryID: 1, get: (id: number) => ({ name: id === 1 ? 'Personal Library' : 'Group' }) };
+  z.Groups = { getLibraryIDFromGroupID: (id: number) => id === 42 ? 7 : false };
+  const collections = [
+    { id: 1, key: 'ROOT0001', name: 'Root', libraryID: 1, parentID: false },
+    { id: 2, key: 'CHILD001', name: '2026-09', libraryID: 1, parentID: 1 },
+    { id: 3, key: 'GRAND001', name: 'Empty grandchild', libraryID: 1, parentID: 2 },
+    { id: 4, key: 'ROOT0002', name: 'Group root', libraryID: 7, parentID: false },
+    { id: 5, key: 'CHILD002', name: 'Empty group child', libraryID: 7, parentID: 4 },
+  ];
+  z.Collections = { getByLibrary: (id: number, recursive = false) =>
+    collections.filter(collection => collection.libraryID === id && (recursive || !collection.parentID)),
+  };
+  for (const libraryKey of ['user', 'group:42']) {
+    const response = await rpc('tools/call', {
+      name: 'get_library_map', arguments: { library_key: libraryKey },
+    });
+    assert.equal(response.result.isError, undefined);
+    const payload = JSON.parse(response.result.content[0].text);
+    assert.equal(payload.libraryKey, libraryKey);
+    assert.deepEqual(payload.collections, libraryKey === 'user' ? [
+      { collectionKey: 'ROOT0001', name: 'Root', children: [
+        { collectionKey: 'CHILD001', name: '2026-09', children: [
+          { collectionKey: 'GRAND001', name: 'Empty grandchild', children: [] },
+        ] },
+      ] },
+    ] : [
+      { collectionKey: 'ROOT0002', name: 'Group root', children: [
+        { collectionKey: 'CHILD002', name: 'Empty group child', children: [] },
+      ] },
+    ]);
+    const [status, , body] = await handleLibraryMapRequest({
+      headers: {}, searchParams: new URLSearchParams({ libraryKey }),
+    });
+    assert.equal(status, 200);
+    assert.deepEqual(JSON.parse(body!), payload);
+  }
 });
 
 test('collection scope is resolved once and live tag filtering fills the final window', async () => {

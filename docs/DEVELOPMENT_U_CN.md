@@ -245,6 +245,8 @@ MCP 工具说明补充通用证据判断提醒：判断结果时保留用户的�
 
 2026-09-13 Plan 74：MCP/REST `search` 可用稳定 `library_key + collection_key` 在候选 TopK 前限制实时 collection 成员，MCP 默认包含全部后代、可选择仅直接成员；新增只读 `get_library_map` 与 `GET /zotseek/library-map` 返回完整普通 collection 树。结构化 year/journal/author 过滤移到有界候选排序之后、最终 `max_results` 之前，并增加完整、NFC 规范化且区分大小写的实时 `tag` 条件。它仍不是全库字段查询：Hybrid/Semantic/Keyword 分别只检查既有 S50∪K50、S50、K50，passages 保持兼容候选策略；过滤不重排。collection 解析或树完整性失败会明确报错，不会退化成全库或返回误导性部分树。未修改数据库 schema、索引策略、Embedding、chunk 或 XPI/manifest。
 
+2026-09-30：修复 `get_library_map` / REST `/zotseek/library-map` 遗漏子分类的问题。Zotero 的 `Collections.getByLibrary` 默认只枚举顶层分类，共用服务层现显式启用递归，再由原有树构建函数恢复父子层级。回归测试模拟默认仅返回顶层的 API 行为，覆盖个人库、群组库、多层及空分类和 MCP/REST 输出一致性；Zotero `mcp-server` self-test 改为核对完整递归列表及每个节点的实时名称、父分类关系。
+
 在上游 `search` / `find_similar` / `index_status` 基础上新增（完整用法见 [MCP.md](MCP.md)）：
 
 - **`get_library_map` 工具**：按稳定 `library_key` 返回实时完整普通 collection 树，每个节点只有 `collectionKey`、`name` 和 `children`；包括空 collection，不返回 saved search、条目列表、标签或索引覆盖率。REST 对应 `GET /zotseek/library-map`。
