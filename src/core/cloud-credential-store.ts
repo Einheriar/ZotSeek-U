@@ -11,6 +11,9 @@ declare const Zotero: any;
 const LOGIN_ORIGIN = 'chrome://zotseek';
 const LOGIN_REALM = 'ZotSeek Cloud Embedding API Key (encrypted)';
 const COMPAT_CIPHERTEXT_PREFIX = 'zotseek-oskeystore-v1:';
+const PUBLIC_CIPHERTEXT_PREFIX = 'oskv1:';
+const LEGACY_STORE_LABEL = 'Firefox Encrypted Storage';
+const CURRENT_STORE_LABEL = 'Zotero Encrypted Storage';
 const CREDENTIAL_REVISION_PREF = 'zotseek.cloud.credentialRevision';
 
 function credentialRevisionPref(provider: string): string {
@@ -83,72 +86,138 @@ interface CloudOSKeyStore {
   isEncrypted(value: string): boolean;
 }
 
+interface CloudNativeKeyStore {
+  asyncSecretAvailable(label: string): Promise<boolean>;
+  asyncDecryptBytes(label: string, ciphertext: string): Promise<ArrayLike<number>>;
+}
+
 /**
- * Zotero 9.0 ships Mozilla's OSKeyStore module but does not expose
- * Zotero.OSKeyStore. Keep the newer public wrapper as the preferred path and
- * use the bundled module as an encrypted-at-rest compatibility path.
+ * Writing follows the available runtime, but reading follows the stored format.
+ * Upgrading to Zotero 10 must not strand ciphertext written by Zotero 9.
  */
 export function resolveCloudOSKeyStore(
   zoteroRuntime: any,
   chromeUtilsRuntime: any,
+  nativeKeyStore?: () => CloudNativeKeyStore,
 ): CloudOSKeyStore {
-  const exposed = zoteroRuntime?.OSKeyStore;
-  if (exposed && typeof exposed.encrypt === 'function' &&
-      typeof exposed.decrypt === 'function' &&
-      typeof exposed.isEncrypted === 'function') {
-    return exposed;
-  }
-
+  const candidate = zoteroRuntime?.OSKeyStore;
+  const exposed = candidate && typeof candidate.encrypt === 'function' &&
+    typeof candidate.decrypt === 'function' && typeof candidate.isEncrypted === 'function'
+    ? candidate : null;
   let bundled: any;
-  try {
-    bundled = chromeUtilsRuntime?.importESModule?.(
-      'resource://gre/modules/OSKeyStore.sys.mjs',
-    )?.OSKeyStore;
-  } catch {
-    // The caller converts this into the generic secure-storage error.
-  }
-  if (!bundled || typeof bundled.encrypt !== 'function' || typeof bundled.decrypt !== 'function') {
-    throw new CloudCredentialStorageError('Zotero secure credential storage is unavailable.');
-  }
+  const getBundled = () => {
+    if (!bundled) {
+      try {
+        bundled = chromeUtilsRuntime?.importESModule?.(
+          'resource://gre/modules/OSKeyStore.sys.mjs',
+        )?.OSKeyStore;
+      } catch {
+        // Never copy platform errors that could contain secret material.
+      }
+    }
+    if (!bundled || typeof bundled.encrypt !== 'function' || typeof bundled.decrypt !== 'function') {
+      throw new CloudCredentialStorageError('Zotero secure credential storage is unavailable.');
+    }
+    return bundled;
+  };
+  if (!exposed) getBundled();
+
+  const ciphertextPrefix = (value: string): string | null => {
+    if (typeof value !== 'string') return null;
+    return [COMPAT_CIPHERTEXT_PREFIX, PUBLIC_CIPHERTEXT_PREFIX]
+      .find(prefix => value.startsWith(prefix) && value.length > prefix.length) || null;
+  };
   return {
     encrypt: async value => {
-      const cipherText = await bundled.encrypt(value);
+      if (exposed) return await exposed.encrypt(value);
+      const cipherText = await getBundled().encrypt(value);
       if (!cipherText) return '';
       return `${COMPAT_CIPHERTEXT_PREFIX}${cipherText}`;
     },
     decrypt: async value => {
-      if (!value.startsWith(COMPAT_CIPHERTEXT_PREFIX)) {
+      const prefix = ciphertextPrefix(value);
+      if (!prefix) {
         throw new CloudCredentialStorageError(
           'The stored Cloud API key is not protected by Zotero OSKeyStore.',
         );
       }
-      return await bundled.decrypt(value.slice(COMPAT_CIPHERTEXT_PREFIX.length));
+      // The public wrapper returns unknown formats unchanged. Never let that
+      // behavior turn legacy ciphertext (or plaintext) into a usable API key.
+      if (prefix === PUBLIC_CIPHERTEXT_PREFIX && exposed) {
+        return await exposed.decrypt(value);
+      }
+      const raw = getBundled();
+      if (prefix === COMPAT_CIPHERTEXT_PREFIX && raw.STORE_LABEL === CURRENT_STORE_LABEL && nativeKeyStore) {
+        // Zotero 9 used MOZ_APP_BASENAME=Firefox; Zotero 10 changed it to
+        // Zotero, which also changed Mozilla's OSKeyStore lookup label. Read
+        // only an existing historical secret for our known legacy format.
+        // Never mutate the shared module's STORE_LABEL or generate a secret.
+        const native = nativeKeyStore();
+        // Raw decrypt() can generate a missing current secret via
+        // ensureLoggedIn(). Native reads avoid that side effect entirely.
+        for (const label of [CURRENT_STORE_LABEL, LEGACY_STORE_LABEL]) {
+          if (!await native.asyncSecretAvailable(label)) continue;
+          try {
+            const bytes = await native.asyncDecryptBytes(label, value.slice(prefix.length));
+            return new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(bytes));
+          } catch (error: any) {
+            // Honor an explicit unlock cancellation (NS_ERROR_ABORT), rather
+            // than trying another label after the user declined access.
+            if (label === LEGACY_STORE_LABEL || error?.name === 'AbortError' ||
+                (typeof error?.result === 'number' && (error.result >>> 0) === 0x80004004)) throw error;
+          }
+        }
+        throw new CloudCredentialStorageError('Could not read the Cloud API key from secure storage.');
+      }
+      const binary: string = await raw.decrypt(value.slice(prefix.length));
+      // Mozilla returns UTF-8 bytes as a binary string; only its raw result
+      // needs decoding. The public Zotero wrapper already decodes its result.
+      return new TextDecoder('utf-8', { fatal: true }).decode(
+        Uint8Array.from(binary, char => char.charCodeAt(0)),
+      );
     },
-    isEncrypted: value => value.startsWith(COMPAT_CIPHERTEXT_PREFIX),
+    isEncrypted: value => ciphertextPrefix(value) !== null,
   };
 }
 
-function runtimeEnvironment(): CloudCredentialEnvironment {
-  const logins = Services?.logins;
+/** Internal runtime adapter; an isolated login scope also permits real self-tests. */
+export function createCloudCredentialEnvironment(
+  zoteroRuntime: any,
+  chromeUtilsRuntime: any,
+  servicesRuntime: any,
+  componentsRuntime: any,
+  scope = { origin: LOGIN_ORIGIN, realm: LOGIN_REALM },
+): CloudCredentialEnvironment {
+  const logins = servicesRuntime?.logins;
   if (!logins) {
     throw new CloudCredentialStorageError('Zotero secure credential storage is unavailable.');
   }
-  const keyStore = resolveCloudOSKeyStore(Zotero, ChromeUtils);
+  const keyStore = resolveCloudOSKeyStore(zoteroRuntime, chromeUtilsRuntime, () =>
+    componentsRuntime.classes['@mozilla.org/security/oskeystore;1']
+      .getService(componentsRuntime.interfaces.nsIOSKeyStore));
   return {
-    search: () => logins.searchLoginsAsync({ origin: LOGIN_ORIGIN, httpRealm: LOGIN_REALM }),
+    search: () => logins.searchLoginsAsync({ origin: scope.origin, httpRealm: scope.realm }),
     add: login => logins.addLoginAsync(login),
-    modify: (oldLogin, newLogin) => logins.modifyLoginAsync(oldLogin, newLogin),
-    remove: login => logins.removeLoginAsync(login),
+    // ESR Login Manager has synchronous modify/remove methods. Preserve the
+    // async store contract without assuming every method has an Async variant.
+    modify: async (oldLogin, newLogin) => {
+      if (typeof logins.modifyLoginAsync === 'function') await logins.modifyLoginAsync(oldLogin, newLogin);
+      else logins.modifyLogin(oldLogin, newLogin);
+    },
+    remove: async login => {
+      if (typeof logins.removeLoginAsync === 'function') await logins.removeLoginAsync(login);
+      else logins.removeLogin(login);
+    },
     makeLogin: (username, encryptedValue) => {
-      const LoginInfo = new Components.Constructor(
+      const LoginInfo = new componentsRuntime.Constructor(
         '@mozilla.org/login-manager/loginInfo;1',
-        Components.interfaces.nsILoginInfo,
+        componentsRuntime.interfaces.nsILoginInfo,
         'init',
       );
       return new LoginInfo(
-        LOGIN_ORIGIN,
+        scope.origin,
         null,
-        LOGIN_REALM,
+        scope.realm,
         username,
         encryptedValue,
         '',
@@ -159,6 +228,10 @@ function runtimeEnvironment(): CloudCredentialEnvironment {
     decrypt: value => keyStore.decrypt(value),
     isEncrypted: value => keyStore.isEncrypted(value),
   };
+}
+
+function runtimeEnvironment(): CloudCredentialEnvironment {
+  return createCloudCredentialEnvironment(Zotero, ChromeUtils, Services, Components);
 }
 
 export function maskCloudApiKey(value: string): string {

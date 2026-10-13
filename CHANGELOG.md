@@ -4,6 +4,27 @@ All notable changes to ZotSeek-U will be documented in this file.
 
 ## Unreleased
 
+## [0.2.4] - 2026-10-13
+
+### Fixed
+- Cloud API keys saved on Zotero 9 remain readable after upgrading to Zotero
+  10. The credential store recognizes both ciphertext formats and can read an
+  existing historical system secret after the OSKeyStore label changed from
+  `Firefox Encrypted Storage` to `Zotero Encrypted Storage`. Reads do not
+  rewrite credentials, create system secrets, or fall back to plaintext.
+- Cloud API key replacement and removal use the Login Manager methods actually
+  available in Zotero 9 and 10. A damaged or unreadable old value can be
+  replaced directly by entering a new key; other providers remain separate.
+- MCP library maps include nested collections even when a library's initial
+  collection listing contains only its top-level nodes.
+
+### Validation
+- 582 unit tests passed, including 26 credential tests; type checking reported
+  no new errors against the existing baseline, and version/build checks passed.
+- Windows Zotero 9.0.6 and 10.0.6 passed isolated native settings, credential
+  lifecycle, and restart tests. A real 9-to-10 upgrade of an isolated profile
+  recovered synthetic legacy credentials without rewriting them.
+
 ## [0.1.0] - 2026-09-06
 
 ### Added

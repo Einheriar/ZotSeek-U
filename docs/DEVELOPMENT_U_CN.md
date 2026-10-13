@@ -185,6 +185,8 @@ Plan 60 兼容修补将词法契约更新为 v2：对实际合并的韩英片段
 
 - 三个适配器 `dashscope-embedding-adapter.ts`、`openai-embedding-adapter.ts`、`gemini-embedding-adapter.ts` 由泛化的 `cloud-embedding-client.ts` 驱动；百炼走原生 dense 输出与 `parameters.text_type`，Gemini 走 `batchEmbedContents` + `RETRIEVAL_QUERY` / `RETRIEVAL_DOCUMENT` taskType。
 - **凭据安全**：API Key 存 Zotero Login Manager + OSKeyStore（`cloud-credential-store.ts`），失败时拒绝明文降级，UI 仅显示首尾五字符遮罩；HTTPS 域名白名单、禁重定向、有界 429/5xx 重试。
+- **Zotero 9/10 凭据兼容**：读取按已保存的密文格式分流，兼容 ZotSeek 的 `zotseek-oskeystore-v1:` 和 Zotero 的 `oskv1:`；写入优先使用公开 OSKeyStore，无公开封装时仍使用内置模块。原始模块的 UTF-8 二进制字符串只解码一次，未知/空密文不作为 API Key。读取不自动迁移或重写凭据；更换和删除适配 Login Manager 的同步或异步接口，即使旧密文无法解密，也可显式重新输入并替换。若系统密钥丢失或密文损坏，不能保证找回旧值，不退回普通偏好或明文文件。`task-45-cloud` 包含独立 realm 的合成凭据生命周期检查，不发云请求、不修改真实 provider Key。
+- **升级后的历史系统仓库**：Zotero 9 的系统秘密使用 `Firefox Encrypted Storage`，Zotero 10 改为 `Zotero Encrypted Storage`。仅对旧 ZotSeek 密文、且当前模块采用 Zotero 仓库名时，读取已有当前秘密，失败后只读尝试已有 Firefox 秘密；不存在的秘密不创建，解锁取消不继续回退。该兼容不修改共享模块的仓库名、不移动或删除系统秘密、不重写已保存的 Key，也不针对新格式猜测历史仓库。
 - **版本化同意**：费用披露与 consent 版本按 provider 分槽保存；连接验证使用 document + query 双探针，错误输出固定脱敏。
 - **query/document API role**：高级设置可编辑两角色（默认 `query` / `document`，可恢复百炼默认）；角色变化使连接验证失效并进入索引指纹（连同 adapter 版本、输出契约）。
 - 百炼区域端点 `zotseek.cloud.bailianRegion`（`cn` / `intl`）；`cloudAutoIndex` 默认关闭。
