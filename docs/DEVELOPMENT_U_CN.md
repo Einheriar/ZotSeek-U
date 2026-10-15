@@ -281,7 +281,9 @@ MCP 工具说明补充通用证据判断提醒：判断结果时保留用户的�
 简报功能的服务端核心、设置/条目入口以及 Plan 57 P7 引导闭环均已进入源码，默认关闭；真实 Zotero 端到端与各 provider 付费生成验收尚未完成：
 
 - provider 跟随设置页最后保存的 Cloud provider，并复用该 provider 的安全凭据和 endpoint；即使当前 Embedding 使用本地或 loopback server，简报仍使用最后保存的 Cloud provider。
+- v0.2.5 继续使用百炼现有按地区选择的共享域名，不新增业务空间专属域名配置入口。
 - 生成模型独立于 Embedding 模型，并按 provider 分别保存。设置页只提供一个自由输入框，通过当前 provider 的模型发现接口给出联想候选；Bailian/Gemini 候选带能力元数据，OpenAI/Custom 候选标记为需要连接测试确认。
+- 百炼候选以接口返回的 `model` 为 API ID，`name` / `display_name` 只作显示；旧响应缺少 `model` 时依次兼容 `id`、`name`，不统一改写模型 ID 的大小写。原生联想控件的 value、label 和 finalCompleteValue 均使用精确 ID，展示名及“需要测试”提示放在候选项的次行，防止鼠标或键盘选择时将显示文字写入模型配置。设置页和向导保留当前窗口、当前配置对应的连接测试结果：失败以红色持续显示，配置或凭据变化后重新验证；测试期间禁用重复测试和模型参数编辑。向导的模型列表加载反馈使用独立状态行，不覆盖连接测试结果。失败反馈仅存于窗口内存，不新增持久偏好。
 - Bailian 与 Custom 使用 Chat Completions，OpenAI 使用 Responses API，Gemini 使用原生 `generateContent`；连接测试、验证指纹和凭据 revision 均按 provider 隔离。论文外发不再复用持久 consent，而是每次生成操作重新确认。
 - 标题/摘要迫选分类器区分 `review` / `standard` 两类文献（稳定机器值，模糊样本默认 `standard`），分类调用独立预算。
 - 调度器：单篇手动任务 FIFO 并发 1；合集任务三篇一批、批内并行；两模式互斥。

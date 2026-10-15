@@ -7,6 +7,10 @@ import {
   type BriefModelSuggestion,
 } from '../core/brief-model-discovery';
 import { attachBriefModelAutocomplete, type BriefModelAutocomplete } from './brief-model-autocomplete';
+import { getCloudCredentialRevision } from '../core/cloud-credential-store';
+import {
+  BriefConnectionFeedback, briefConnectionContext, renderBriefConnectionStatus,
+} from './brief-connection-feedback';
 
 interface BriefPromptCustomizationForm {
   domain: string;
@@ -35,11 +39,14 @@ interface BriefPromptCustomizationResult {
 
 interface BriefStatus {
   provider: string;
+  baseUrl: string;
   providerLabel: string;
   hasCredential: boolean;
   connectionVerified: boolean;
   consentCurrent: boolean;
   config: {
+    fingerprint: string;
+    revision: number;
     settings: {
       modelName: string;
       maxInputTokens: number;
@@ -146,6 +153,7 @@ class BriefPromptWizardController {
   private closed = false;
   private suggestions: BriefModelSuggestion[] = [];
   private autocomplete: BriefModelAutocomplete | null = null;
+  private connectionFeedback = new BriefConnectionFeedback();
 
   async init(): Promise<void> {
     // A Fluent text value on the root window replaces all of its child controls.
@@ -212,15 +220,26 @@ class BriefPromptWizardController {
           ? getString('pref-brief-key-configured')
           : getString('pref-brief-key-missing'),
       }));
-      setText('zotseek-brief-wizard-service-status', this.status.connectionVerified
-        ? getString('pref-brief-connection-verified')
-        : this.status.hasCredential
-          ? getString('pref-brief-connection-not-verified')
-          : getString('pref-brief-key-required'));
+      this.renderConnectionStatus();
     } catch (error) {
       debug('status failed', error);
       setText('zotseek-brief-wizard-status', getString('brief-wizard-unavailable'));
     }
+  }
+
+  private renderConnectionStatus(): void {
+    if (!this.status) return;
+    const feedback = this.connectionFeedback.read(
+      briefConnectionContext(this.status, getCloudCredentialRevision(this.status.provider)),
+      this.status.connectionVerified,
+    );
+    const testing = this.operation === 'testing';
+    const message = testing ? getString('pref-brief-testing') : feedback?.message
+      || (this.status.connectionVerified ? getString('pref-brief-connection-verified')
+        : this.status.hasCredential ? getString('pref-brief-connection-not-verified')
+          : getString('pref-brief-key-required'));
+    renderBriefConnectionStatus(element('zotseek-brief-wizard-service-status'), message,
+      testing ? 'testing' : feedback?.phase || (this.status.connectionVerified ? 'verified' : undefined));
   }
 
   private setPage(page: Page): void {
@@ -264,6 +283,7 @@ class BriefPromptWizardController {
       'zotseek-brief-wizard-back',
       'zotseek-brief-wizard-test',
       'zotseek-brief-wizard-refresh-models',
+      'zotseek-brief-wizard-model',
     ]) {
       const node = element<any>(id);
       if (busy) node.setAttribute('disabled', 'true');
@@ -280,15 +300,15 @@ class BriefPromptWizardController {
 
   private async loadModels(force: boolean): Promise<void> {
     if (!this.api || this.operation !== 'idle') return;
-    setText('zotseek-brief-wizard-service-status', getString('pref-brief-models-loading'));
+    setText('zotseek-brief-wizard-models-status', getString('pref-brief-models-loading'));
     try {
       this.suggestions = await this.api.discoverBriefModels(force);
       this.renderSuggestions();
-      setText('zotseek-brief-wizard-service-status', this.suggestions.length
+      setText('zotseek-brief-wizard-models-status', this.suggestions.length
         ? getString('pref-brief-models-loaded', { count: this.suggestions.length })
         : getString('pref-brief-models-empty'));
     } catch (error: any) {
-      setText('zotseek-brief-wizard-service-status', getString('pref-brief-models-failed', {
+      setText('zotseek-brief-wizard-models-status', getString('pref-brief-models-failed', {
         error: error?.message || error,
       }));
     }
@@ -324,12 +344,18 @@ class BriefPromptWizardController {
     }
     this.operation = 'testing';
     this.setBusy(true);
-    setText('zotseek-brief-wizard-service-status', getString('pref-brief-testing'));
+    this.renderConnectionStatus();
+    let attempt: number | undefined;
     try {
       await this.api.updateBriefSettings(settings);
-      await this.api.testBriefConnection();
       await this.refreshStatus();
-      setText('zotseek-brief-wizard-service-status', getString('pref-brief-connection-verified'));
+      attempt = this.connectionFeedback.begin(
+        briefConnectionContext(this.status!, getCloudCredentialRevision(this.status!.provider)),
+        getString('pref-brief-testing'),
+      );
+      await this.api.testBriefConnection();
+      this.connectionFeedback.finish(attempt, 'verified', getString('pref-brief-connection-verified'));
+      await this.refreshStatus();
       if (this.status?.setup.status === 'ready'
           && this.args?.input.reconfigurePrompts !== true) {
         if (this.args) this.args.output = { setup: this.status.setup.choice || 'ready' };
@@ -337,12 +363,17 @@ class BriefPromptWizardController {
         this.setPage('result');
       }
     } catch (error: any) {
-      setText('zotseek-brief-wizard-service-status', getString('pref-brief-test-failed', {
+      const failure = getString('pref-brief-test-failed', {
         error: error?.message || error,
-      }));
+      });
+      if (attempt !== undefined) {
+        this.connectionFeedback.finish(attempt, 'failed', failure);
+        await this.refreshStatus();
+      } else renderBriefConnectionStatus(element('zotseek-brief-wizard-service-status'), failure, 'failed');
     } finally {
       this.operation = 'idle';
       this.setBusy(false);
+      if (attempt !== undefined) this.renderConnectionStatus();
     }
   }
 

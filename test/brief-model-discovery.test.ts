@@ -97,6 +97,26 @@ describe('brief model discovery', () => {
     assert.deepEqual(models, [{ id: 'vendor-luna-chat', verifiedCapability: false }]);
   });
 
+  test('keeps Bailian model IDs separate from display names and ignores empty ID fields', async () => {
+    const client = new BriefModelDiscoveryClient({
+      provider: 'alibaba-bailian', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      apiKey: 'bailian-secret',
+    }, { fetch: async () => response({ output: { models: [
+      { model: 'deepseek-v4.1-flash', name: 'DeepSeek-V4.1-Flash', id: 'display-record-id' },
+      { model: 'qwen3.8-max', name: '通义千问3.8-Max' },
+      { model: ' ', id: 'Vendor/CaseSensitive', name: 'Vendor model' },
+      { model: '', id: '', name: 'legacy-model-id' },
+      { model: 'deepseek-v4.1-flash', name: 'Duplicate display label' },
+    ] } }) });
+    const models = await client.discover();
+    assert.deepEqual(models.map(model => model.id), [
+      'deepseek-v4.1-flash', 'qwen3.8-max', 'Vendor/CaseSensitive', 'legacy-model-id',
+    ]);
+    assert.equal(models[0].displayName, 'DeepSeek-V4.1-Flash');
+    assert.equal(models[1].displayName, '通义千问3.8-Max');
+    assert.equal(filterBriefModelSuggestions(models, 'DeepSeek')[0].id, 'deepseek-v4.1-flash');
+  });
+
   test('filters autocomplete locally and keeps prefix matches first', () => {
     const values = [
       { id: 'other-luna', verifiedCapability: false },

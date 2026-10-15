@@ -91,6 +91,10 @@ import {
   type BriefModelSuggestion,
 } from '../core/brief-model-discovery';
 import { attachBriefModelAutocomplete, type BriefModelAutocomplete } from './brief-model-autocomplete';
+import {
+  BriefConnectionFeedback, briefConnectionContext, renderBriefConnectionStatus,
+  type BriefConnectionPhase,
+} from './brief-connection-feedback';
 
 declare const Services: any;
 declare const Zotero: any;
@@ -104,6 +108,9 @@ let briefModelSuggestions: BriefModelSuggestion[] = [];
 let briefModelDiscoveryGeneration = 0;
 let briefModelSuggestionProvider = '';
 const briefModelAutocompletes = new WeakMap<Document, BriefModelAutocomplete>();
+const briefConnectionFeedback = new WeakMap<Document, BriefConnectionFeedback>();
+const briefConnectionTests = new WeakSet<Document>();
+const briefSettingsRenderGenerations = new WeakMap<Document, number>();
 
 /**
  * Returns true when the preferences document is still alive and usable.
@@ -624,9 +631,16 @@ async function renderCoverage(doc: any): Promise<void> {
   el.appendChild(text);
 }
 
-function setBriefStatus(doc: any, message: string): void {
-  const status = doc.getElementById('zotseek-brief-connection-status');
-  if (status) status.textContent = message;
+function setBriefStatus(doc: any, message: string, phase?: BriefConnectionPhase): void {
+  renderBriefConnectionStatus(doc.getElementById('zotseek-brief-connection-status'), message, phase);
+}
+
+function setBriefTestControlsDisabled(doc: any, disabled: boolean): void {
+  for (const id of ['zotseek-brief-test', 'zotseek-brief-create-prompts', 'zotseek-brief-model', 'zotseek-brief-max-input',
+    'zotseek-brief-max-output', 'zotseek-brief-thinking-enabled', 'zotseek-brief-refresh-models']) {
+    const node = doc.getElementById(id) as any;
+    if (node) node.disabled = disabled;
+  }
 }
 
 function setBriefSettingsStatus(doc: any, message: string): void {
@@ -680,8 +694,16 @@ async function loadBriefModelSuggestions(doc: any, force = false): Promise<void>
 }
 
 async function renderBriefSettings(doc: any): Promise<void> {
+  const generation = (briefSettingsRenderGenerations.get(doc) || 0) + 1;
+  briefSettingsRenderGenerations.set(doc, generation);
   try {
     const status = await briefService.getStatus();
+    // A pending blur/save render must not repaint an older verification after a test.
+    if (!docAlive(doc) || briefSettingsRenderGenerations.get(doc) !== generation) return;
+    const testing = briefConnectionTests.has(doc);
+    const feedback = briefConnectionFeedback.get(doc)?.read(
+      briefConnectionContext(status, getCloudCredentialRevision(status.provider)), status.connectionVerified,
+    );
     const checkbox = doc.getElementById('zotseek-pref-brief-enabled') as any;
     if (checkbox) checkbox.checked = status.enabled;
 
@@ -704,7 +726,7 @@ async function renderBriefSettings(doc: any): Promise<void> {
     if (maxOutput) maxOutput.value = String(status.config.settings.maxOutputTokens);
     if (thinking) {
       thinking.checked = status.config.settings.thinkingEnabled;
-      thinking.disabled = status.provider !== 'alibaba-bailian';
+      thinking.disabled = testing || status.provider !== 'alibaba-bailian';
     }
 
     const standard = doc.getElementById('zotseek-brief-standard-prompt-status');
@@ -719,7 +741,8 @@ async function renderBriefSettings(doc: any): Promise<void> {
         : status.connectionVerified
           ? 'pref-brief-connection-verified'
           : 'pref-brief-connection-not-verified';
-    setBriefStatus(doc, getString(connectionKey));
+    setBriefStatus(doc, testing ? getString('pref-brief-testing') : feedback?.message || getString(connectionKey),
+      testing ? 'testing' : feedback?.phase || (status.connectionVerified ? 'verified' : undefined));
     if (status.config.status === 'invalid') {
       setBriefSettingsStatus(doc, getString('pref-brief-invalid-settings', {
         error: status.config.error || '',
@@ -732,12 +755,18 @@ async function renderBriefSettings(doc: any): Promise<void> {
 
     const test = doc.getElementById('zotseek-brief-test') as any;
     const create = doc.getElementById('zotseek-brief-create-prompts') as any;
-    if (test) test.disabled = status.busy || !status.providerSupported || !status.hasCredential;
-    if (create) create.disabled = status.busy || !status.enabled;
+    if (test) test.disabled = testing || status.busy || !status.providerSupported || !status.hasCredential;
+    if (create) create.disabled = testing || status.busy || !status.enabled;
+    for (const id of ['zotseek-brief-model', 'zotseek-brief-max-input',
+      'zotseek-brief-max-output', 'zotseek-brief-refresh-models']) {
+      const node = doc.getElementById(id) as any;
+      if (node) node.disabled = testing;
+    }
   } catch (error: any) {
+    if (!docAlive(doc) || briefSettingsRenderGenerations.get(doc) !== generation) return;
     setBriefStatus(doc, getString('pref-brief-status-failed', {
       error: error?.message || error,
-    }));
+    }), 'failed');
   }
 }
 
@@ -1472,6 +1501,7 @@ class PreferencesManager {
 
     const briefTest = doc.getElementById('zotseek-brief-test') as any;
     briefTest?.addEventListener('command', async () => {
+      if (briefConnectionTests.has(doc)) return;
       if (!saveBriefSettingsFromUI(doc)) return;
       const accepted = confirmCloudDisclosure(
         Services.prompt,
@@ -1482,17 +1512,31 @@ class PreferencesManager {
         }),
       );
       if (!accepted) return;
-      briefTest.disabled = true;
-      setBriefStatus(doc, getString('pref-brief-testing'));
+      briefConnectionTests.add(doc);
+      setBriefTestControlsDisabled(doc, true);
+      setBriefStatus(doc, getString('pref-brief-testing'), 'testing');
+      let feedback = briefConnectionFeedback.get(doc);
+      if (!feedback) {
+        feedback = new BriefConnectionFeedback();
+        briefConnectionFeedback.set(doc, feedback);
+      }
+      let attempt: number | undefined;
+      let failure: string | undefined;
       try {
+        const status = await briefService.getStatus();
+        attempt = feedback.begin(briefConnectionContext(status, getCloudCredentialRevision(status.provider)),
+          getString('pref-brief-testing'));
         await briefService.testConnection();
-        setBriefStatus(doc, getString('pref-brief-connection-verified'));
+        feedback.finish(attempt, 'verified', getString('pref-brief-connection-verified'));
       } catch (error: any) {
-        setBriefStatus(doc, getString('pref-brief-test-failed', {
+        failure = getString('pref-brief-test-failed', {
           error: error?.message || error,
-        }));
+        });
+        if (attempt !== undefined) feedback.finish(attempt, 'failed', failure);
       } finally {
+        briefConnectionTests.delete(doc);
         await renderBriefSettings(doc);
+        if (failure && attempt === undefined && docAlive(doc)) setBriefStatus(doc, failure, 'failed');
       }
     });
 

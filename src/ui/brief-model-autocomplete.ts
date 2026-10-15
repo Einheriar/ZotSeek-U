@@ -43,12 +43,14 @@ export function attachBriefModelAutocomplete(
       result.setSearchString(query);
       result.setDefaultIndex(-1);
       for (const model of disposed ? [] : filterBriefModelSuggestions(suggestions(), query)) {
-        const display = model.displayName && model.displayName !== model.id
-          ? `${model.id} — ${model.displayName}` : model.id;
-        const label = model.verifiedCapability
-          ? display : `${display} · ${getString('pref-brief-model-needs-test')}`;
-        // Display labels must never replace the provider's exact model ID.
-        result.appendMatch(model.id, '', '', '', label, model.id);
+        const detail = [
+          model.displayName && model.displayName !== model.id ? model.displayName : '',
+          model.verifiedCapability ? '' : getString('pref-brief-model-needs-test'),
+        ].filter(Boolean).join(' · ');
+        // appendMatch takes image, style, finalCompleteValue, then label.
+        // Keep completion fields as IDs; display metadata belongs to the popup.
+        result.appendMatch(model.id, JSON.stringify({ secondary: detail }),
+          '', detail ? 'generic' : '', model.id, model.id);
       }
       result.setSearchResult(result.matchCount
         ? Ci.nsIAutoCompleteResult.RESULT_SUCCESS : Ci.nsIAutoCompleteResult.RESULT_NOMATCH);

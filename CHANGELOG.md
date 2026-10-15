@@ -4,6 +4,27 @@ All notable changes to ZotSeek-U will be documented in this file.
 
 ## Unreleased
 
+## [0.2.5] - 2026-10-15
+
+### Fixed
+- Bailian brief model discovery uses the API model ID instead of its display
+  name, preventing invalid model requests after selecting a suggestion.
+- Native autocomplete keeps the exact model ID when a suggestion is selected;
+  display names and capability hints appear separately in the popup.
+- Brief connection failures remain visible after settings refreshes. Testing,
+  success, and failure have distinct status colors, and stale asynchronous
+  renders cannot overwrite the latest connection feedback.
+- The prompt wizard keeps model-list loading feedback separate from connection
+  results, and connection tests disable duplicate tests and model editing.
+
+### Compatibility and validation
+- Retains the existing shared Bailian endpoints and Zotero 9.0–10.0.* support.
+- 587 unit tests passed; type checking reported no new errors against the
+  existing baseline, and version/build checks passed.
+- Windows Zotero 10.0.6 passed real settings and wizard fixed-text connection
+  tests, model selection, persistent failure feedback, and verification after
+  restart. Full-paper generation was not part of this acceptance run.
+
 ## [0.2.4] - 2026-10-13
 
 ### Fixed

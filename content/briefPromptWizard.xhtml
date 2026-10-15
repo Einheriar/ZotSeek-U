@@ -68,11 +68,13 @@
             <button id="zotseek-brief-wizard-refresh-models" data-zotseek-label="zotseek-pref-brief-refresh-models"/>
           </html:div>
         </html:div>
+        <html:p id="zotseek-brief-wizard-models-status" class="zs-wizard-fineprint" role="status" aria-live="polite"/>
         <checkbox id="zotseek-brief-wizard-consent" native="true" data-l10n-id="zotseek-brief-wizard-consent" style="margin-top:16px;"/>
         <html:p class="zs-wizard-fineprint" data-l10n-id="zotseek-brief-wizard-consent-desc"></html:p>
         <hbox align="center">
           <button id="zotseek-brief-wizard-test" data-zotseek-label="zotseek-pref-brief-test"/>
-          <label id="zotseek-brief-wizard-service-status" style="margin-left:8px;color:#77809a;"/>
+          <html:p id="zotseek-brief-wizard-service-status" role="status" aria-live="polite"
+                  style="margin:0 0 0 8px;color:#77809a;overflow-wrap:anywhere;"/>
         </hbox>
       </html:div>
 

@@ -54,7 +54,7 @@ describe('brief native autocomplete bridge', () => {
     try {
       const a = field();
       const b = field();
-      let models = [{ id: 'model-a', displayName: '中文模型', verifiedCapability: true }];
+      let models = [{ id: 'deepseek-v4.1-flash', displayName: 'DeepSeek-V4.1-Flash 中文模型', verifiedCapability: true }];
       const first = attachBriefModelAutocomplete(a.doc, 'a', () => models);
       const second = attachBriefModelAutocomplete(b.doc, 'b', () => [
         { id: 'model-b', verifiedCapability: true },
@@ -67,12 +67,19 @@ describe('brief native autocomplete bridge', () => {
       };
       const factories = [...registered.values()];
       const matches = search(factories[0], '中文');
-      assert.equal(matches[0][0], 'model-a');
-      assert.equal(matches[0][5], 'model-a');
-      assert.match(matches[0][4], /中文模型/);
-      assert.equal(search(factories[1], 'model-a').length, 0);
+      assert.equal(matches[0][0], 'deepseek-v4.1-flash');
+      assert.equal(matches[0][5], 'deepseek-v4.1-flash');
+      assert.equal(matches[0][4], 'deepseek-v4.1-flash', 'finalCompleteValue must be the ID, not the display label');
+      assert.equal(matches[0][2], '', 'image must not receive a popup style');
+      assert.equal(matches[0][3], 'generic');
+      assert.match(JSON.parse(matches[0][1]).secondary, /DeepSeek-V4.1-Flash 中文模型/);
+      // Emulate native final-value completion before the change handler saves.
+      a.input.value = matches[0][4];
+      a.input.dispatchEvent({ type: 'textEntered' });
+      assert.equal(a.input.value, 'deepseek-v4.1-flash');
+      assert.equal(search(factories[1], 'deepseek-v4.1-flash').length, 0);
       models = [{ id: 'new-provider-model', displayName: '', verifiedCapability: true }];
-      assert.equal(search(factories[0], 'model-a').length, 0);
+      assert.equal(search(factories[0], 'deepseek-v4.1-flash').length, 0);
       assert.equal(search(factories[0], 'new-provider')[0][0], 'new-provider-model');
 
       a.onSave();

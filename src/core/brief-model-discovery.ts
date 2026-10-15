@@ -192,20 +192,24 @@ export class BriefModelDiscoveryClient {
       : Array.isArray(json?.data?.models)
       ? json.data.models
       : Array.isArray(json?.models) ? json.models : Array.isArray(json?.data) ? json.data : [];
-    return uniqueSuggestions(models.map((model: any) => ({
-      id: typeof model?.name === 'string'
-        ? model.name
-        : typeof model?.model === 'string'
-          ? model.model
-          : typeof model?.id === 'string' ? model.id : '',
-      ...(typeof model?.display_name === 'string' ? { displayName: model.display_name } : {}),
-      ...(typeof model?.description === 'string' ? { description: model.description } : {}),
-      ...(positiveInteger(model?.input_token_limit)
-        ? { inputTokenLimit: model.input_token_limit } : {}),
-      ...(positiveInteger(model?.output_token_limit)
-        ? { outputTokenLimit: model.output_token_limit } : {}),
-      verifiedCapability: true,
-    })));
+    return uniqueSuggestions(models.map((model: any) => {
+      // Bailian's `name` is a display label, not the generation API ID.
+      // Retain name-only legacy responses without changing provider ID case.
+      const id = [model?.model, model?.id, model?.name]
+        .find(value => typeof value === 'string' && value.trim())?.trim() || '';
+      const displayName = typeof model?.display_name === 'string'
+        ? model.display_name : typeof model?.name === 'string' ? model.name : undefined;
+      return {
+        id,
+        ...(displayName && displayName !== id ? { displayName } : {}),
+        ...(typeof model?.description === 'string' ? { description: model.description } : {}),
+        ...(positiveInteger(model?.input_token_limit)
+          ? { inputTokenLimit: model.input_token_limit } : {}),
+        ...(positiveInteger(model?.output_token_limit)
+          ? { outputTokenLimit: model.output_token_limit } : {}),
+        verifiedCapability: true,
+      };
+    }));
   }
 
   async discover(signal?: AbortSignal): Promise<BriefModelSuggestion[]> {
