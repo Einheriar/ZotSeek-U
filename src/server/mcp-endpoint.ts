@@ -17,6 +17,8 @@ import {
   runIndexStatusTool,
   runGetItemTool,
   runGetLibraryMapTool,
+  runIndexItemTool,
+  runGetItemIndexStatusTool,
   isAllowedOrigin,
 } from './http-tools';
 
@@ -227,6 +229,44 @@ const TOOL_DEFINITIONS = [
       'search results will be meaningful.',
     inputSchema: { type: 'object', properties: {} },
   },
+  {
+    name: 'index_item',
+    description:
+      'Index or update one parent item in ZotSeek using the current model and indexing mode. ' +
+      'Writes the ZotSeek index, not Zotero item content; Cloud embedding can send indexed text to the configured provider. ' +
+      'Waits for the final result without a progress window or queue; busy means retry later. ' +
+      'force=true re-extracts content. pdf_attachment_key requires full mode, implies force, and selects that PDF for this call only. ' +
+      'Ordinary updates do not detect PDF file changes. No automatic reindex retry is scheduled.',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        library_key: { type: 'string', default: 'user', description: "'user' or 'group:<groupID>'" },
+        item_key: { type: 'string', description: '8-character key of the parent bibliographic item' },
+        force: { type: 'boolean', default: false },
+        pdf_attachment_key: { type: 'string', description: 'Exact child PDF key, for this call only' },
+      },
+      required: ['item_key'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'get_item_index_status',
+    description:
+      'Read one parent item\'s current-model index coverage, sources, PDF source key, timestamps, truncation and last API indexing attempt. ' +
+      'Stored coverage and the latest attempt are separate: an update can fail while an older index remains usable. ' +
+      'Freshness checks cover metadata, Notes and configuration, not PDF file changes.',
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        library_key: { type: 'string', default: 'user' },
+        item_key: { type: 'string' },
+      },
+      required: ['item_key'],
+      additionalProperties: false,
+    },
+  },
 ];
 
 type EndpointResponse = [number, string, string];
@@ -277,6 +317,10 @@ async function callTool(id: any, params: any): Promise<EndpointResponse> {
       payload = await runFindSimilarTool(args);
     } else if (name === 'index_status') {
       payload = await runIndexStatusTool();
+    } else if (name === 'index_item') {
+      payload = await runIndexItemTool(args);
+    } else if (name === 'get_item_index_status') {
+      payload = await runGetItemIndexStatusTool(args);
     } else {
       return err(200, id, -32602, `Unknown tool: ${String(name)}`);
     }
@@ -285,7 +329,7 @@ async function callTool(id: any, params: any): Promise<EndpointResponse> {
     // so the agent can read the message and react.
     return ok(id, toolText({ error: e?.message || String(e) }, true));
   }
-  return ok(id, toolText(payload));
+  return ok(id, toolText(payload, name === 'index_item' && ['failed', 'busy'].includes(payload?.outcome)));
 }
 
 async function handleMcpMessage(msg: any, inBatch = false): Promise<EndpointResponse> {
@@ -343,6 +387,10 @@ async function handleMcpMessage(msg: any, inBatch = false): Promise<EndpointResp
         response = ok(id, { tools: TOOL_DEFINITIONS });
         break;
       case 'tools/call':
+        // A write requires a response so the caller can observe its final result.
+        if (notification && params?.name === 'index_item') {
+          return err(400, null, -32600, 'index_item requires a JSON-RPC request id');
+        }
         response = await callTool(id, params);
         break;
       default:

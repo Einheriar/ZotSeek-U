@@ -184,6 +184,225 @@ describe('TextExtractor PDF main-text production chain', () => {
     assert.equal(result.chunks.some(chunk => chunk.type !== 'summary'), false);
   });
 
+  test('reports an automatic selector exception separately from a normal abstention', async () => {
+    installZoteroStub();
+    const extractor = new TextExtractor();
+    (extractor as any).zoteroAPI = {
+      getSelectedMainPdfText: async () => null,
+    };
+    const diagnostics: any[] = [];
+
+    const result = await extractor.extractChunksFromItem(paper(), 'full', chunkOptions, {
+      onDiagnostic: diagnostic => diagnostics.push(diagnostic),
+    });
+
+    assert.ok(result);
+    assert.ok(result.chunks.some(chunk => chunk.type === 'summary'));
+    assert.deepEqual(diagnostics, [{
+      status: 'failed',
+      reason: 'selection-failed',
+      pagesIndexed: 0,
+      pagesTotal: null,
+    }]);
+  });
+
+  test('uses only the request-scoped PDF and returns its provenance diagnostic', async () => {
+    installZoteroStub();
+    const extractor = new TextExtractor();
+    const pages = [bodyPage(1, 'EXPLICIT VERSION BODY')];
+    const calls: string[] = [];
+    (extractor as any).zoteroAPI = {
+      getRequestedPdfText: async (_id: number, key: string) => {
+        calls.push(`requested:${key}`);
+        return {
+          selectedText: {
+            attachmentId: 10,
+            attachmentKey: 'PDFONLY1',
+            fileName: 'version-b.pdf',
+            pagesTotal: 1,
+            pages,
+            status: 'ok',
+          },
+        };
+      },
+      getSelectedMainPdfText: async () => {
+        calls.push('automatic-selector');
+        throw new Error('one-shot selection must bypass automatic classification');
+      },
+    };
+    const diagnostics: any[] = [];
+
+    const result = await extractor.extractChunksFromItem(paper(), 'full', chunkOptions, {
+      pdfAttachmentKey: 'PDFONLY1',
+      onDiagnostic: diagnostic => diagnostics.push(diagnostic),
+    });
+
+    assert.ok(result);
+    assert.deepEqual(calls, ['requested:PDFONLY1']);
+    assert.ok(result.chunks.filter(chunk => chunk.type !== 'summary')
+      .every(chunk => chunk.pdfAttachmentKey === 'PDFONLY1'));
+    assert.deepEqual(diagnostics, [{
+      status: 'selected',
+      attachmentKey: 'PDFONLY1',
+      reason: null,
+      pagesIndexed: 1,
+      pagesTotal: 1,
+    }]);
+  });
+
+  test('fails an explicit non-empty PDF when filtering leaves no searchable PDF chunks', async () => {
+    installZoteroStub();
+    const extractor = new TextExtractor();
+    const errors: any[] = [];
+    const diagnostics: any[] = [];
+    (extractor as any).zoteroAPI = {
+      getRequestedPdfText: async () => ({
+        selectedText: {
+          attachmentId: 10,
+          attachmentKey: 'PDFONLY1',
+          pagesTotal: 1,
+          pages: [{ pageNumber: 1, text: 'Short readable PDF text.' }],
+          status: 'ok',
+        },
+      }),
+    };
+
+    const result = await extractor.extractChunksFromItem(paper(), 'full', chunkOptions, {
+      pdfAttachmentKey: 'PDFONLY1',
+      onDiagnostic: diagnostic => diagnostics.push(diagnostic),
+      onError: error => errors.push(error),
+    });
+
+    assert.equal(result, null);
+    assert.deepEqual(diagnostics, [{
+      status: 'partial',
+      attachmentKey: 'PDFONLY1',
+      reason: 'pdf_no_indexable_content',
+      pagesIndexed: 0,
+      pagesTotal: 1,
+    }]);
+    assert.deepEqual(errors, [{
+      code: 'pdf_no_indexable_content',
+      stage: 'extract',
+      message: 'The selected PDF produced no searchable PDF chunks under current filtering and chunk limits.',
+    }]);
+  });
+
+  test('keeps automatic metadata extraction when PDF filtering leaves no chunks and reports partial', async () => {
+    installZoteroStub();
+    const extractor = new TextExtractor();
+    const diagnostics: any[] = [];
+    (extractor as any).zoteroAPI = {
+      getSelectedMainPdfText: async () => ({
+        selection: { decision: 'selected-main', selectedAttachmentKey: 'MAIN' },
+        selectedText: {
+          attachmentId: 10,
+          attachmentKey: 'MAIN',
+          pagesTotal: 1,
+          pages: [{ pageNumber: 1, text: 'Short readable PDF text.' }],
+          status: 'ok',
+        },
+      }),
+    };
+
+    const result = await extractor.extractChunksFromItem(paper(), 'full', chunkOptions, {
+      onDiagnostic: diagnostic => diagnostics.push(diagnostic),
+    });
+
+    assert.ok(result);
+    assert.ok(result.chunks.some(chunk => chunk.type === 'summary'));
+    assert.equal(result.chunks.some(chunk => chunk.type !== 'summary'), false);
+    assert.deepEqual(diagnostics, [{
+      status: 'partial',
+      attachmentKey: 'MAIN',
+      reason: 'pdf_no_indexable_content',
+      pagesIndexed: 0,
+      pagesTotal: 1,
+    }]);
+  });
+
+  test('fails a one-shot PDF request in non-Full mode without invoking PDF APIs', async () => {
+    installZoteroStub();
+    const extractor = new TextExtractor();
+    let reads = 0;
+    const errors: any[] = [];
+    (extractor as any).zoteroAPI = {
+      getRequestedPdfText: async () => { reads++; return { selectedText: null }; },
+      getSelectedMainPdfText: async () => { reads++; return null; },
+    };
+
+    const result = await extractor.extractChunksFromItem(paper(), 'notes', chunkOptions, {
+      pdfAttachmentKey: 'PDFONLY1',
+      onError: error => errors.push(error),
+    });
+
+    assert.equal(result, null);
+    assert.equal(reads, 0);
+    assert.deepEqual(errors, [{
+      code: 'pdf_mode_required',
+      stage: 'validate',
+      message: 'Selecting a PDF requires the full indexing mode.',
+    }]);
+  });
+
+  test('fails an empty requested PDF so callers preserve the existing indexed chunks', async () => {
+    installZoteroStub();
+    const extractor = new TextExtractor();
+    const errors: any[] = [];
+    const diagnostics: any[] = [];
+    (extractor as any).zoteroAPI = {
+      getRequestedPdfText: async () => ({
+        selectedText: {
+          attachmentId: 10,
+          attachmentKey: 'PDFONLY1',
+          pagesTotal: 2,
+          pages: [{ pageNumber: 1, text: '' }, { pageNumber: 2, text: '  ' }],
+          status: 'empty',
+        },
+      }),
+    };
+
+    const result = await extractor.extractChunksFromItem(paper(), 'full', chunkOptions, {
+      pdfAttachmentKey: 'PDFONLY1',
+      onDiagnostic: diagnostic => diagnostics.push(diagnostic),
+      onError: error => errors.push(error),
+    });
+
+    assert.equal(result, null);
+    assert.equal(diagnostics[0]?.status, 'empty');
+    assert.equal(diagnostics[0]?.reason, 'empty_text');
+    assert.equal(errors[0]?.code, 'pdf_attachment_empty');
+  });
+
+  test('reports a degraded requested PDF with no readable pages as an extraction failure', async () => {
+    installZoteroStub();
+    const extractor = new TextExtractor();
+    const errors: any[] = [];
+    const diagnostics: any[] = [];
+    (extractor as any).zoteroAPI = {
+      getRequestedPdfText: async () => ({
+        selectedText: {
+          attachmentId: 10,
+          attachmentKey: 'PDFONLY1',
+          pagesTotal: 2,
+          pages: [{ pageNumber: 1, text: '' }, { pageNumber: 2, text: '' }],
+          status: 'degraded',
+        },
+      }),
+    };
+
+    const result = await extractor.extractChunksFromItem(paper(), 'full', chunkOptions, {
+      pdfAttachmentKey: 'PDFONLY1',
+      onDiagnostic: diagnostic => diagnostics.push(diagnostic),
+      onError: error => errors.push(error),
+    });
+
+    assert.equal(result, null);
+    assert.equal(diagnostics[0]?.status, 'failed');
+    assert.equal(diagnostics[0]?.reason, 'pdf_unavailable');
+    assert.equal(errors[0]?.code, 'pdf_attachment_failed');
+  });
+
   test('applies References v2 then F v1 before title and same-page packing', async () => {
     installZoteroStub();
     const extractor = new TextExtractor();

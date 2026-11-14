@@ -1321,3 +1321,53 @@ export async function runIndexStatusTool(): Promise<object> {
     storageUsedBytes: stats.storageUsedBytes,
   };
 }
+
+/** Only explicit stable identities may enter the index-maintenance API. */
+export class ItemIndexArgumentsError extends Error {}
+
+function itemIndexArguments(args: any, writable: boolean): {
+  libraryKey: string; itemKey: string; force?: boolean; pdfAttachmentKey?: string;
+} {
+  const operation = writable ? 'index_item' : 'get_item_index_status';
+  if (!args || typeof args !== 'object' || Array.isArray(args)) {
+    throw new ItemIndexArgumentsError(`${operation}: arguments must be an object`);
+  }
+  const allowed = writable
+    ? ['library_key', 'item_key', 'force', 'pdf_attachment_key']
+    : ['library_key', 'item_key'];
+  if (Object.keys(args).some(key => !allowed.includes(key))) {
+    throw new ItemIndexArgumentsError(`${operation}: unknown argument`);
+  }
+  try {
+    const rawLibraryKey = args.library_key === undefined ? 'user' : args.library_key;
+    if (typeof rawLibraryKey !== 'string' || !/^(user|group:[1-9]\d*)$/.test(rawLibraryKey.trim())) {
+      throw new Error('library_key must be user or group:<positive integer>');
+    }
+    const libraryKey = rawLibraryKey.trim();
+    resolveLibraryId(libraryKey, operation);
+    const itemKey = itemKeyArg(args.item_key, operation);
+    if (!writable) return { libraryKey, itemKey };
+    if (args.force !== undefined && typeof args.force !== 'boolean') {
+      throw new Error('force must be a boolean');
+    }
+    const pdfAttachmentKey = args.pdf_attachment_key === undefined ? undefined
+      : itemKeyArg(args.pdf_attachment_key, operation, 'pdf_attachment_key');
+    return { libraryKey, itemKey, force: args.force ?? false, pdfAttachmentKey };
+  } catch (error: any) {
+    throw new ItemIndexArgumentsError(`${operation}: ${error?.message || 'invalid arguments'}`);
+  }
+}
+
+export async function runIndexItemTool(args: any): Promise<any> {
+  const request = itemIndexArguments(args, true);
+  const api = Zotero.ZotSeek?.api;
+  if (typeof api?.indexItem !== 'function') throw new Error('Item indexing API is unavailable.');
+  return api.indexItem(request);
+}
+
+export async function runGetItemIndexStatusTool(args: any): Promise<any> {
+  const request = itemIndexArguments(args, false);
+  const api = Zotero.ZotSeek?.api;
+  if (typeof api?.getItemIndexStatus !== 'function') throw new Error('Item index status API is unavailable.');
+  return api.getItemIndexStatus(request);
+}

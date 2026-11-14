@@ -41,7 +41,8 @@ export interface IVectorStore {
   setStartupFingerprint(fingerprint: import('./vector-store-sqlite').StartupFingerprint): Promise<void>;
   getChunkTextsBySources(libraryKey: string, itemKey: string, sources: import('./vector-store-sqlite').TextSourceType[], modelId?: string): Promise<string[]>;
   getIndexedPdfAttachmentKey(libraryKey: string, itemKey: string, modelId?: string): Promise<string | undefined>;
-  getIndexStatusByIdentity(identities: Array<{libraryKey: string; itemKey: string}>): Promise<Map<string, import('./vector-store-sqlite').ItemIndexStatus>>;
+  getIndexStatusByIdentity(identities: Array<{libraryKey: string; itemKey: string}>, options?: { strict?: boolean }): Promise<Map<string, import('./vector-store-sqlite').ItemIndexStatus>>;
+  getItemIndexSources(libraryKey: string, itemKey: string, modelId?: string): Promise<{ sources: string[]; pdfAttachmentKey?: string }>;
   getByLibraryKey(libraryKey: string): Promise<import('./vector-store-sqlite').PaperEmbedding[]>;
 
   // Legacy id-keyed methods (deprecated, kept until call sites migrate)

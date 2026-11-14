@@ -9,6 +9,9 @@ import {
   runIndexStatusTool,
   runGetItemTool,
   runGetLibraryMapTool,
+  runIndexItemTool,
+  runGetItemIndexStatusTool,
+  ItemIndexArgumentsError,
   isAllowedOrigin,
 } from './http-tools';
 
@@ -18,6 +21,8 @@ export const REST_PATHS = {
   stats: '/zotseek/stats',
   item: '/zotseek/item',
   libraryMap: '/zotseek/library-map',
+  indexItem: '/zotseek/index-item',
+  itemIndexStatus: '/zotseek/item-index-status',
 };
 
 type EndpointResponse = [number, string, string];
@@ -150,6 +155,49 @@ export async function handleLibraryMapRequest(requestData: any): Promise<Endpoin
   }
 }
 
+export async function handleIndexItemRequest(requestData: any): Promise<EndpointResponse> {
+  const denied = originGuard(requestData);
+  if (denied) return denied;
+  if (String(requestData?.method || 'POST').toUpperCase() !== 'POST') {
+    return json(405, { error: 'Index maintenance requires POST.' });
+  }
+  const data = requestData?.data;
+  if (!data || typeof data !== 'object' || Array.isArray(data) ||
+      Object.keys(data).some(key => !['libraryKey', 'itemKey', 'force', 'pdfAttachmentKey'].includes(key))) {
+    return json(400, { error: 'Expected a JSON object with itemKey and optional libraryKey, force, pdfAttachmentKey.' });
+  }
+  try {
+    const result = await runIndexItemTool({
+      item_key: data.itemKey, library_key: data.libraryKey,
+      force: data.force, pdf_attachment_key: data.pdfAttachmentKey,
+    });
+    return json(result.outcome === 'busy' ? 409 : result.outcome === 'failed' ? 500 : 200, result);
+  } catch (error: any) {
+    return json(error instanceof ItemIndexArgumentsError ? 400 : 500, { error: error?.message || 'Item indexing failed.' });
+  }
+}
+
+export async function handleItemIndexStatusRequest(requestData: any): Promise<EndpointResponse> {
+  const denied = originGuard(requestData);
+  if (denied) return denied;
+  if (String(requestData?.method || 'GET').toUpperCase() !== 'GET') {
+    return json(405, { error: 'Item index status requires GET.' });
+  }
+  const sp: URLSearchParams = requestData.searchParams;
+  let invalidQuery = false;
+  sp.forEach((_, key) => {
+    if (!['itemKey', 'libraryKey'].includes(key) || sp.getAll(key).length !== 1) invalidQuery = true;
+  });
+  if (invalidQuery) return json(400, { error: 'Expected unique itemKey and optional libraryKey query parameters.' });
+  try {
+    return json(200, await runGetItemIndexStatusTool({
+      item_key: sp.get('itemKey'), library_key: sp.get('libraryKey') ?? undefined,
+    }));
+  } catch (error: any) {
+    return json(error instanceof ItemIndexArgumentsError ? 400 : 500, { error: error?.message || 'Item index status failed.' });
+  }
+}
+
 export function ZotSeekSearchEndpoint(this: any) {}
 ZotSeekSearchEndpoint.prototype = {
   supportedMethods: ['GET'],
@@ -188,4 +236,20 @@ ZotSeekLibraryMapEndpoint.prototype = {
   supportedDataTypes: ['application/json'],
   permitBookmarklet: false,
   init: handleLibraryMapRequest,
+};
+
+export function ZotSeekIndexItemEndpoint(this: any) {}
+ZotSeekIndexItemEndpoint.prototype = {
+  supportedMethods: ['POST'],
+  supportedDataTypes: ['application/json'],
+  permitBookmarklet: false,
+  init: handleIndexItemRequest,
+};
+
+export function ZotSeekItemIndexStatusEndpoint(this: any) {}
+ZotSeekItemIndexStatusEndpoint.prototype = {
+  supportedMethods: ['GET'],
+  supportedDataTypes: ['application/json'],
+  permitBookmarklet: false,
+  init: handleItemIndexStatusRequest,
 };

@@ -50,6 +50,9 @@ function installPdfScenario(
   let fulltextCalls = 0;
   const parent = {
     id: 1,
+    key: 'PARENT01',
+    libraryID: 1,
+    deleted: false,
     isRegularItem: () => true,
     getAttachments: () => attachmentIds,
     getField: (field: string) => field === 'title'
@@ -59,6 +62,10 @@ function installPdfScenario(
   const attachments = new Map(attachmentIds.map((id) => [id, {
     id,
     key: `ATT${id}`,
+    parentID: parent.id,
+    libraryID: parent.libraryID,
+    deleted: false,
+    attachmentContentType: 'application/pdf',
     isPDFAttachment: () => true,
     getFilePath: async () => `C:\\Zotero\\storage\\ATT${id}\\${options.fileNames?.[id] ?? `paper-${id}.pdf`}`,
   }]));
@@ -109,6 +116,60 @@ test('discovers physical pages from the first PDFWorker response without Fulltex
     { attachmentId: 10, pageIndex: 2 },
   ]);
   assert.equal(scenario.getFulltextCalls(), 0);
+});
+
+test('reads only the explicitly requested PDF and does not classify its siblings', async () => {
+  const scenario = installPdfScenario([10, 20], {
+    10: { 0: { totalPages: 1, text: 'First readable PDF.' } },
+    20: { 0: { totalPages: 1, text: 'The explicitly selected PDF.' } },
+  });
+
+  const result = await new ZoteroAPI().getRequestedPdfText(1, 'att20');
+  assert.equal(result.errorCode, undefined);
+  assert.equal(result.selectedText?.attachmentKey, 'ATT20');
+  assert.deepEqual(scenario.calls, [{ attachmentId: 20, pageIndex: 0 }]);
+});
+
+test('reports a requested PDF failure without falling back to a readable sibling', async () => {
+  const scenario = installPdfScenario([10, 20], {
+    10: { 0: { totalPages: 1, text: 'A readable sibling PDF.' } },
+    20: { 0: new Error('sensitive PDF worker details') },
+  });
+
+  const result = await new ZoteroAPI().getRequestedPdfText(1, 'ATT20');
+  assert.equal(result.errorCode, 'pdf_unavailable');
+  assert.equal(result.selectedText?.status, 'failed');
+  assert.deepEqual(scenario.calls, [{ attachmentId: 20, pageIndex: 0 }]);
+});
+
+test('rejects a requested attachment with a different parent before PDFWorker reads it', async () => {
+  const scenario = installPdfScenario([10], {
+    10: { 0: { totalPages: 1, text: 'Research Article' } },
+  });
+  scenario.attachment(10).parentID = 99;
+
+  const result = await new ZoteroAPI().getRequestedPdfText(1, 'ATT10');
+  assert.equal(result.errorCode, 'attachment_invalid');
+  assert.deepEqual(scenario.calls, []);
+});
+
+test('accepts numeric-string parent ids and the parentItemID compatibility field', async () => {
+  const numericString = installPdfScenario([10], {
+    10: { 0: { totalPages: 1, text: 'Selected PDF text.' } },
+  });
+  (numericString.attachment(10) as any).parentID = '1';
+  const first = await new ZoteroAPI().getRequestedPdfText(1, 'ATT10');
+  assert.equal(first.errorCode, undefined);
+  assert.equal(first.selectedText?.attachmentKey, 'ATT10');
+
+  const parentItemId = installPdfScenario([10], {
+    10: { 0: { totalPages: 1, text: 'Selected PDF text.' } },
+  });
+  (parentItemId.attachment(10) as any).parentID = undefined;
+  (parentItemId.attachment(10) as any).parentItemID = '1';
+  const second = await new ZoteroAPI().getRequestedPdfText(1, 'ATT10');
+  assert.equal(second.errorCode, undefined);
+  assert.equal(second.selectedText?.attachmentKey, 'ATT10');
 });
 
 test('preserves a failed physical page slot and continues extracting later pages', async () => {

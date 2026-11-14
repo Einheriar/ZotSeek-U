@@ -60,6 +60,19 @@ export interface SelectedMainPdfText {
   selectedText: PdfAttachmentText | null;
 }
 
+export type RequestedPdfLookupErrorCode =
+  | 'parent_not_found'
+  | 'parent_invalid'
+  | 'attachment_not_found'
+  | 'attachment_invalid'
+  | 'attachment_deleted'
+  | 'pdf_unavailable';
+
+export interface RequestedPdfText {
+  selectedText: PdfAttachmentText | null;
+  errorCode?: RequestedPdfLookupErrorCode;
+}
+
 export type PdfReadStatus =
   'ok' | 'partial' | 'not_found' | 'missing' | 'unresolved' | 'empty' | 'failed';
 export type PdfReadSource = 'zotero-fulltext-cache' | 'pdfworker' | 'cache+pdfworker';
@@ -712,6 +725,53 @@ export class ZoteroAPI {
       debug(`Failed to select main PDF for item ${itemId}: ${error}`);
       return null;
     }
+  }
+
+  /**
+   * Read exactly the caller-selected PDF attached to a parent item.
+   * This request is intentionally one-shot: it does not alter the normal
+   * main-PDF selector or create a persistent attachment preference.
+   */
+  async getRequestedPdfText(
+    itemId: number,
+    attachmentKey: string,
+  ): Promise<RequestedPdfText> {
+    const parent = this.getItem(itemId) as any;
+    if (!parent || parent.deleted === true || parent.isDeleted?.() === true) {
+      return { selectedText: null, errorCode: 'parent_not_found' };
+    }
+    if (parent.isRegularItem?.() !== true) {
+      return { selectedText: null, errorCode: 'parent_invalid' };
+    }
+
+    const normalizedKey = String(attachmentKey || '').trim().toUpperCase();
+    const attachmentIds: number[] = parent.getAttachments?.() || [];
+    const attachment = attachmentIds
+      .map(id => Zotero.Items.get(id) as ZoteroAttachment | null)
+      .find(candidate => String(candidate?.key || '').toUpperCase() === normalizedKey);
+    if (!attachment) {
+      return { selectedText: null, errorCode: 'attachment_not_found' };
+    }
+
+    // Validate relationship and type at the read boundary too; HTTP input is
+    // untrusted even when an upstream handler has already checked the key.
+    const attachmentState = attachment as any;
+    const requestedParentID = Number(attachmentState.parentID ?? attachmentState.parentItemID);
+    if (!Number.isFinite(requestedParentID) ||
+        requestedParentID !== Number(parent.id) ||
+        (attachment.libraryID != null && Number(attachment.libraryID) !== Number(parent.libraryID)) ||
+        !attachment.isPDFAttachment?.()) {
+      return { selectedText: null, errorCode: 'attachment_invalid' };
+    }
+    if (attachmentState.deleted === true || attachmentState.isDeleted?.() === true) {
+      return { selectedText: null, errorCode: 'attachment_deleted' };
+    }
+
+    const selectedText = await this.getPdfWorkerTextByAttachment(attachment);
+    if (selectedText.status === 'failed') {
+      return { selectedText, errorCode: 'pdf_unavailable' };
+    }
+    return { selectedText };
   }
 
   /** Compatibility wrapper returning only the selected main PDF pages. */

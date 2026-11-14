@@ -1,8 +1,8 @@
 # ZotSeek MCP Server & REST API
 
-ZotSeek can expose read-only library/collection navigation, search, and stable-identity item, Note, and PDF reading to AI agents and scripts through a local MCP server and matching REST endpoints, served on Zotero's own HTTP server.
+ZotSeek exposes library/collection navigation, search, and stable-identity item, Note, and PDF reading to AI agents and scripts through a local MCP server and matching REST endpoints, served on Zotero's own HTTP server. It also supports one narrowly scoped write: indexing one specified Zotero parent item into ZotSeek's own index.
 
-This needs no extra software: the endpoints run inside the Zotero you already have open. They are **opt-in** (off by default), expose **read-only** library operations, and are bound to **localhost only**. Search can prepare local caches. Localhost describes the MCP connection, not every downstream operation: semantic/Hybrid query embedding uses the selected provider and can send query text to a configured cloud service. Keyword search does not request query embeddings. The connected agent receives returned excerpts and metadata and handles them according to its own configuration.
+This needs no extra software: the endpoints run inside the Zotero you already have open. They are **opt-in** (off by default) and bound to **localhost only**. The existing AI Agent Access switch authorizes library reads and targeted ZotSeek indexing; indexing does not edit Zotero bibliographic data or Child Notes. Search can prepare local caches. Localhost describes the MCP connection, not every downstream operation: semantic/Hybrid query embedding uses the selected provider and can send query text to a configured cloud service. Indexing can send document text to the selected embedding provider, subject to that provider's existing consent and verification. Keyword search does not request query embeddings. The connected agent receives returned excerpts, metadata and operation results and handles them according to its own configuration.
 
 Everything routes through the running Zotero, where your embeddings and index already live, so **Zotero must be running** for the endpoints to respond.
 
@@ -12,7 +12,7 @@ Everything routes through the running Zotero, where your embeddings and index al
 
 ### 1. Enable AI Agent Access
 
-In Zotero, open **Settings → ZotSeek → AI Agent Access** and check **"Allow AI agents to search and read your library (local MCP server)"**. This is off by default. Toggling it takes effect immediately — no restart needed. The same switch authorizes all read-only MCP/REST operations; there is no separate PDF permission.
+In Zotero, open **Settings → ZotSeek → AI Agent Access** and enable the local MCP server. This is off by default. Toggling it takes effect immediately — no restart needed. The switch authorizes the documented library read operations and targeted ZotSeek index maintenance. Indexing uses the currently selected embedding model and its existing provider authorization; no separate PDF permission is needed.
 
 ### 2. Allow Zotero's local HTTP server
 
@@ -58,6 +58,8 @@ Documentation alignment (2026-09-13; Plan 74 implementation): the behavior below
 | `get_item` | `item_key` *(required)*; `library_key` (default `user`); `include_notes` (default `false`); `include_pdf` (`none` \| `pages` \| `full` \| `references`, default `none`); `pdf_pages` (`3` or `3-5`, at most 20 pages); `pdf_attachment_key` | A normalized live Zotero item snapshot, optionally with complete Notes and exact, bounded PDF text |
 | `find_similar` | `item_key` *(required, 8-character Zotero key)*; `library_key` (`user` or `group:<groupID>`, default `user`); `max_results` (1–100, default 10) | Papers similar to a known library item, by its stored embeddings |
 | `index_status` | *(none)* | `{ready, modelLoaded, indexedPapers, totalChunks, modelId, activeModel, coverage, configurationError?, lastIndexed, storageUsedBytes}` |
+| `index_item` | `item_key` *(required)*; `library_key` (default `user`); `force` (default `false`); optional `pdf_attachment_key` | Synchronously index or update one parent item; returns the final outcome and latest attempt |
+| `get_item_index_status` | `item_key` *(required)*; `library_key` (default `user`) | Current-model coverage, freshness state, stored sources and latest API/PDF attempt diagnostics |
 
 ### Search parameter behavior
 
@@ -69,6 +71,22 @@ The short `search` and `get_item` descriptions state when to use each tool, impo
 - MCP `search` uses a fixed semantic candidate floor of **0** instead of the UI preference. The MCP schema does not expose `min_similarity`; if an older client still sends that field, the server ignores it and keeps the fixed floor. The normal S50 candidate depth and non-negative semantic eligibility rules still apply; a zero floor does not return every scored paper. K50 candidates are still included through the keyword channel. The REST `minSimilarity` parameter retains its separate behavior described in the REST section below.
 - `library_key` limits the library. Omitting it searches all indexed libraries. `collection_key` is an 8-character stable key returned by `get_library_map`; it requires an explicit `library_key`. Collection membership is resolved from live Zotero data before semantic/keyword TopK, includes all descendants by default, and can be restricted to direct members with `include_subcollections:false`. An unknown collection or a failed membership read returns an explicit error rather than widening the scope. The indexing content mode (`abstract`, `notes`, `full`) follows ZotSeek settings; `search` does not expose an indexing-mode override.
 - `filter` inspects the normal bounded ranked candidate pool, then `max_results` is applied, as detailed below. It does not expose candidate-depth control, semantic threshold, lexical-bonus coefficient or RRF-weight parameters.
+
+### `index_item`
+
+`index_item` synchronously invokes the existing single-item reconciliation path and returns when that operation finishes. It accepts one parent bibliographic item identified by `library_key + item_key`; it does not use Zotero's current UI selection. The default `force:false` checks normal Metadata/Notes freshness and can return `unchanged`. `force:true` re-extracts the item's current indexing mode. An active indexing operation returns `busy` without being queued.
+
+`pdf_attachment_key` is an optional, per-call source override. It is valid only when the current indexing mode is `full`; it must identify a live PDF attachment belonging to that same parent item and library. Supplying it forces this call to extract the named PDF directly, bypasses automatic main-PDF selection, and does not save a future default choice. The resulting PDF chunks retain their real page numbers and attachment key. If the supplied attachment cannot be read, or its extracted text produces no body chunks after filtering, minimum-length checks or the shared chunk limit, the call fails and preserves the previous index; it does not silently choose a sibling PDF. Without this argument, the ordinary main-PDF selector runs. If automatic PDF extraction yields no body chunks, indexing may still succeed from available metadata/notes and reports a `partial` PDF diagnostic with a reason.
+
+The result includes stable item identity, the model and indexing mode used, `force`, `outcome` (`indexed`, `updated`, `unchanged`, `skipped`, `failed`, or `busy`), attempt time, a stable short `reason` when needed, reconciliation counts (`checked`, `indexedNew`, `rebuilt`, `notesUpdated`, `unchangedCount`, `failedCount`, `removed`), and optional PDF diagnostics (`selected`, `abstained`, `partial`, `empty`, or `failed`, with a reason and page coverage). Recent API attempt data is retained by item and model and is available from `get_item_index_status`. `lastAttempt` describes only the most recent API call. Separately, `lastPdfAttempt` preserves the latest actual Full-mode PDF extraction diagnostic and request context; calls that do not extract a PDF leave it intact. It is one bounded latest record, not a history, and may refer to a previous attachment or source. Success replaces a prior failed `lastAttempt`. No historical cause is inferred when `lastAttempt` is `null`; no automatic retry or background job is created. Existing provider request retries and consent/verification checks continue to apply.
+
+### `get_item_index_status`
+
+This reads one Zotero parent item's current-model index status. The response separates the current ZotSeek configuration (`currentMode`) from the mode recorded for the stored index (`indexedMode`, or `null` when unavailable), reports whether that model currently covers the item, indexed sources, timestamps, chunks/pages/truncation and the exact PDF key when available. `state` summarizes index freshness as `not-indexed`, `indexed`, `partial`, `outdated`, or `excluded`. `configurationError` is present when the selected Server model configuration is incomplete or invalid; in that case `indexed:false` means coverage could not be established for a usable active model, not necessarily that no stored index exists. This configuration error is distinct from a missing local Worker: status remains readable without loading the Worker. `pdfFreshness` is always `not_checked`: the existing freshness contract does not detect that a PDF file was replaced or changed. `lastAttempt` is the most recent API call or `null`. `lastPdfAttempt` is the latest actual Full-mode extraction diagnostic with its request identity, model, mode, time, outcome, optional reason and PDF diagnostic; it can describe an earlier PDF/source and does not verify the current file. An existing index may remain searchable after a failed update, so attempt outcome and stored coverage are separate fields.
+
+Invalid identities and SQLite status-query errors are reported as errors rather than represented as an unindexed item. This tool is per-item; the existing `index_status` remains the global model and coverage summary.
+
+The REST equivalents accept the same stable item identity: `POST /zotseek/index-item` with a JSON object (`itemKey`, `libraryKey`, `force`, `pdfAttachmentKey`), and `GET /zotseek/item-index-status?itemKey=...&libraryKey=...`. Invalid request types return HTTP 400; indexing or status-storage failures return HTTP 500; an active indexing operation returns HTTP 409. MCP represents a failed or busy index tool call as an error result the agent can inspect.
 
 `mode` mirrors the ZotSeek UI. Paper-level **hybrid** first attempts explicit
 metadata identity navigation. Content queries independently retrieve semantic
@@ -197,9 +215,9 @@ These links work only on the machine where this Zotero instance is running. Used
 
 ## REST API
 
-The same operations and result shapes are available as plain `GET` endpoints for scripts and CLI tools. All are served on `localhost:23119`. Search results on both surfaces include `score`, `semanticScore` and `bm25Score` with the meanings above.
+REST read operations use `GET`; the single-item index operation uses `POST`. They share the corresponding MCP operation contracts and access switch, and are available to any local HTTP client without MCP. All are served on `localhost:23119`. Search results on both surfaces include `score`, `semanticScore` and `bm25Score` with the meanings above.
 
-REST keeps its existing `minSimilarity` query parameter and preference-based default. This is intentionally separate from MCP: only MCP search uses the fixed semantic candidate threshold of 0 and omits the threshold from its public schema. REST callers that send `minSimilarity` continue to receive the REST behavior documented by the endpoint implementation.
+REST keeps its existing `minSimilarity` query parameter and preference-based default. This is intentionally separate from MCP: only MCP search uses the fixed semantic candidate threshold of 0 and omits the threshold from its public schema. REST callers that send `minSimilarity` continue to receive the REST behavior documented by the endpoint implementation. Index maintenance uses a separate POST request so it cannot be triggered by an ordinary GET.
 
 | Endpoint | Query parameters |
 |----------|------------------|
@@ -208,6 +226,8 @@ REST keeps its existing `minSimilarity` query parameter and preference-based def
 | `GET /zotseek/item` | `itemKey` *(required)*, `libraryKey`, `includeNotes`, `includePdf` (`none`/`pages`/`full`/`references`), `pdfPages`, `pdfAttachmentKey` |
 | `GET /zotseek/similar` | `itemKey` *(required)*, `libraryKey` (`user` or `group:N`), `topK` |
 | `GET /zotseek/stats` | *(none)* |
+| `POST /zotseek/index-item` | JSON `{ itemKey, libraryKey?, force?, pdfAttachmentKey? }`; indexes one parent item synchronously and returns its final outcome |
+| `GET /zotseek/item-index-status` | `itemKey` *(required)*, `libraryKey` (default `user`); returns one item's current-model coverage, latest API call and latest Full-PDF diagnostic |
 | `GET /zotseek/open` | `target` (`select` \| `pdf`) *(required)*, `key` *(required)*, `library` (`user` or `group:N`), `page` (pdf only) — selects the item or opens the PDF directly in Zotero and returns a confirmation page (`404` if the item isn't in this library) |
 
 Example:
@@ -250,14 +270,17 @@ curl 'http://localhost:23119/zotseek/search?q=neural+synchrony&libraryKey=user&c
 | `400` | Invalid input, or the search failed (e.g. missing `q` / `itemKey`, or an item not indexed), with `{"error": "..."}` |
 | `403` | Request presents a forged non-local `Origin` header |
 | `404` | AI Agent Access is disabled (the endpoints are not registered) |
-| `500` | Unexpected internal failure on `GET /zotseek/stats`, with `{"error": "..."}` |
+| `409` | Indexing is already in progress and this single-item request was not queued |
+| `500` | Index operation or status read failed, or unexpected failure on `GET /zotseek/stats`, with a bounded diagnostic |
+
+Zotero can close browser-like requests before a ZotSeek handler runs. PowerShell's default User-Agent can trigger this check; when testing with `Invoke-WebRequest`, pass `-UserAgent 'ZotSeek-API-Test/1.0'` as a native API client. Keep the normal Origin restrictions; a closed connection alone does not identify an indexing failure.
 
 ## Security
 
 | Property | Guarantee |
 |----------|-----------|
 | **Opt-in** | Off by default; you enable it explicitly in ZotSeek settings |
-| **Read-only operations** | Tools expose search and reading, not library edits or index-maintenance commands; requests can initialize local caches |
+| **Scoped write** | `index_item` may write embeddings and index metadata for one explicitly identified parent item; it does not edit Zotero library data. Reads and search keep their existing behavior |
 | **Localhost only** | Endpoints bind to the loopback interface; not reachable from the network |
 | **Not reachable from web pages** | Zotero's server blocks browser-originated requests to the data endpoints before they reach ZotSeek, and ZotSeek additionally validates the `Origin` header. The one deliberate exception is the `GET /zotseek/open` link launcher, which browsers can reach by design — it exposes no data and can only select an item or open a PDF in Zotero (strictly validated input, prefetch requests ignored) |
 | **Provider-dependent inference** | Index retrieval is local; semantic/Hybrid query embedding can use the selected cloud provider. Returned data is also available to the connected agent |

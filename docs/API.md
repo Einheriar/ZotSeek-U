@@ -116,6 +116,38 @@ await Zotero.ZotSeek.api.indexItems(items);
 
 Items that are already indexed (matching content hash) are skipped. Progress is saved in checkpoints every 10 items, so it's safe to interrupt.
 
+### `indexItem(request)`
+
+Index or update one parent item by stable identity. This asynchronous JavaScript API shares the same execution path as the local Agent API and does not need a UI selection.
+
+```js
+const result = await Zotero.ZotSeek.api.indexItem({
+  libraryKey: 'user',
+  itemKey: 'ABCD2345',
+  force: true,
+  pdfAttachmentKey: 'PDFKEY12', // optional; this call only
+});
+```
+
+`libraryKey` and `itemKey` are required. `force` defaults to `false`; a normal call applies existing Metadata/Notes freshness checks, while `true` requests extraction for the current indexing mode. The optional `pdfAttachmentKey` is allowed only in `full` mode. It must be a live PDF belonging to the specified parent item; supplying it forces this call to read that attachment directly. The choice is not saved as a future default. On success, the generated PDF chunks retain the selected attachment key and physical page numbers. An unreadable or invalid attachment, or extracted text that yields no body chunks after filtering, minimum-length checks or the shared chunk limit, returns a failure reason and preserves the previous index rather than switching to a sibling PDF. With automatic PDF selection, indexing may still succeed from available metadata/notes when no PDF body chunks are produced; the PDF diagnostic reports `partial` with a reason.
+
+The returned `Promise<IndexItemResult>` settles after this one item's operation completes. Results identify the model and mode used and report an outcome (`indexed`, `updated`, `unchanged`, `skipped`, `failed`, or `busy`), attempt time, reconciliation counts (`checked`, `indexedNew`, `rebuilt`, `notesUpdated`, `unchangedCount`, `failedCount`, `removed`), optional stable reason, and PDF diagnostics. A busy request is returned immediately and is not queued. This method creates no progress window or dialog. Recent attempt details are available through `getItemIndexStatus()`.
+
+### `getItemIndexStatus(request)`
+
+Read one item's active-model coverage and most recent API indexing attempt without initializing an embedding pipeline.
+
+```js
+const status = await Zotero.ZotSeek.api.getItemIndexStatus({
+  libraryKey: 'user',
+  itemKey: 'ABCD2345',
+});
+```
+
+Both stable identity fields are required. The result reports current configuration and stored index facts separately, including model, `currentMode`, `indexedMode` (nullable), whether the active model covers the item, `state` (`not-indexed`, `indexed`, `partial`, `outdated`, or `excluded`), index and freshness-check timestamps, indexed sources, chunk/page counts, truncation, exact PDF attachment key when present, `pdfFreshness: "not_checked"`, and `lastAttempt` (or `null` when no API attempt was recorded). `configurationError` is present if the selected Server model configuration is incomplete or invalid. In that case `indexed:false` does not establish that no stored index exists; coverage cannot be checked against a usable active model. Reading status does not require the local embedding Worker to be loaded. `lastPdfAttempt` separately retains the latest actual Full-mode PDF extraction diagnostic and request context; ordinary calls without PDF extraction do not erase it. It is one bounded latest record, not an attempt history, and may refer to a previous attachment or source rather than the current PDF. An old usable index can remain present after a failed update. The existing freshness check does not detect that a PDF file was replaced or edited, so a reported current state cannot certify the PDF's file contents.
+
+The latest API attempt is stored by stable item identity and model. It contains only the outcome, timestamp, mode, requested PDF key and a short stable reason; it does not retain raw exceptions or document text. A successful operation replaces the previous `lastAttempt`; `lastPdfAttempt` remains until another actual Full extraction records a new diagnostic. Retry remains an explicit caller decision.
+
 ### `getStats()`
 
 Get statistics about the current index. Available immediately (no pipeline needed).

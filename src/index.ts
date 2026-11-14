@@ -16,7 +16,14 @@ import { PaperEmbedding, getVectorStore, IVectorStore } from './core/storage-fac
 import { getLexicalSnapshotSize } from './core/lexical-snapshot';
 import { embeddingPipeline, EmbeddingProgress } from './core/embedding-pipeline';
 import { searchEngine, SearchResult } from './core/search-engine';
-import { textExtractor, ExtractedText, ExtractedChunks } from './core/text-extractor';
+import {
+  textExtractor,
+  ExtractedText,
+  ExtractedChunks,
+  type ExtractionContext,
+  type ExtractionErrorDiagnostic,
+  type PdfExtractionDiagnostic,
+} from './core/text-extractor';
 import { ZoteroAPI } from './utils/zotero-api';
 import {
   allocateFullModeChunkCounts,
@@ -33,7 +40,13 @@ import {
   normalizeStoredIndexingMode,
 } from './utils/indexing-mode';
 import { autoIndexManager, IndexCallbackResult } from './core/auto-index-manager';
-import { assessModeOnlyIndexConfigTransition } from './core/index-freshness';
+import {
+  assessIndexConfigFingerprint,
+  assessModeOnlyIndexConfigTransition,
+  indexFreshnessTracker,
+  parseIndexConfigFingerprint,
+  resolveFreshnessDisplayState,
+} from './core/index-freshness';
 import { planModeTransitionReuse } from './core/index-mode-transition';
 import { indexFreshnessNotifier } from './core/index-freshness-notifier';
 import { metadataIdentityCache } from './core/metadata-identity-cache';
@@ -69,6 +82,17 @@ import { tokenizerService } from './core/tokenizer-service';
 import { shouldClearLegacyDefaultChunkPreference } from './core/model-input-policy';
 import { normalizeMaxChunksPerPaper } from './utils/numeric-preferences';
 import {
+  readItemIndexAttempt,
+  writeItemIndexAttempt,
+} from './core/item-indexing';
+import type {
+  ItemIndexAttempt,
+  ItemIndexReason,
+  ItemIndexRequest,
+  ItemIndexResult,
+  ItemIndexStatus,
+} from './core/item-indexing';
+import {
   getLastServerModelConfigLoadResult,
   getSelectedServerModelConfigurationIssue,
   loadServerModelConfig,
@@ -99,6 +123,7 @@ import './dev/suites/task-42c-server-client';
 import './dev/suites/task-45-cloud';
 import './dev/suites/task-47-z10-db-hooks';
 import './dev/suites/task-57-brief';
+import './dev/suites/plan76-item-indexing';
 import { collectCollectionItems } from './utils/collection-items';
 import {
   BulkIndexScope,
@@ -112,6 +137,31 @@ import {
   isItemExcludedFromIndex,
   readIndexExclusionPolicy,
 } from './utils/index-exclusion';
+
+interface IndexingExecutionOptions {
+  headless?: boolean;
+  extractionContext?: ExtractionContext;
+  expectedModelId?: string;
+  expectedMode?: IndexingMode;
+  onFailure?: (stage: 'preflight' | 'configuration' | 'extraction' | 'embedding' | 'storage') => void;
+}
+
+function createNoopIndexProgressWindow(): any {
+  return {
+    updateProgress: () => undefined,
+    updateProgressWithETA: () => undefined,
+    setHeadline: () => undefined,
+    addLine: () => undefined,
+    addCheckpointLine: () => undefined,
+    complete: () => undefined,
+    error: () => undefined,
+    close: () => undefined,
+    markStopped: () => undefined,
+    waitIfPaused: async () => undefined,
+    isStopRequested: () => false,
+    isCancelled: () => false,
+  };
+}
 import {
   briefService,
   summarizeBriefJobUsage,
@@ -2273,13 +2323,14 @@ class ZotSeekPlugin {
     scope?: BulkScope,
     forceFull = false,
     reservedOperationToken?: symbol,
+    executionOptions: IndexingExecutionOptions = {},
   ): Promise<import('./core/auto-index-manager').StartupCheckResult | null> {
-    if (!this.ensureOperationalModel(true)) return null;
+    if (!this.ensureOperationalModel(!executionOptions.headless)) return null;
     const ownsOperation = reservedOperationToken === undefined;
-    const operationToken = reservedOperationToken ?? this.tryBeginIndexOperation();
+    const operationToken = reservedOperationToken ?? this.tryBeginIndexOperation(!executionOptions.headless);
     if (!operationToken) return null;
     try {
-      if (!await this.ensureChunkStrategyWritable(true, true)) return null;
+      if (!await this.ensureChunkStrategyWritable(!executionOptions.headless, !executionOptions.headless)) return null;
       await this.ensureStoreReady();
       if (!this.vectorStore) return null;
       autoIndexManager.setVectorStore(this.vectorStore);
@@ -2303,8 +2354,8 @@ class ZotSeekPlugin {
           : false;
       const result = await autoIndexManager.reconcileItems(items, {
         purgeMissingScope,
-        fullIndexCallback: candidates => this.indexItemsCandidates(candidates, recoverableScope),
-        noteIndexCallback: candidates => this.indexNoteChangesSilent(candidates),
+        fullIndexCallback: candidates => this.indexItemsCandidates(candidates, recoverableScope, executionOptions),
+        noteIndexCallback: candidates => this.indexNoteChangesSilent(candidates, executionOptions),
         forceFull,
         operationToken,
       });
@@ -2330,17 +2381,23 @@ class ZotSeekPlugin {
       if (result.paused) return result;
       if (result.skipped) return result;
       const changed = result.indexedNew + result.rebuilt + result.notesUpdated;
-      showQuickNotification(
-        getString('pref-checkNowResult', {
-          checked: result.checked,
-          changed,
-          removed: result.removed,
-        }),
-        result.failed > 0 ? 'fail' : 'success',
-      );
+      if (!executionOptions.headless) {
+        showQuickNotification(
+          getString('pref-checkNowResult', {
+            checked: result.checked,
+            changed,
+            removed: result.removed,
+          }),
+          result.failed > 0 ? 'fail' : 'success',
+        );
+      }
       return result;
     } catch (error: any) {
       this.logger.error(`Scoped reconciliation failed: ${error?.message || error}`);
+      executionOptions.onFailure?.(/configuration changed|model changed|mode changed/i.test(String(error?.message || error))
+        ? 'configuration'
+        : 'preflight');
+      if (executionOptions.headless) throw error;
       this.showAlert(getString('indexing-failed', { error: error?.message || error }));
       return null;
     } finally {
@@ -2349,18 +2406,26 @@ class ZotSeekPlugin {
   }
 
   /** Index candidates already classified as new or needing a full rebuild. */
-  private async indexItemsCandidates(items: any[], scope?: BulkScope): Promise<IndexCallbackResult> {
-    if (!this.ensureOperationalModel(true)) return { successfulIds: [], paused: false };
+  private async indexItemsCandidates(
+    items: any[],
+    scope?: BulkScope,
+    executionOptions: IndexingExecutionOptions = {},
+  ): Promise<IndexCallbackResult> {
+    if (!this.ensureOperationalModel(!executionOptions.headless)) {
+      executionOptions.onFailure?.('preflight');
+      return { successfulIds: [], paused: false };
+    }
 
     // Explicit indexing actions must fail before opening a progress window and
     // must always explain why, even if startup already displayed this notice.
     try {
-      if (!await this.ensureChunkStrategyWritable(true, true)) {
+      if (!await this.ensureChunkStrategyWritable(!executionOptions.headless, !executionOptions.headless)) {
+        executionOptions.onFailure?.('preflight');
         return { successfulIds: [], paused: false };
       }
     } catch (error: any) {
       this.logger.error(`Indexing preflight failed: ${error}`);
-      this.showAlert(getString('indexing-failed', { error: error.message || error }));
+      if (!executionOptions.headless) this.showAlert(getString('indexing-failed', { error: error.message || error }));
       return { successfulIds: [], paused: false };
     }
 
@@ -2378,7 +2443,7 @@ class ZotSeekPlugin {
     const successfulItemIds: number[] = [];
 
     // Create stable progress window using toolkit
-    const progressWindow = new StableProgressWindow({
+    const progressWindow: any = executionOptions.headless ? createNoopIndexProgressWindow() : new StableProgressWindow({
       title: getString('indexing-title'),
       stopLabel: getString('indexing-pauseAction'),
       stoppingLabel: getString('indexing-pausingAction'),
@@ -2403,6 +2468,7 @@ class ZotSeekPlugin {
       },
     });
 
+    let failureStage: 'extraction' | 'embedding' | 'storage' = 'extraction';
     try {
       // Ensure vector store is ready
       progressWindow.updateProgress(getString('indexing-initStorage'), null);
@@ -2410,6 +2476,10 @@ class ZotSeekPlugin {
 
       // Get indexing mode
       const indexingMode = getIndexingMode(Z);
+      if ((executionOptions.expectedMode && indexingMode !== executionOptions.expectedMode) ||
+          (executionOptions.expectedModelId && indexingModelId !== executionOptions.expectedModelId)) {
+        throw new Error('Index configuration changed before extraction started.');
+      }
       this.logger.info(`Indexing mode: ${indexingMode}`);
       progressWindow.addLine(getString('indexing-mode', { mode: indexingMode }));
 
@@ -2482,7 +2552,8 @@ class ZotSeekPlugin {
               batchStart + progress.current,
               itemsToIndex.length
             );
-          }
+          },
+          executionOptions.extractionContext,
         );
 
         const batchSkipped = batchItems.length - extractedBatch.length;
@@ -2491,6 +2562,10 @@ class ZotSeekPlugin {
         if (progressWindow.isStopRequested()) {
           throw new Error('Paused by user');
         }
+        if ((executionOptions.expectedMode && getIndexingMode(Z) !== executionOptions.expectedMode) ||
+            (executionOptions.expectedModelId && getActiveModelId() !== executionOptions.expectedModelId)) {
+          throw new Error('Index configuration changed while extracting.');
+        }
 
         // === STEP 2: Reuse exact mode-transition vectors, then embed only the rest ===
         const transitionReuse = await this.prepareModeTransitionReuse(
@@ -2498,6 +2573,7 @@ class ZotSeekPlugin {
           indexingMode,
           indexingModelId,
         );
+        failureStage = 'embedding';
         const batchChunks: Array<{ id: string; text: string; title: string }> = [];
         for (const extracted of extractedBatch) {
           const reusable = transitionReuse.reusableByItem.get(extracted.itemId);
@@ -2561,14 +2637,19 @@ class ZotSeekPlugin {
         if (getActiveModelId() !== indexingModelId) {
           throw new Error('Embedding model changed before the indexing batch could be saved.');
         }
+        if (executionOptions.expectedMode && getIndexingMode(Z) !== executionOptions.expectedMode) {
+          throw new Error('Index mode changed before the indexing batch could be saved.');
+        }
 
         if (failedChunks > 0) {
+          executionOptions.onFailure?.('embedding');
           const itemList = Array.from(failedItems).join(', ');
           this.logger.warn(`Batch ${batchNumber}: ${failedChunks} chunks failed embedding and were skipped in: ${itemList}`);
           progressWindow.addLine(getString('indexing-chunksFailed', { count: failedChunks, items: itemList }));
         }
 
         // === STEP 3: Save this batch (CHECKPOINT) ===
+        failureStage = 'storage';
         progressWindow.setHeadline(getString('indexing-batchSaving', { current: batchNumber, total: totalBatches }));
 
         const batchEmbeddings: PaperEmbedding[] = [];
@@ -2578,6 +2659,10 @@ class ZotSeekPlugin {
           // item so a stop request cannot drain the rest of an embedded batch.
           if (progressWindow.isStopRequested()) {
             throw new Error('Paused by user');
+          }
+          if ((executionOptions.expectedMode && getIndexingMode(Z) !== executionOptions.expectedMode) ||
+              (executionOptions.expectedModelId && getActiveModelId() !== executionOptions.expectedModelId)) {
+            throw new Error('Index configuration changed before saving.');
           }
           const libraryKey = libraryKeyFromLocalID(extracted.libraryId);
           if (!libraryKey) {
@@ -2712,6 +2797,13 @@ class ZotSeekPlugin {
       return { successfulIds: successfulItemIds, paused: false };
 
     } catch (error: any) {
+      if (executionOptions.headless) {
+        executionOptions.onFailure?.(/configuration changed|model changed|mode changed/i.test(String(error?.message || error))
+          ? 'configuration'
+          : failureStage);
+        this.logger.error(`Headless indexing failed: ${error?.message || error}`);
+        throw error;
+      }
       if (progressWindow.isStopRequested()) {
         this.logger.info('Indexing paused by user at a safe checkpoint');
         progressWindow.markStopped();
@@ -3008,24 +3100,34 @@ class ZotSeekPlugin {
    * Replace note vectors while carrying the active model's existing summary
    * and PDF vectors forward unchanged. No PDF extraction API is called here.
    */
-  private async indexNoteChangesSilent(items: any[]): Promise<number[]> {
+  private async indexNoteChangesSilent(
+    items: any[],
+    executionOptions: IndexingExecutionOptions = {},
+  ): Promise<number[]> {
     if (this.indexing || items.length === 0) return [];
     if (!this.ensureOperationalModel(false)) return [];
     if (!await this.ensureChunkStrategyWritable(false)) return [];
     this.indexing = true;
     const Z = getZotero();
     const indexingModelId = getActiveModelId();
-    const progressWin = new (Z.ProgressWindow as any)({ closeOnClick: true });
-    progressWin.changeHeadline(getString('indexing-progressTitle'));
-    const itemRow = new progressWin.ItemProgress(
-      'chrome://zotero/skin/spinner-16px.png',
-      getString('indexing-noteUpdate', { count: items.length })
-    );
-    progressWin.show();
+    const progressWin: any = executionOptions.headless ? null : new (Z.ProgressWindow as any)({ closeOnClick: true });
+    progressWin?.changeHeadline(getString('indexing-progressTitle'));
+    const itemRow: any = executionOptions.headless
+      ? { setText: () => undefined, setIcon: () => undefined }
+      : new progressWin.ItemProgress(
+          'chrome://zotero/skin/spinner-16px.png',
+          getString('indexing-noteUpdate', { count: items.length })
+        );
+    progressWin?.show();
     const successful: number[] = [];
+    let failureStage: 'extraction' | 'embedding' | 'storage' = 'extraction';
 
     try {
       await this.ensureStoreReady();
+      if ((executionOptions.expectedModelId && getActiveModelId() !== executionOptions.expectedModelId) ||
+          (executionOptions.expectedMode && getIndexingMode(Z) !== executionOptions.expectedMode)) {
+        throw new Error('Index configuration changed before note extraction started.');
+      }
       const exclusionPolicy = readIndexExclusionPolicy(Z);
       const filteredItems = items.filter(item => !isItemExcludedFromIndex(item, exclusionPolicy));
       const extractedItems = await textExtractor.extractChunksFromItems(filteredItems, 'notes');
@@ -3098,6 +3200,7 @@ class ZotSeekPlugin {
 
       let embeddingMap = new Map<string, { embedding: number[]; modelId: string }>();
       if (textsForEmbedding.length > 0) {
+        failureStage = 'embedding';
         itemRow.setText(getString('indexing-progressLoadingModel'));
         embeddingPipeline.reset();
         await embeddingPipeline.init();
@@ -3111,6 +3214,10 @@ class ZotSeekPlugin {
       }
 
       for (const plan of plans) {
+        if ((executionOptions.expectedModelId && getActiveModelId() !== executionOptions.expectedModelId) ||
+            (executionOptions.expectedMode && getIndexingMode(Z) !== executionOptions.expectedMode)) {
+          throw new Error('Index configuration changed before note chunks could be saved.');
+        }
         const { extracted, libraryKey, preservedSummary, preservedPDF, noteChunks } = plan;
         const newNotes: PaperEmbedding[] = [];
         let complete = true;
@@ -3167,6 +3274,7 @@ class ZotSeekPlugin {
           pagesTotal: status?.pagesTotal ?? 0,
         }));
 
+        failureStage = 'storage';
         await this.vectorStore!.replaceItemModelChunks(normalized);
         successful.push(extracted.itemId);
       }
@@ -3174,13 +3282,19 @@ class ZotSeekPlugin {
       itemTreeIndexColumn.invalidate(successful);
       try { itemRow.setIcon('chrome://zotero/skin/tick.png'); } catch { /* ignore */ }
       itemRow.setText(getString('indexing-noteUpdateComplete', { count: successful.length }));
-      progressWin.startCloseTimer(3000);
+      progressWin?.startCloseTimer(3000);
       return successful;
     } catch (error: any) {
       this.logger.error(`Startup note update failed: ${error?.message || error}`);
+      if (executionOptions.headless) {
+        executionOptions.onFailure?.(/configuration changed|model changed|mode changed/i.test(String(error?.message || error))
+          ? 'configuration'
+          : failureStage);
+        return successful;
+      }
       try { itemRow.setIcon('chrome://zotero/skin/cross.png'); } catch { /* ignore */ }
       itemRow.setText(`✗ Error: ${error?.message || 'Unknown error'}`);
-      progressWin.startCloseTimer(4000);
+      progressWin?.startCloseTimer(4000);
       return successful;
     } finally {
       this.indexing = false;
@@ -3497,6 +3611,293 @@ class ZotSeekPlugin {
       this.endIndexOperation(operationToken);
     }
   }
+  private resolveItemIndexIdentity(request: Pick<ItemIndexRequest, 'libraryKey' | 'itemKey'>): {
+    item: any;
+    identity: { libraryKey: string; itemKey: string };
+  } {
+    const libraryKey = typeof request?.libraryKey === 'string' ? request.libraryKey.trim() : '';
+    const itemKey = typeof request?.itemKey === 'string' ? request.itemKey.trim().toUpperCase() : '';
+    if (!libraryKey || !itemKey) throw new Error('libraryKey and itemKey are required.');
+    if (libraryKey !== 'user' && !/^group:[1-9]\d*$/.test(libraryKey)) {
+      throw new Error('libraryKey must be "user" or "group:<groupID>".');
+    }
+    if (!/^[A-Z0-9]{8}$/i.test(itemKey)) throw new Error('itemKey must be an 8-character Zotero key.');
+    const identity = { libraryKey, itemKey };
+    const localID = localItemIDFromIdentity(identity);
+    const item = localID ? getZotero()?.Items.get(localID) : null;
+    const actualIdentity = identityFromItem(item);
+    if (!item?.isRegularItem?.() || item.deleted === true || item.isDeleted?.() === true || item.inTrash === true ||
+        actualIdentity?.libraryKey !== libraryKey || actualIdentity?.itemKey !== itemKey) {
+      throw new Error('The requested parent item is not available in this Zotero library.');
+    }
+    return { item, identity };
+  }
+
+  /** Run one stable-identity indexing operation without creating Zotero UI. */
+  public async indexItem(request: ItemIndexRequest): Promise<ItemIndexResult> {
+    const { item, identity } = this.resolveItemIndexIdentity(request);
+    if (request.force !== undefined && typeof request.force !== 'boolean') {
+      throw new Error('force must be a boolean.');
+    }
+    const pdfAttachmentKey = request.pdfAttachmentKey === undefined
+      ? undefined
+      : String(request.pdfAttachmentKey).trim().toUpperCase();
+    if (request.pdfAttachmentKey !== undefined && !/^[A-Z0-9]{8}$/i.test(pdfAttachmentKey || '')) {
+      throw new Error('pdfAttachmentKey must be an 8-character Zotero key.');
+    }
+
+    const modelId = getActiveModelId();
+    const indexingMode = getIndexingMode(getZotero());
+    const force = request.force === true || !!pdfAttachmentKey;
+    const attemptedAt = new Date().toISOString();
+    const operationToken = this.tryBeginIndexOperation(false);
+    const makeAttempt = (
+      outcome: ItemIndexAttempt['outcome'],
+      reason?: ItemIndexReason,
+      result?: import('./core/auto-index-manager').StartupCheckResult | null,
+      pdfDiagnostic?: PdfExtractionDiagnostic,
+    ): ItemIndexAttempt => ({
+      ...identity,
+      modelId,
+      indexingMode,
+      force,
+      ...(pdfAttachmentKey ? { pdfAttachmentKey } : {}),
+      outcome,
+      attemptedAt,
+      ...(reason ? { reason } : {}),
+      checked: result?.checked ?? 0,
+      indexedNew: result?.indexedNew ?? 0,
+      rebuilt: result?.rebuilt ?? 0,
+      notesUpdated: result?.notesUpdated ?? 0,
+      unchangedCount: result?.unchanged ?? 0,
+      failedCount: result?.failed ?? 0,
+      removed: result?.removed ?? 0,
+      ...(pdfDiagnostic ? { pdfDiagnostic } : {}),
+    });
+    const persistAttempt = async (attempt: ItemIndexAttempt): Promise<ItemIndexAttempt> => {
+      if (!this.vectorStore) throw new Error('Index storage is unavailable; the attempt could not be recorded.');
+      await writeItemIndexAttempt(this.vectorStore, attempt);
+      return attempt;
+    };
+
+    if (!operationToken) {
+      return {
+        ...identity,
+        modelId,
+        indexingMode,
+        force,
+        ...(pdfAttachmentKey ? { pdfAttachmentKey } : {}),
+        outcome: 'busy',
+        attemptedAt,
+        reason: { code: 'index_busy', message: 'Another indexing operation is already running.' },
+        checked: 0,
+        indexedNew: 0,
+        rebuilt: 0,
+        notesUpdated: 0,
+        unchangedCount: 0,
+        failedCount: 0,
+        removed: 0,
+      };
+    }
+
+    let pdfDiagnostic: PdfExtractionDiagnostic | undefined;
+    let extractionError: ExtractionErrorDiagnostic | undefined;
+    let failureStage: 'preflight' | 'configuration' | 'extraction' | 'embedding' | 'storage' | undefined;
+    try {
+      await this.ensureStoreReady();
+      if (!this.vectorStore) throw new Error('Index storage is unavailable.');
+      if (getActiveModelId() !== modelId || getIndexingMode(getZotero()) !== indexingMode) {
+        return await persistAttempt(makeAttempt('failed', this.itemIndexFailureReason('configuration')));
+      }
+      if (!String(item.getField?.('title') || '').trim()) {
+        return await persistAttempt(makeAttempt('skipped', {
+          code: 'no_title',
+          message: 'This item has no title and cannot be indexed.',
+        }));
+      }
+      if (pdfAttachmentKey && indexingMode !== 'full') {
+        return await persistAttempt(makeAttempt('failed', {
+          code: 'pdf_mode_required',
+          message: 'A specific PDF can only be indexed in Full mode.',
+        }));
+      }
+      if (!this.ensureOperationalModel(false)) {
+        return await persistAttempt(makeAttempt('failed', {
+          code: 'model_unavailable',
+          message: 'The selected embedding model is not ready for indexing.',
+        }));
+      }
+      if (isItemExcludedFromIndex(item, readIndexExclusionPolicy(getZotero()))) {
+        return await persistAttempt(makeAttempt('skipped', {
+          code: 'excluded_from_index',
+          message: 'This item is excluded by the current indexing policy.',
+        }));
+      }
+
+      const executionOptions: IndexingExecutionOptions = {
+        headless: true,
+        expectedModelId: modelId,
+        expectedMode: indexingMode,
+        ...(indexingMode === 'full' ? {
+          extractionContext: {
+            ...(pdfAttachmentKey ? { pdfAttachmentKey } : {}),
+            onDiagnostic: (diagnostic: PdfExtractionDiagnostic) => { pdfDiagnostic = diagnostic; },
+            onError: (diagnostic: ExtractionErrorDiagnostic) => { extractionError = diagnostic; },
+          },
+        } : {}),
+        onFailure: stage => { failureStage = stage; },
+      };
+      const result = await this.indexItems(
+        [item],
+        { type: 'items', items: [identity] },
+        force,
+        operationToken,
+        executionOptions,
+      );
+      // Unchanged reconciliation has no write callback, so it needs this guard too.
+      if (getActiveModelId() !== modelId || getIndexingMode(getZotero()) !== indexingMode) {
+        return await persistAttempt(makeAttempt('failed', this.itemIndexFailureReason('configuration'), result, pdfDiagnostic));
+      }
+      if (!result) {
+        return await persistAttempt(makeAttempt('failed', {
+          code: 'index_not_ready',
+          message: 'Indexing could not start because the current model or index configuration is unavailable.',
+        }, result, pdfDiagnostic));
+      }
+      if (result.failed > 0 || result.skipped || result.paused) {
+        const reason = extractionError
+          ? { code: extractionError.code, message: extractionError.message }
+          : this.itemIndexFailureReason(failureStage);
+        return await persistAttempt(makeAttempt('failed', reason, result, pdfDiagnostic));
+      }
+
+      const outcome: ItemIndexAttempt['outcome'] = result.indexedNew > 0
+        ? 'indexed'
+        : result.rebuilt > 0 || result.notesUpdated > 0
+          ? 'updated'
+          : 'unchanged';
+      return await persistAttempt(makeAttempt(outcome, undefined, result, pdfDiagnostic));
+    } catch (error: any) {
+      this.logger.warn(`Single-item indexing failed for ${identity.libraryKey}/${identity.itemKey}: ${error?.message || error}`);
+      const reason: ItemIndexReason = extractionError
+        ? { code: extractionError.code, message: extractionError.message }
+        : this.itemIndexFailureReason(failureStage);
+      return await persistAttempt(makeAttempt('failed', reason, null, pdfDiagnostic));
+    } finally {
+      this.endIndexOperation(operationToken);
+    }
+  }
+
+  private itemIndexFailureReason(
+    stage?: 'preflight' | 'configuration' | 'extraction' | 'embedding' | 'storage',
+  ): ItemIndexReason {
+    switch (stage) {
+      case 'configuration':
+        return { code: 'configuration_changed', message: 'Model or indexing mode changed during the operation.' };
+      case 'extraction':
+        return { code: 'extraction_failed', message: 'Text extraction did not complete.' };
+      case 'embedding':
+        return { code: 'embedding_failed', message: 'Embedding did not complete.' };
+      case 'storage':
+        return { code: 'storage_failed', message: 'Index storage did not complete; inspect the current item status.' };
+      case 'preflight':
+        return { code: 'index_not_ready', message: 'Indexing prerequisites are not ready.' };
+      default:
+        return { code: 'index_failed', message: 'Indexing did not complete; inspect the current item status.' };
+    }
+  }
+
+  /** Read one item's active-model status and most recent API attempt. */
+  public async getItemIndexStatus(
+    request: Pick<ItemIndexRequest, 'libraryKey' | 'itemKey'>,
+  ): Promise<ItemIndexStatus> {
+    const { item, identity } = this.resolveItemIndexIdentity(request);
+    await this.ensureStoreReady();
+    if (!this.vectorStore) throw new Error('The ZotSeek index is unavailable.');
+    const modelId = getActiveModelId();
+    const currentMode = getIndexingMode(getZotero());
+    const serverIssue = getSelectedServerModelConfigurationIssue();
+    if (serverIssue) {
+      const attempts = await readItemIndexAttempt(this.vectorStore, identity.libraryKey, identity.itemKey, modelId);
+      if (getActiveModelId() !== modelId || getIndexingMode(getZotero()) !== currentMode) {
+        throw new Error('Index configuration changed while reading item status.');
+      }
+      return {
+        ...identity,
+        modelId,
+        configurationError: serverModelConfigurationErrorMessage(serverIssue),
+        currentMode,
+        indexedMode: null,
+        indexed: false,
+        state: 'not-indexed',
+        indexedAt: null,
+        checkedAt: null,
+        chunkCount: 0,
+        pagesIndexed: 0,
+        pagesTotal: 0,
+        wasTruncated: false,
+        sources: [],
+        pdfFreshness: 'not_checked',
+        lastAttempt: attempts.lastAttempt,
+        lastPdfAttempt: attempts.lastPdfAttempt,
+      };
+    }
+    const [statusMap, sourceInfo, fingerprint, attempts] = await Promise.all([
+      this.vectorStore.getIndexStatusByIdentity([identity], { strict: true }),
+      this.vectorStore.getItemIndexSources(identity.libraryKey, identity.itemKey, modelId),
+      this.vectorStore.getStartupFingerprint(identity.libraryKey, identity.itemKey, modelId),
+      readItemIndexAttempt(this.vectorStore, identity.libraryKey, identity.itemKey, modelId),
+    ]);
+    if (getActiveModelId() !== modelId || getIndexingMode(getZotero()) !== currentMode) {
+      throw new Error('Index configuration changed while reading item status.');
+    }
+    const indexedStatus = statusMap.get(`${identity.libraryKey}|${identity.itemKey}`);
+    const indexed = !!indexedStatus;
+    const indexedMode = fingerprint
+      ? parseIndexConfigFingerprint(fingerprint.configFingerprint)?.mode ?? null
+      : null;
+    const currentConfig = parseIndexConfigFingerprint(autoIndexManager.getConfigFingerprint(currentMode));
+    const configAssessment = fingerprint
+      ? currentConfig
+        ? assessIndexConfigFingerprint(fingerprint.configFingerprint, currentConfig)
+        : 'changed'
+      : null;
+    const configurationOutdated = configAssessment === 'changed' ||
+      (configAssessment === 'max-chunks-increased' && !!indexedStatus?.wasTruncated) ||
+      (!!indexedMode && indexedMode !== currentMode);
+    const timestampOutdated = !!indexedStatus?.indexedAt && !indexedStatus.checkedAt &&
+      Number.isFinite(Date.parse(item.dateModified)) &&
+      Number.isFinite(Date.parse(indexedStatus.indexedAt)) &&
+      Date.parse(item.dateModified) > Date.parse(indexedStatus.indexedAt);
+    const state = resolveFreshnessDisplayState({
+      excluded: isItemExcludedFromIndex(item, readIndexExclusionPolicy(getZotero())),
+      covered: indexed,
+      dirty: indexFreshnessTracker.isDirty(identity) || configurationOutdated,
+      timestampOutdated,
+      truncated: !!indexedStatus?.wasTruncated,
+    });
+    const pdfAttachmentKey = sourceInfo.pdfAttachmentKey;
+    return {
+      ...identity,
+      modelId,
+      currentMode,
+      indexedMode,
+      indexed,
+      state,
+      indexedAt: indexedStatus?.indexedAt || null,
+      checkedAt: indexedStatus?.checkedAt || null,
+      chunkCount: indexedStatus?.chunkCount || 0,
+      pagesIndexed: indexedStatus?.pagesIndexed || 0,
+      pagesTotal: indexedStatus?.pagesTotal || 0,
+      wasTruncated: !!indexedStatus?.wasTruncated,
+      sources: sourceInfo.sources,
+      ...(pdfAttachmentKey ? { pdfAttachmentKey } : {}),
+      pdfFreshness: 'not_checked',
+      lastAttempt: attempts.lastAttempt,
+      lastPdfAttempt: attempts.lastPdfAttempt,
+    };
+  }
+
   // Public API for other plugins/scripts
   public api = {
     search: (query: string, options?: any) => {
@@ -3509,6 +3910,9 @@ class ZotSeekPlugin {
       if (issue) return Promise.reject(new Error(serverModelConfigurationErrorMessage(issue)));
       return searchEngine.findSimilar(itemId, options);
     },
+    indexItem: (request: ItemIndexRequest) => this.indexItem(request),
+    getItemIndexStatus: (request: Pick<ItemIndexRequest, 'libraryKey' | 'itemKey'>) =>
+      this.getItemIndexStatus(request),
     indexItems: (items: any[]) => this.indexItems(items),
     getStats: () => this.vectorStore?.getStats() ?? Promise.resolve({ totalPapers: 0, indexedPapers: 0, modelId: 'none', lastIndexed: null, storageUsedBytes: 0 }),
     compactDatabase: () => this.compactDatabase(),

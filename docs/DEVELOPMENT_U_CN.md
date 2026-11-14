@@ -43,7 +43,7 @@ ZotSeek-U 基于 upstream v1.19.x fork，目标是让 Zotero 成为文献管理 
 
 **保留自上游的能力**（fork 基本未动，仅做扩展）：
 
-- MCP/REST 底座：`search` / `find_similar` / `index_status` 三个工具、Streamable HTTP JSON-RPC、localhost-only Origin 校验、`/zotseek/open` 深链接启动器。
+- MCP/REST 底座：`search` / `find_similar` / `index_status` 及定向索引/逐篇状态工具、Streamable HTTP JSON-RPC、localhost-only Origin 校验、`/zotseek/open` 深链接启动器。
 - 本地推理链：Transformers.js v3 + ChromeWorker + CPU/WASM Q8 量化、模型 `modelId` 分区隔离、60 秒超时与重试语义。
 - 搜索框架：semantic / keyword / hybrid 三模式与 RRF 融合、papers/passages 两种结果粒度。
 - SQLite 基础：`zotseek.sqlite` ATTACH 到 Zotero 主连接、重连重挂载、空闲时 `VACUUM INTO` 压缩。
@@ -255,7 +255,10 @@ MCP 工具说明补充通用证据判断提醒：判断结果时保留用户的�
 - **`get_item` 工具**：按 `library_key + item_key` 读取规范化书目、tags、collections、relatedItems 与附件清单；`include_notes: true` 返回全部 Child Notes 的完整未过滤文本（不应用索引侧的"基本信息"/References 排除规则）及实时 `sections` / `sectionPaths`；`include_pdf: "pages" | "full" | "references"` 支持指定附件，显式范围每次 ≤20 连续页，`full` 以 ≤20 页批次返回最多 100 页或约 300,000 字符的开头前缀。`references` 从文末按同样的批次、页数与近似字符上限反向探测，复用生产 References v2，只返回检测区域及真实物理页码；完整扫描未检测到时为 `not_found`，扫描上限内无法确认时为 `partial`，并以 `referenceDetection` 公开策略版本与扫描区间。它不把引用强行拆成结构化字段，也不承诺同比例降低 PDFWorker 工作量。MCP/REST 合同一致；PDF 读取优先 Zotero 全文缓存、缺页时批量 `PDFWorker` 兜底，不虚假承诺底层队列可取消；不暴露本机文件路径。REST 对应 `GET /zotseek/item`。
 - **`search` 范围与结构化过滤**：可选 `collection_key` 在 live collection 身份集合内执行候选检索；可选 `filter`（`year_from` / `year_to` / `journal` / `author` / `tag` + `exact`）作用于既有有界候选、先于最终 `max_results`，不改变排序也不扩张候选深度。REST 使用对应 camelCase 参数。
 - **精确 PDF 回链**：`matchedChunk.pdfAttachmentKey` 端到端透传，深链接打开产生命中的确切附件，而非启发式选择。
-- MCP 授权文案更新为"允许本地 AI 智能体只读搜索并读取条目、Notes 和 PDF"，同步全部 10 个语言包。
+- **`index_item` / `/zotseek/index-item`**：按 `library_key + item_key` 同步检查或索引单个父条目，返回稳定 outcome、原因及 PDF 诊断；`force` 请求本次重新提取，`pdf_attachment_key` 只覆盖本次 Full 提取，不形成长期默认。显式 PDF 提取后若正文被过滤、过短或受共用 chunk 配额限制而没有生成正文 chunks，本次失败并保留旧索引；自动选 PDF 时则可仅凭可用 Metadata/Notes 成功，并将 PDF 诊断标为带原因的 `partial`。写入仅影响 ZotSeek 索引，不编辑 Zotero 条目；忙碌时明确返回，不排队。
+- **`get_item_index_status` / `/zotseek/item-index-status`**：读取当前模型覆盖、索引状态 `state`（`not-indexed` / `indexed` / `partial` / `outdated` / `excluded`）、实际来源、精确 PDF key、最近一次 API 调用 `lastAttempt`，以及最近一次 Full 提取的 `lastPdfAttempt`；原全局 `index_status` 保持兼容。Server 模型配置不完整或无效时会返回 `configurationError`，此时 `indexed: false` 不代表数据库中一定没有索引，只表示无法按可用模型确认覆盖；读取状态不需要加载本地 Worker。`lastPdfAttempt` 只保留一条有界的最新 PDF 提取诊断，普通未提取 PDF 的调用不会覆盖它；它可能对应旧附件，不代表当前 PDF 已核验。PDF 文件替换仍不触发现有自动新鲜度检测，状态字段标记 `pdfFreshness: "not_checked"`。
+- JS API 增加 `api.indexItem()` 与 `api.getItemIndexStatus()`；无进度窗口或弹窗。最近 API 调用及最近一次 Full PDF 提取诊断按稳定身份和模型保存在 SQLite `metadata` 键值表中，不升级 schema；没有自动索引重试，失败后由调用 Agent 或用户显式重试。
+- MCP 授权文案更新为允许本地 AI Agent 搜索、读取并按稳定身份维护 ZotSeek 单篇索引，改为准确描述新增的有限写入范围。
 
 ## 11. 多语言 [已上线]
 

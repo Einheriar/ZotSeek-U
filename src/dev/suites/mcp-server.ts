@@ -101,12 +101,12 @@ selfTest.register('mcp-server', async () => {
     assertEq(status, 405, 'status');
   }));
 
-  scenarios.push(await scenario('tools/list returns the 5 tools', async () => {
+  scenarios.push(await scenario('tools/list returns the 7 tools', async () => {
     const { json } = await callMcp('tools/list');
     const names = json.result.tools.map((t: any) => t.name).sort();
     assertEq(
       JSON.stringify(names),
-      JSON.stringify(['find_similar', 'get_item', 'get_library_map', 'index_status', 'search']),
+      JSON.stringify(['find_similar', 'get_item', 'get_item_index_status', 'get_library_map', 'index_item', 'index_status', 'search']),
       'tool names',
     );
     assertTrue(
@@ -521,7 +521,7 @@ selfTest.register('mcp-server', async () => {
       });
       assertEq(resp.status, 200, 'HTTP status');
       const json = await resp.json();
-      assertEq(json.result.tools.length, 5, 'five tools over HTTP');
+      assertEq(json.result.tools.length, 7, 'seven tools over HTTP');
     } finally {
       if (!wasRegistered) unregisterEndpoints();
     }

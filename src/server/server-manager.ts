@@ -15,6 +15,8 @@ import {
   ZotSeekStatsEndpoint,
   ZotSeekItemEndpoint,
   ZotSeekLibraryMapEndpoint,
+  ZotSeekIndexItemEndpoint,
+  ZotSeekItemIndexStatusEndpoint,
   REST_PATHS,
 } from './rest-endpoints';
 import { ZotSeekOpenEndpoint, OPEN_PATH } from './open-endpoint';
@@ -35,6 +37,8 @@ const ALL_PATHS = [
   REST_PATHS.stats,
   REST_PATHS.item,
   REST_PATHS.libraryMap,
+  REST_PATHS.indexItem,
+  REST_PATHS.itemIndexStatus,
   OPEN_PATH,
 ];
 
@@ -50,6 +54,8 @@ export function registerEndpoints(): void {
   Zotero.Server.Endpoints[REST_PATHS.stats] = ZotSeekStatsEndpoint;
   Zotero.Server.Endpoints[REST_PATHS.item] = ZotSeekItemEndpoint;
   Zotero.Server.Endpoints[REST_PATHS.libraryMap] = ZotSeekLibraryMapEndpoint;
+  Zotero.Server.Endpoints[REST_PATHS.indexItem] = ZotSeekIndexItemEndpoint;
+  Zotero.Server.Endpoints[REST_PATHS.itemIndexStatus] = ZotSeekItemIndexStatusEndpoint;
   Zotero.Server.Endpoints[OPEN_PATH] = ZotSeekOpenEndpoint;
   registered = true;
   const port = Zotero.Server?.port;

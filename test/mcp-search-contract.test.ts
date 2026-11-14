@@ -239,7 +239,7 @@ test('MCP 2025-03-26 receives mixed JSON-RPC batches and omits notification resp
   assert.equal(contentType, 'application/json');
   const responses = JSON.parse(body);
   assert.deepEqual(responses.map((entry: any) => entry.id), ['list', 2, null]);
-  assert.equal(responses[0].result.tools.length, 5);
+  assert.equal(responses[0].result.tools.length, 7);
   assert.deepEqual(responses[1].result, {});
   assert.equal(responses[2].error.code, -32600);
 

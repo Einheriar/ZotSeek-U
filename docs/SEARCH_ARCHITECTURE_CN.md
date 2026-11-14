@@ -1333,6 +1333,8 @@ Schema v11 增加可空的 `chunks.section_paths`，编码为 JSON `string[][]`�
 
 Schema v12 增加可空的 `chunks.pdf_attachment_key`。新的 Full 模式 PDF chunk 存储主 PDF 分类器选择的稳定附件 key；Summary、Metadata 与 Note chunk 保持 `NULL`。迁移不会为现有行猜测来源。搜索只为可见的命中 chunk 获取该 key，并暴露为 `matchedChunk.pdfAttachmentKey`，让 `get_item` 和深链接读取产生命中的确切 PDF。Full 专属的新鲜度契约会把旧 Full 索引标记为待刷新，而 Abstract 与 Metadata + Notes 索引保持最新，因为它们不含 PDF chunk。
 
+Agent 可通过 `index_item` 在单次 Full 模式请求中指定一个同父条目的 PDF 附件。该请求强制本次提取并保存此次成功产出的附件 key、页面和 chunks；附件选择不会成为长期默认。显式 PDF 若在过滤、最小长度检查或共用 chunk 配额处理后没有产生正文 chunks，本次会失败并保留旧索引；自动选择 PDF 时仍可仅凭可用 Metadata/Notes 成功，并以带原因的 `partial` PDF 诊断说明正文缺失。未指定附件时仍走主 PDF 自动选择。此定向入口不改变既有 freshness 合同：普通核对仍不读取 PDF，PDF 内容或附件替换不自动触发重提；逐条 `get_item_index_status` 显式标记 `pdfFreshness: "not_checked"`，并以 `state` 返回 `not-indexed`、`indexed`、`partial`、`outdated` 或 `excluded`。Server 模型配置不完整或无效时返回 `configurationError`；此时 `indexed:false` 不能证明存储中没有索引，只表示无法在可用模型下确认覆盖。读取该状态不要求加载本地 Worker。最近一次 API 调用写入 `lastAttempt`；最近一次实际 Full 提取的上下文和 PDF 诊断单独保存在 `lastPdfAttempt`。后者只保留一条有界记录，不因未提取 PDF 的调用而清除，但可能对应旧附件或旧来源，不能证明当前 PDF 已核验。两者都写入现有 SQLite `metadata` 键值表，不扩充 `item_models` 或 schema，也不改变原子 chunk 替换及旧模型分区边界。
+
 ---
 
 ## 查询分析

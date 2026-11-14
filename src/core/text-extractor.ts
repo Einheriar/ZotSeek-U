@@ -8,7 +8,11 @@
  */
 
 import { Logger } from '../utils/logger';
-import { ZoteroAPI, ZoteroItem } from '../utils/zotero-api';
+import {
+  RequestedPdfLookupErrorCode,
+  ZoteroAPI,
+  ZoteroItem,
+} from '../utils/zotero-api';
 import {
   Chunk,
   ChunkOptions,
@@ -68,7 +72,53 @@ export interface ExtractionProgress {
   skipped: number;
 }
 
+export interface PdfExtractionDiagnostic {
+  status: 'selected' | 'abstained' | 'partial' | 'empty' | 'failed';
+  attachmentKey?: string;
+  reason: string | null;
+  pagesIndexed: number;
+  pagesTotal: number | null;
+}
+
+export interface ExtractionErrorDiagnostic {
+  code:
+    | 'pdf_mode_required'
+    | 'pdf_attachment_invalid'
+    | 'pdf_attachment_failed'
+    | 'pdf_attachment_empty'
+    | 'pdf_no_indexable_content'
+    | 'no_extractable_content'
+    | 'extraction_failed';
+  stage: 'validate' | 'pdf' | 'extract';
+  message: string;
+}
+
+/** Request-scoped extraction overrides and machine-readable diagnostics. */
+export interface ExtractionContext {
+  pdfAttachmentKey?: string;
+  onDiagnostic?: (diagnostic: PdfExtractionDiagnostic) => void;
+  onError?: (error: ExtractionErrorDiagnostic) => void;
+}
+
 export type ExtractionProgressCallback = (progress: ExtractionProgress) => void;
+
+const REQUESTED_PDF_ERROR_CODES: Record<RequestedPdfLookupErrorCode, ExtractionErrorDiagnostic['code']> = {
+  parent_not_found: 'pdf_attachment_invalid',
+  parent_invalid: 'pdf_attachment_invalid',
+  attachment_not_found: 'pdf_attachment_invalid',
+  attachment_invalid: 'pdf_attachment_invalid',
+  attachment_deleted: 'pdf_attachment_invalid',
+  pdf_unavailable: 'pdf_attachment_failed',
+};
+
+const REQUESTED_PDF_ERROR_MESSAGES: Record<RequestedPdfLookupErrorCode, string> = {
+  parent_not_found: 'The parent item is missing or deleted.',
+  parent_invalid: 'PDF selection requires a bibliographic parent item.',
+  attachment_not_found: 'The requested PDF is not attached to this item.',
+  attachment_invalid: 'The requested attachment is not a valid PDF for this item.',
+  attachment_deleted: 'The requested PDF has been deleted.',
+  pdf_unavailable: 'Zotero could not extract the requested PDF.',
+};
 
 export class TextExtractor {
   private zoteroAPI: ZoteroAPI;
@@ -148,7 +198,8 @@ export class TextExtractor {
   async extractChunksFromItem(
     item: ZoteroItem,
     mode?: IndexingMode,
-    options?: ChunkOptions
+    options?: ChunkOptions,
+    context?: ExtractionContext,
   ): Promise<ExtractedChunks | null> {
     try {
       const metadata = buildIndexedMetadataSnapshot(item, 'Untitled');
@@ -162,6 +213,26 @@ export class TextExtractor {
       const indexingMode = mode ?? getIndexingMode(Zotero);
       const chunkOptions = await this.resolveChunkOptions(options);
 
+      const reportDiagnostic = (diagnostic: PdfExtractionDiagnostic): void => {
+        try { context?.onDiagnostic?.(diagnostic); } catch (error: any) {
+          this.logger.warn(`PDF diagnostic callback failed: ${error?.message || error}`);
+        }
+      };
+      const reportError = (diagnostic: ExtractionErrorDiagnostic): void => {
+        try { context?.onError?.(diagnostic); } catch (error: any) {
+          this.logger.warn(`Extraction error callback failed: ${error?.message || error}`);
+        }
+      };
+
+      if (context?.pdfAttachmentKey && indexingMode !== 'full') {
+        reportError({
+          code: 'pdf_mode_required',
+          stage: 'validate',
+          message: 'Selecting a PDF requires the full indexing mode.',
+        });
+        return null;
+      }
+
       let chunks: Chunk[];
       let wasTruncated = false;
       let pagesIndexed = 0;
@@ -169,10 +240,109 @@ export class TextExtractor {
 
       if (indexingMode === 'full') {
         let pdfResult;
+        let pdfText: import('../utils/pdf-attachment-selector').PdfAttachmentText | null = null;
+        let pendingPdfDiagnostic: PdfExtractionDiagnostic | null = null;
 
-        // The selector consumes each sibling PDFWorker-direct result once and
-        // returns only a unique high-confidence main attachment for indexing.
-        const selectedPdf = await this.zoteroAPI.getSelectedMainPdfText(item.id);
+        if (context?.pdfAttachmentKey) {
+          const requested = await this.zoteroAPI.getRequestedPdfText(
+            item.id,
+            context.pdfAttachmentKey,
+          );
+          if (requested.errorCode) {
+            const diagnostic = {
+              code: REQUESTED_PDF_ERROR_CODES[requested.errorCode],
+              stage: requested.errorCode === 'pdf_unavailable' ? 'pdf' : 'validate',
+              message: REQUESTED_PDF_ERROR_MESSAGES[requested.errorCode],
+            } satisfies ExtractionErrorDiagnostic;
+            reportDiagnostic({
+              status: 'failed',
+              attachmentKey: context.pdfAttachmentKey,
+              reason: requested.errorCode,
+              pagesIndexed: 0,
+              pagesTotal: requested.selectedText?.pagesTotal ?? null,
+            });
+            reportError(diagnostic);
+            return null;
+          }
+          pdfText = requested.selectedText;
+          if (!pdfText || pdfText.status === 'failed') {
+            reportDiagnostic({
+              status: 'failed',
+              attachmentKey: context.pdfAttachmentKey,
+              reason: 'pdf_unavailable',
+              pagesIndexed: 0,
+              pagesTotal: pdfText?.pagesTotal ?? null,
+            });
+            reportError({
+              code: 'pdf_attachment_failed',
+              stage: 'pdf',
+              message: REQUESTED_PDF_ERROR_MESSAGES.pdf_unavailable,
+            });
+            return null;
+          }
+          const hasText = pdfText.pages.some(page => page.text.trim().length > 0);
+          if (!hasText && pdfText.status === 'degraded') {
+            reportDiagnostic({
+              status: 'failed',
+              attachmentKey: pdfText.attachmentKey,
+              reason: 'pdf_unavailable',
+              pagesIndexed: 0,
+              pagesTotal: pdfText.pagesTotal,
+            });
+            reportError({
+              code: 'pdf_attachment_failed',
+              stage: 'pdf',
+              message: REQUESTED_PDF_ERROR_MESSAGES.pdf_unavailable,
+            });
+            return null;
+          }
+          if (!hasText) {
+            reportDiagnostic({
+              status: 'empty',
+              attachmentKey: pdfText.attachmentKey,
+              reason: 'empty_text',
+              pagesIndexed: 0,
+              pagesTotal: pdfText.pagesTotal,
+            });
+            reportError({
+              code: 'pdf_attachment_empty',
+              stage: 'pdf',
+              message: 'The requested PDF yielded no searchable text.',
+            });
+            return null;
+          }
+          pendingPdfDiagnostic = {
+            status: pdfText.status === 'degraded' ? 'partial' : 'selected',
+            attachmentKey: pdfText.attachmentKey,
+            reason: pdfText.status === 'degraded' ? 'pdf_partial' : null,
+            pagesIndexed: 0,
+            pagesTotal: pdfText.pagesTotal,
+          };
+        } else {
+          // The selector consumes each sibling PDFWorker-direct result once and
+          // returns only a unique high-confidence main attachment for indexing.
+          const selectedPdf = await this.zoteroAPI.getSelectedMainPdfText(item.id);
+          pdfText = selectedPdf?.selectedText ?? null;
+          const selectionReason = selectedPdf?.selection.abstainReason ?? 'selection-failed';
+          if (pdfText) {
+            pendingPdfDiagnostic = {
+              status: pdfText.status === 'degraded' ? 'partial' : 'selected',
+              attachmentKey: pdfText.attachmentKey,
+              reason: pdfText.status === 'degraded' ? 'pdf_partial' : null,
+              pagesIndexed: 0,
+              pagesTotal: pdfText.pagesTotal,
+            };
+          } else {
+            reportDiagnostic({
+              status: !selectedPdf || selectedPdf.selection.abstainReason === 'unavailable'
+                ? 'failed'
+                : 'abstained',
+              reason: selectionReason,
+              pagesIndexed: 0,
+              pagesTotal: null,
+            });
+          }
+        }
         const referenceMode = chunkOptions.pdfReferenceRegionFiltering ?? 'v2';
         const pageFurnitureMode = chunkOptions.pdfPageFurnitureFiltering ?? 'v1';
         const pdfChunkOptions: ChunkOptions = {
@@ -184,14 +354,14 @@ export class TextExtractor {
           pdfChunkOptions.pdfReferenceFiltering,
         );
 
-        if (selectedPdf?.selectedText) {
-          const preprocessed = preprocessPdfPages(selectedPdf.selectedText.pages, {
+        if (pdfText) {
+          const preprocessed = preprocessPdfPages(pdfText.pages, {
             documentKey: item.key,
             pdfReferenceRegionFiltering: referenceMode,
             pdfPageFurnitureFiltering: pageFurnitureMode,
           });
           this.logger.debug(
-            `PDF main-text preprocessing item=${item.id} attachment=${selectedPdf.selectedText.attachmentKey} ` +
+            `PDF main-text preprocessing item=${item.id} attachment=${pdfText.attachmentKey} ` +
             `pages=${preprocessed.pages.length} references=${preprocessed.diagnostics.referenceRegionCount} ` +
             `furnitureLines=${preprocessed.diagnostics.ignoredPageFurnitureLineCount}`
           );
@@ -214,7 +384,7 @@ export class TextExtractor {
           // re-enter through attachmentText or first-readable legacy fallbacks.
           this.logger.debug(
             `No eligible main PDF for item ${item.id}: ` +
-            `${selectedPdf?.selection.abstainReason ?? 'selection-failed'}`
+            `${context?.pdfAttachmentKey ? 'requested-pdf-unavailable' : 'selector-abstained'}`
           );
           pdfResult = chunkDocumentWithPagesEx(
             title,
@@ -228,7 +398,7 @@ export class TextExtractor {
         const noteTexts = await this.extractChildNoteTexts(item);
         const notesResult = chunkNoteTexts(title, noteTexts, chunkOptions);
         const pdfChunks = pdfResult.chunks.filter(chunk => chunk.type !== 'summary');
-        const pdfAttachmentKey = selectedPdf?.selectedText?.attachmentKey;
+        const pdfAttachmentKey = pdfText?.attachmentKey;
         if (pdfAttachmentKey) {
           pdfChunks.forEach(chunk => {
             chunk.pdfAttachmentKey = pdfAttachmentKey;
@@ -243,10 +413,44 @@ export class TextExtractor {
           pagesTotal: pdfResult.pagesTotal,
         }, chunkOptions);
 
+        const indexedPdfChunks = pdfText
+          ? combinedResult.chunks.filter(chunk =>
+              chunk.pdfAttachmentKey === pdfText!.attachmentKey,
+            )
+          : [];
+        if (pdfText && indexedPdfChunks.length === 0) {
+          // An explicit one-shot choice must not replace prior content with metadata alone.
+          const reason = pdfChunks.length > 0
+            ? 'chunk_limit'
+            : 'pdf_no_indexable_content';
+          pendingPdfDiagnostic = {
+            status: 'partial',
+            attachmentKey: pdfText.attachmentKey,
+            reason,
+            pagesIndexed: 0,
+            pagesTotal: pdfText.pagesTotal,
+          };
+          if (context?.pdfAttachmentKey) {
+            reportDiagnostic(pendingPdfDiagnostic);
+            reportError({
+              code: 'pdf_no_indexable_content',
+              stage: 'extract',
+              message: 'The selected PDF produced no searchable PDF chunks under current filtering and chunk limits.',
+            });
+            return null;
+          }
+        }
+
         chunks = combinedResult.chunks;
         wasTruncated = combinedResult.wasTruncated;
-        pagesIndexed = combinedResult.pagesIndexed;
+        pagesIndexed = indexedPdfChunks.length > 0
+          ? combinedResult.pagesIndexed
+          : 0;
         pagesTotal = combinedResult.pagesTotal;
+        if (pendingPdfDiagnostic) {
+          pendingPdfDiagnostic.pagesIndexed = pagesIndexed;
+          reportDiagnostic(pendingPdfDiagnostic);
+        }
       } else if (indexingMode === 'notes') {
         // Metadata + Notes mode never touches PDF APIs. Authors and years
         // remain in hybrid keyword search rather than the shared Summary.
@@ -288,6 +492,11 @@ export class TextExtractor {
 
       if (chunks.length === 0) {
         this.logger.warn(`No chunks generated for item ${item.id}: ${title}`);
+        reportError({
+          code: 'no_extractable_content',
+          stage: 'extract',
+          message: 'No indexable chunks were extracted from the item.',
+        });
         return null;
       }
 
@@ -324,6 +533,15 @@ export class TextExtractor {
       const errorMessage = error?.message || error?.toString() || 'Unknown error';
       const errorStack = error?.stack || '';
       this.logger.error(`Failed to extract chunks from item ${item.id}: ${errorMessage}`);
+      try {
+        context?.onError?.({
+          code: 'extraction_failed',
+          stage: 'extract',
+          message: 'Text extraction failed; see the Zotero debug log for details.',
+        });
+      } catch {
+        // Diagnostics must not change the extraction result.
+      }
       if (errorStack) {
         console.error(`[TextExtractor] Stack trace for item ${item.id}:`, errorStack);
       }
@@ -415,7 +633,8 @@ export class TextExtractor {
     items: ZoteroItem[],
     mode?: IndexingMode,
     options?: ChunkOptions,
-    onProgress?: ExtractionProgressCallback
+    onProgress?: ExtractionProgressCallback,
+    context?: ExtractionContext,
   ): Promise<ExtractedChunks[]> {
     const results: ExtractedChunks[] = [];
     let skipped = 0;
@@ -442,7 +661,7 @@ export class TextExtractor {
         });
       }
 
-      const extracted = await this.extractChunksFromItem(item, indexingMode, chunkOptions);
+      const extracted = await this.extractChunksFromItem(item, indexingMode, chunkOptions, context);
       if (extracted) {
         results.push(extracted);
         totalChunks += extracted.chunks.length;

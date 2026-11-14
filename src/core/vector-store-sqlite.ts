@@ -2114,6 +2114,30 @@ export class VectorStoreSQLite {
     return typeof value === 'string' && value ? value : undefined;
   }
 
+  /** Strict source-only projection for diagnostics; no vector decoding or swallowed chunk errors. */
+  async getItemIndexSources(
+    libraryKey: string,
+    itemKey: string,
+    modelId: string = getActiveModelId(),
+  ): Promise<{ sources: string[]; pdfAttachmentKey?: string }> {
+    await this.ensureInit();
+    const from = `FROM ${DB_NAME}.chunks c
+      INNER JOIN ${DB_NAME}.items i ON i.item_pk = c.item_pk
+      WHERE i.library_key = ? AND i.item_key = ? AND c.model_id = ?`;
+    const params = [libraryKey, itemKey, modelId];
+    const [sources, pdfKeys] = await Promise.all([
+      Zotero.DB.columnQueryAsync(`SELECT DISTINCT c.text_source ${from} ORDER BY c.text_source`, params),
+      Zotero.DB.columnQueryAsync(`SELECT DISTINCT c.pdf_attachment_key ${from}
+        AND c.pdf_attachment_key IS NOT NULL AND c.pdf_attachment_key != ''
+        ORDER BY c.pdf_attachment_key`, params),
+    ]);
+    if ((pdfKeys || []).length > 1) throw new Error('Stored item PDF sources are inconsistent.');
+    return {
+      sources: (sources || []).map((source: unknown) => String(source)),
+      ...(pdfKeys?.length === 1 ? { pdfAttachmentKey: String(pdfKeys[0]) } : {}),
+    };
+  }
+
   /**
    * Store a paper embedding (single chunk).
    *
@@ -3524,7 +3548,8 @@ export class VectorStoreSQLite {
    * using a composite OR-clause because SQLite cannot match tuples via IN.
    */
   async getIndexStatusByIdentity(
-    identities: Array<{ libraryKey: string; itemKey: string }>
+    identities: Array<{ libraryKey: string; itemKey: string }>,
+    options: { strict?: boolean } = {},
   ): Promise<Map<string, ItemIndexStatus>> {
     await this.ensureInit();
     const result = new Map<string, ItemIndexStatus>();
@@ -3665,6 +3690,8 @@ export class VectorStoreSQLite {
       }
     } catch (e) {
       this.logger.error(`getIndexStatusByIdentity(): ${e}`);
+      // Agent diagnostics must distinguish a failed query from missing coverage.
+      if (options.strict) throw new Error('Unable to read item index status.');
     }
 
     return result;
