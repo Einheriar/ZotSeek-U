@@ -110,6 +110,7 @@ test('discovers physical pages from the first PDFWorker response without Fulltex
   ]);
   assert.equal(result.status, 'ok');
   assert.equal(result.pagesTotal, 3);
+  assert.equal(result.textSource, 'pdfworker');
   assert.deepEqual(scenario.calls, [
     { attachmentId: 10, pageIndex: 0 },
     { attachmentId: 10, pageIndex: 1 },
@@ -127,7 +128,172 @@ test('reads only the explicitly requested PDF and does not classify its siblings
   const result = await new ZoteroAPI().getRequestedPdfText(1, 'att20');
   assert.equal(result.errorCode, undefined);
   assert.equal(result.selectedText?.attachmentKey, 'ATT20');
+  assert.equal(result.selectedText?.textSource, 'pdfworker');
   assert.deepEqual(scenario.calls, [{ attachmentId: 20, pageIndex: 0 }]);
+  assert.equal(scenario.getFulltextCalls(), 0);
+});
+
+test('reads the complete OCR cache over PDFWorker cover text after checking physical page count', async () => {
+  const scenario = installPdfScenario([10], {
+    10: {
+      0: { totalPages: 2, text: 'ProQuest cover text from PDFWorker.' },
+      1: { totalPages: 2, text: '' },
+    },
+  });
+  const zotero = (globalThis as any).Zotero;
+  let cacheReadCalls = 0;
+  zotero.Fulltext = {
+    getPages: async () => ({ indexedPages: 2, total: 2 }),
+    getItemCacheFile: () => ({ path: 'cache', exists: () => true }),
+  };
+  zotero.File = { getContentsAsync: async () => {
+    cacheReadCalls++;
+    return 'The Journal of Genetic Psychology, 1976. OCR page one.\fOCR page two.';
+  } };
+
+  const result = await new ZoteroAPI().getRequestedPdfText(1, 'ATT10', 'zotero-fulltext-cache');
+
+  assert.equal(result.errorCode, undefined);
+  assert.equal(result.selectedText?.textSource, 'zotero-fulltext-cache');
+  assert.deepEqual(result.selectedText?.pages, [
+    { pageNumber: 1, text: 'The Journal of Genetic Psychology, 1976. OCR page one.' },
+    { pageNumber: 2, text: 'OCR page two.' },
+  ]);
+  assert.doesNotMatch(result.selectedText!.pages[0].text, /ProQuest cover/);
+  assert.deepEqual(scenario.calls, [{ attachmentId: 10, pageIndex: 0 }]);
+  assert.equal(cacheReadCalls, 1);
+});
+
+test('preserves empty edge pages in a complete cached OCR document', async () => {
+  const scenario = installPdfScenario([10], {
+    10: { 0: { totalPages: 3, text: '' } },
+  });
+  const zotero = (globalThis as any).Zotero;
+  zotero.Fulltext = {
+    getPages: async () => ({ indexedPages: 3, total: 3 }),
+    getItemCacheFile: () => ({ path: 'cache', exists: () => true }),
+  };
+  zotero.File = { getContentsAsync: async () => '\fOCR text on the middle page.\f' };
+
+  const result = await new ZoteroAPI().getRequestedPdfText(1, 'ATT10', 'zotero-fulltext-cache');
+
+  assert.equal(result.errorCode, undefined);
+  assert.equal(result.selectedText?.status, 'ok');
+  assert.deepEqual(result.selectedText?.pages, [
+    { pageNumber: 1, text: '' },
+    { pageNumber: 2, text: 'OCR text on the middle page.' },
+    { pageNumber: 3, text: '' },
+  ]);
+  assert.deepEqual(scenario.calls, [{ attachmentId: 10, pageIndex: 0 }]);
+});
+
+test('rejects partial cache coverage instead of filling its remaining pages from PDFWorker', async () => {
+  const scenario = installPdfScenario([10], {
+    10: { 0: { totalPages: 2, text: 'Cover text.' } },
+  });
+  const zotero = (globalThis as any).Zotero;
+  zotero.Fulltext = {
+    getPages: async () => ({ indexedPages: 1, total: 2 }),
+    getItemCacheFile: () => ({ path: 'cache', exists: () => true }),
+  };
+  zotero.File = { getContentsAsync: async () => 'OCR page one.' };
+
+  const result = await new ZoteroAPI().getRequestedPdfText(1, 'ATT10', 'zotero-fulltext-cache');
+
+  assert.equal(result.errorCode, 'cache_invalid');
+  assert.equal(result.selectedText?.status, 'failed');
+  assert.deepEqual(scenario.calls, [{ attachmentId: 10, pageIndex: 0 }]);
+});
+
+test('rejects a cache whose page separators do not match the physical PDF page count', async () => {
+  const scenario = installPdfScenario([10], {
+    10: { 0: { totalPages: 2, text: 'Cover text.' } },
+  });
+  const zotero = (globalThis as any).Zotero;
+  zotero.Fulltext = {
+    getPages: async () => ({ indexedPages: 2, total: 2 }),
+    getItemCacheFile: () => ({ path: 'cache', exists: () => true }),
+  };
+  zotero.File = { getContentsAsync: async () => 'Only one page boundary' };
+
+  const result = await new ZoteroAPI().getRequestedPdfText(1, 'ATT10', 'zotero-fulltext-cache');
+
+  assert.equal(result.errorCode, 'cache_invalid');
+  assert.equal(result.selectedText?.pagesTotal, 2);
+  assert.deepEqual(scenario.calls, [{ attachmentId: 10, pageIndex: 0 }]);
+});
+
+test('rejects cache metadata when its page count differs from PDFWorker physical pages', async () => {
+  const scenario = installPdfScenario([10], {
+    10: { 0: { totalPages: 3, text: 'Cover text.' } },
+  });
+  const zotero = (globalThis as any).Zotero;
+  zotero.Fulltext = {
+    getPages: async () => ({ indexedPages: 2, total: 2 }),
+    getItemCacheFile: () => ({ path: 'cache', exists: () => true }),
+  };
+  zotero.File = { getContentsAsync: async () => 'OCR one.\fOCR two.' };
+
+  const result = await new ZoteroAPI().getRequestedPdfText(1, 'ATT10', 'zotero-fulltext-cache');
+
+  assert.equal(result.errorCode, 'cache_invalid');
+  assert.equal(result.selectedText?.pagesTotal, 3);
+  assert.deepEqual(scenario.calls, [{ attachmentId: 10, pageIndex: 0 }]);
+});
+
+test('reports unreadable cache separately without falling back to PDFWorker pages', async () => {
+  const scenario = installPdfScenario([10], {
+    10: { 0: { totalPages: 1, text: 'Cover text.' } },
+  });
+  const zotero = (globalThis as any).Zotero;
+  zotero.Fulltext = {
+    getPages: async () => ({ indexedPages: 1, total: 1 }),
+    getItemCacheFile: () => ({ path: 'cache', exists: () => true }),
+  };
+  zotero.File = { getContentsAsync: async () => { throw new Error('private cache path'); } };
+
+  const result = await new ZoteroAPI().getRequestedPdfText(1, 'ATT10', 'zotero-fulltext-cache');
+
+  assert.equal(result.errorCode, 'cache_unavailable');
+  assert.equal(result.selectedText?.status, 'failed');
+  assert.deepEqual(scenario.calls, [{ attachmentId: 10, pageIndex: 0 }]);
+});
+
+test('reports a missing Zotero cache without falling back to PDFWorker pages', async () => {
+  const scenario = installPdfScenario([10], {
+    10: { 0: { totalPages: 1, text: 'Cover text.' } },
+  });
+  const zotero = (globalThis as any).Zotero;
+  zotero.Fulltext = {
+    getPages: async () => ({ indexedPages: 1, total: 1 }),
+    getItemCacheFile: () => ({ path: 'missing-cache', exists: () => false }),
+  };
+  zotero.File = { getContentsAsync: async () => 'must not read' };
+
+  const result = await new ZoteroAPI().getRequestedPdfText(1, 'ATT10', 'zotero-fulltext-cache');
+
+  assert.equal(result.errorCode, 'cache_unavailable');
+  assert.equal(result.selectedText?.status, 'failed');
+  assert.deepEqual(scenario.calls, [{ attachmentId: 10, pageIndex: 0 }]);
+});
+
+test('reports a complete but empty OCR cache without falling back to PDFWorker pages', async () => {
+  const scenario = installPdfScenario([10], {
+    10: { 0: { totalPages: 2, text: 'Cover text.' } },
+  });
+  const zotero = (globalThis as any).Zotero;
+  zotero.Fulltext = {
+    getPages: async () => ({ indexedPages: 2, total: 2 }),
+    getItemCacheFile: () => ({ path: 'cache', exists: () => true }),
+  };
+  zotero.File = { getContentsAsync: async () => '\f  ' };
+
+  const result = await new ZoteroAPI().getRequestedPdfText(1, 'ATT10', 'zotero-fulltext-cache');
+
+  assert.equal(result.errorCode, 'cache_empty');
+  assert.equal(result.selectedText?.status, 'empty');
+  assert.equal(result.selectedText?.textSource, 'zotero-fulltext-cache');
+  assert.deepEqual(scenario.calls, [{ attachmentId: 10, pageIndex: 0 }]);
 });
 
 test('reports a requested PDF failure without falling back to a readable sibling', async () => {

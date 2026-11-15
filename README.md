@@ -8,9 +8,9 @@
 
 > **Important: ZotSeek-U is a replacement installation for ZotSeek. Do not install or use both versions side by side.** They retain the same Zotero add-on ID and local data namespace, so installing ZotSeek-U replaces the existing ZotSeek installation.
 
-ZotSeek-U restarts its independent release numbering at `0.1.0`. Because this is lower than the inherited `1.20.558` development version, Zotero will not offer `0.1.0` as an automatic update to an existing installation and may identify a manual installation as a downgrade.
+The current ZotSeek-U release is **v0.2.7** (2026-11-15). It uses its own version sequence, separate from the upstream ZotSeek sequence. If you are moving from upstream ZotSeek, install the ZotSeek-U XPI directly over the existing plugin to preserve its index and preferences. Zotero may identify the first install as a downgrade because the upstream version number is higher.
 
-To switch while preserving the existing index and preferences, download the ZotSeek-U XPI and install it **directly over the existing ZotSeek installation** from Zotero's Add-ons Manager. Do not uninstall ZotSeek first: a true uninstall runs its cleanup and removes `zotseek.sqlite` and the `extensions.zotero.zotseek.*` preferences. This manual downgrade is needed only once; after `0.1.0` is installed, later ZotSeek-U releases such as `0.1.1` can update normally.
+Do not uninstall the existing plugin first: uninstall cleanup removes `zotseek.sqlite` and the `extensions.zotero.zotseek.*` preferences. ZotSeek-U disables background add-on updates, so upgrades to later ZotSeek-U releases also require manually installing the release XPI from Zotero's Add-ons Manager. Restart Zotero after installation.
 
 ## Mission
 

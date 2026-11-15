@@ -236,6 +236,9 @@ const TOOL_DEFINITIONS = [
       'Writes the ZotSeek index, not Zotero item content; Cloud embedding can send indexed text to the configured provider. ' +
       'Waits for the final result without a progress window or queue; busy means retry later. ' +
       'force=true re-extracts content. pdf_attachment_key requires full mode, implies force, and selects that PDF for this call only. ' +
+      'Optional pdf_text_source chooses pdfworker (default) or zotero-fulltext-cache for that exact PDF. ' +
+      'zotero-fulltext-cache is full-mode only; missing or invalid cache text fails and preserves the prior index. ' +
+      'The source override is only for this call and is not remembered; pass it again for a later reindex. ' +
       'Ordinary updates do not detect PDF file changes. No automatic reindex retry is scheduled.',
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     inputSchema: {
@@ -245,6 +248,10 @@ const TOOL_DEFINITIONS = [
         item_key: { type: 'string', description: '8-character key of the parent bibliographic item' },
         force: { type: 'boolean', default: false },
         pdf_attachment_key: { type: 'string', description: 'Exact child PDF key, for this call only' },
+        pdf_text_source: {
+          type: 'string', enum: ['pdfworker', 'zotero-fulltext-cache'],
+          description: 'Optional PDF text source for the exact attachment; requires pdf_attachment_key',
+        },
       },
       required: ['item_key'],
       additionalProperties: false,

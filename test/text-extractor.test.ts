@@ -244,10 +244,64 @@ describe('TextExtractor PDF main-text production chain', () => {
     assert.deepEqual(diagnostics, [{
       status: 'selected',
       attachmentKey: 'PDFONLY1',
+      textSource: 'pdfworker',
       reason: null,
       pagesIndexed: 1,
       pagesTotal: 1,
     }]);
+  });
+
+  test('indexes multi-page cache OCR rather than the PDFWorker cover text when explicitly requested', async () => {
+    const zotero = installZoteroStub();
+    const parent = { ...paper(), getAttachments: () => [10] };
+    const attachment = {
+      id: 10, key: 'PDFONLY1', libraryID: parent.libraryID, parentID: parent.id,
+      isPDFAttachment: () => true, getFilePath: async () => 'scan.pdf',
+    };
+    zotero.Items.get = (id: number) => id === parent.id ? parent : attachment;
+    const ocrPages = [1, 2, 3].map(page => bodyPage(page, `OCR physical page ${page}`).text);
+    ocrPages[1] += '\nzzqmarkeronly appears in this second physical page of the external OCR text, and must survive into the stored PDF chunk evidence.';
+    zotero.Fulltext = {
+      getPages: async () => ({ indexedPages: 3, total: 3 }),
+      getItemCacheFile: () => ({ path: 'cache', exists: () => true }),
+    };
+    zotero.File = { getContentsAsync: async () => ocrPages.join('\f') };
+    const workerPages: number[][] = [];
+    zotero.PDFWorker = { getFullText: async (_id: number, pages: number[]) => {
+      workerPages.push(pages);
+      return { totalPages: 3, text: 'nativecoveronly is the PDF text layer, not the OCR body.' };
+    } };
+    const diagnostics: any[] = [];
+    const result = await new TextExtractor().extractChunksFromItem(parent, 'full', chunkOptions, {
+      pdfAttachmentKey: 'PDFONLY1', pdfTextSource: 'zotero-fulltext-cache',
+      onDiagnostic: diagnostic => diagnostics.push(diagnostic),
+    });
+    assert.ok(result);
+    const body = result.chunks.filter(chunk => chunk.type !== 'summary');
+    assert.deepEqual([...new Set(body.map(chunk => chunk.pageNumber))].sort(), [1, 2, 3]);
+    assert.ok(body.some(chunk => chunk.pageNumber === 2 && chunk.text.includes('zzqmarkeronly')));
+    assert.ok(body.every(chunk => chunk.pdfAttachmentKey === 'PDFONLY1'));
+    assert.equal(body.some(chunk => chunk.text.includes('nativecoveronly')), false);
+    assert.deepEqual(workerPages, [[0]]);
+    assert.equal(diagnostics[0]?.textSource, 'zotero-fulltext-cache');
+  });
+
+  test('cache failures return stable reasons and never become a metadata-only success', async () => {
+    for (const reason of ['cache_unavailable', 'cache_invalid', 'cache_empty']) {
+      installZoteroStub();
+      const extractor = new TextExtractor();
+      (extractor as any).zoteroAPI = { getRequestedPdfText: async () => ({ selectedText: null, errorCode: reason }) };
+      const diagnostics: any[] = [];
+      const errors: any[] = [];
+      const result = await extractor.extractChunksFromItem(paper(), 'full', chunkOptions, {
+        pdfAttachmentKey: 'PDFONLY1', pdfTextSource: 'zotero-fulltext-cache',
+        onDiagnostic: diagnostic => diagnostics.push(diagnostic), onError: error => errors.push(error),
+      });
+      assert.equal(result, null);
+      assert.equal(errors[0]?.code, `pdf_${reason}`);
+      assert.equal(diagnostics[0]?.reason, reason);
+      assert.equal(diagnostics[0]?.textSource, 'zotero-fulltext-cache');
+    }
   });
 
   test('fails an explicit non-empty PDF when filtering leaves no searchable PDF chunks', async () => {
@@ -277,6 +331,7 @@ describe('TextExtractor PDF main-text production chain', () => {
     assert.deepEqual(diagnostics, [{
       status: 'partial',
       attachmentKey: 'PDFONLY1',
+      textSource: 'pdfworker',
       reason: 'pdf_no_indexable_content',
       pagesIndexed: 0,
       pagesTotal: 1,
@@ -315,6 +370,7 @@ describe('TextExtractor PDF main-text production chain', () => {
     assert.deepEqual(diagnostics, [{
       status: 'partial',
       attachmentKey: 'MAIN',
+      textSource: 'pdfworker',
       reason: 'pdf_no_indexable_content',
       pagesIndexed: 0,
       pagesTotal: 1,

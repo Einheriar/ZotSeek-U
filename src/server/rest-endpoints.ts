@@ -163,13 +163,14 @@ export async function handleIndexItemRequest(requestData: any): Promise<Endpoint
   }
   const data = requestData?.data;
   if (!data || typeof data !== 'object' || Array.isArray(data) ||
-      Object.keys(data).some(key => !['libraryKey', 'itemKey', 'force', 'pdfAttachmentKey'].includes(key))) {
-    return json(400, { error: 'Expected a JSON object with itemKey and optional libraryKey, force, pdfAttachmentKey.' });
+      Object.keys(data).some(key => !['libraryKey', 'itemKey', 'force', 'pdfAttachmentKey', 'pdfTextSource'].includes(key))) {
+    return json(400, { error: 'Expected a JSON object with itemKey and optional libraryKey, force, pdfAttachmentKey, pdfTextSource.' });
   }
   try {
     const result = await runIndexItemTool({
       item_key: data.itemKey, library_key: data.libraryKey,
       force: data.force, pdf_attachment_key: data.pdfAttachmentKey,
+      ...(data.pdfTextSource !== undefined ? { pdf_text_source: data.pdfTextSource } : {}),
     });
     return json(result.outcome === 'busy' ? 409 : result.outcome === 'failed' ? 500 : 200, result);
   } catch (error: any) {

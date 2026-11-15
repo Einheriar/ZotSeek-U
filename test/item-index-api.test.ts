@@ -64,6 +64,48 @@ test('busy does not execute, release somebody else\'s lock, or overwrite history
   assert.equal(released(), 0);
 });
 
+test('cache text selection is forced, scoped to one call, and preserved in diagnostics', async () => {
+  const { store } = setup();
+  const contexts: any[] = [];
+  plugin.indexItems = async (...args: any[]) => {
+    contexts.push(args[4].extractionContext);
+    if (contexts.length === 1) {
+      assert.equal(args[2], true);
+      args[4].extractionContext.onDiagnostic({
+        status: 'selected', attachmentKey: 'PDFKEY01', textSource: 'zotero-fulltext-cache',
+        reason: null, pagesIndexed: 3, pagesTotal: 3,
+      });
+    }
+    return { checked: 1, rebuilt: contexts.length === 1 ? 1 : 0, unchanged: contexts.length === 1 ? 0 : 1, failed: 0 };
+  };
+  const result = await plugin.api.indexItem({
+    libraryKey: 'user', itemKey: 'PARENT01', pdfAttachmentKey: 'PDFKEY01',
+    pdfTextSource: 'zotero-fulltext-cache',
+  });
+  assert.equal(result.pdfTextSource, 'zotero-fulltext-cache');
+  assert.equal(contexts[0].pdfTextSource, 'zotero-fulltext-cache');
+  await plugin.api.indexItem({ libraryKey: 'user', itemKey: 'PARENT01' });
+  assert.equal(contexts[1].pdfTextSource, undefined);
+  const history = await readItemIndexAttempt(store, 'user', 'PARENT01', result.modelId);
+  assert.equal(history.lastAttempt?.pdfTextSource, undefined);
+  assert.equal(history.lastPdfAttempt?.pdfTextSource, 'zotero-fulltext-cache');
+  assert.equal(history.lastPdfAttempt?.pdfDiagnostic.textSource, 'zotero-fulltext-cache');
+});
+
+test('invalid or unscoped text sources fail before reserving or modifying the index', async () => {
+  const { values } = setup();
+  plugin.tryBeginIndexOperation = () => { throw new Error('Must not reserve an invalid request'); };
+  for (const pdfTextSource of ['ocr', null, 1, {}, true]) {
+    await assert.rejects(plugin.api.indexItem({
+      libraryKey: 'user', itemKey: 'PARENT01', pdfAttachmentKey: 'PDFKEY01', pdfTextSource,
+    }), /pdfTextSource/);
+  }
+  await assert.rejects(plugin.api.indexItem({
+    libraryKey: 'user', itemKey: 'PARENT01', pdfTextSource: 'zotero-fulltext-cache',
+  }), /requires pdfAttachmentKey/);
+  assert.equal(values.size, 0);
+});
+
 test('execution failure records a bounded stage reason and releases the operation', async () => {
   const { store, released } = setup();
   plugin.indexItems = async (...args: any[]) => {

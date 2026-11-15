@@ -124,6 +124,7 @@ import './dev/suites/task-45-cloud';
 import './dev/suites/task-47-z10-db-hooks';
 import './dev/suites/task-57-brief';
 import './dev/suites/plan76-item-indexing';
+import './dev/suites/plan77-cache-indexing';
 import { collectCollectionItems } from './utils/collection-items';
 import {
   BulkIndexScope,
@@ -3645,6 +3646,14 @@ class ZotSeekPlugin {
     if (request.pdfAttachmentKey !== undefined && !/^[A-Z0-9]{8}$/i.test(pdfAttachmentKey || '')) {
       throw new Error('pdfAttachmentKey must be an 8-character Zotero key.');
     }
+    const pdfTextSource = request.pdfTextSource;
+    if (pdfTextSource !== undefined &&
+        (pdfTextSource !== 'pdfworker' && pdfTextSource !== 'zotero-fulltext-cache')) {
+      throw new Error('pdfTextSource must be "pdfworker" or "zotero-fulltext-cache".');
+    }
+    if (pdfTextSource !== undefined && !pdfAttachmentKey) {
+      throw new Error('pdfTextSource requires pdfAttachmentKey.');
+    }
 
     const modelId = getActiveModelId();
     const indexingMode = getIndexingMode(getZotero());
@@ -3662,6 +3671,7 @@ class ZotSeekPlugin {
       indexingMode,
       force,
       ...(pdfAttachmentKey ? { pdfAttachmentKey } : {}),
+      ...(pdfTextSource ? { pdfTextSource } : {}),
       outcome,
       attemptedAt,
       ...(reason ? { reason } : {}),
@@ -3687,6 +3697,7 @@ class ZotSeekPlugin {
         indexingMode,
         force,
         ...(pdfAttachmentKey ? { pdfAttachmentKey } : {}),
+        ...(pdfTextSource ? { pdfTextSource } : {}),
         outcome: 'busy',
         attemptedAt,
         reason: { code: 'index_busy', message: 'Another indexing operation is already running.' },
@@ -3741,6 +3752,7 @@ class ZotSeekPlugin {
         ...(indexingMode === 'full' ? {
           extractionContext: {
             ...(pdfAttachmentKey ? { pdfAttachmentKey } : {}),
+            ...(pdfTextSource ? { pdfTextSource } : {}),
             onDiagnostic: (diagnostic: PdfExtractionDiagnostic) => { pdfDiagnostic = diagnostic; },
             onError: (diagnostic: ExtractionErrorDiagnostic) => { extractionError = diagnostic; },
           },

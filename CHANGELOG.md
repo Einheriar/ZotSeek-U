@@ -4,6 +4,43 @@ All notable changes to ZotSeek-U will be documented in this file.
 
 ## Unreleased
 
+## [0.2.7] - 2026-11-15
+
+### Added
+- An explicit Full-mode PDF text-source option for a single `index_item` call:
+  `pdfworker` (default) or `zotero-fulltext-cache`. The choice is per call and
+  requires an explicitly identified PDF attachment; automatic PDF selection
+  and batch indexing keep their existing behavior.
+- REST and JavaScript API fields matching the MCP `pdf_text_source` argument,
+  plus `textSource` in PDF extraction diagnostics and the latest PDF attempt.
+  It records the requested source on failure and the source actually used on
+  successful extraction.
+
+### Behavior
+- Cache mode requires complete page slots and consistent physical page count
+  and separators checked through PDFWorker. Individual blank pages are allowed,
+  but the full cache cannot be empty. It uses cache text as the only source;
+  missing, invalid or incomplete cache fails while preserving the previous
+  index.
+- Rebuilds do not remember the per-call source choice; callers must pass it
+  again when they explicitly rebuild. No OCR, automatic rebuild, indexing UI,
+  schema migration or broader indexing-policy change is added.
+
+### Validation
+- 632/632 Node tests passed across 79 suites; type checking reported no new
+  errors against the existing 15-error baseline. Locale, version-consistency
+  and build checks passed.
+- Isolated Zotero 10.0.8 runtime checks used bundled local E5, PDFWorker and
+  SQLite. Stage 1 passed 6/6 checks and post-restart Stage 2 passed 1/1. A
+  three-page cached PDF produced 4 chunks even though PDFWorker returned only
+  a 701-character cover page and empty later pages; indexed page markers and
+  attachment provenance were correct. Omitting the source restored the
+  PDFWorker default. REST and MCP checks returned HTTP 200, while missing or
+  malformed cache page boundaries failed without replacing the old index;
+  source, reason and indexed text survived restart.
+- This isolated fixture does not verify the user's reported scanned paper,
+  main profile, Cloud providers or real group libraries.
+
 ## [0.2.6] - 2026-11-15
 
 ### Added

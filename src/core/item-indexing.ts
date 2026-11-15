@@ -1,12 +1,15 @@
 import type { IndexingMode } from '../utils/chunker';
 import type { PdfExtractionDiagnostic } from './text-extractor';
 import type { FreshnessDisplayState } from './index-freshness';
+import type { PdfIndexTextSource } from '../utils/zotero-api';
 
 export interface ItemIndexRequest {
   libraryKey: string;
   itemKey: string;
   force?: boolean;
   pdfAttachmentKey?: string;
+  /** One-call override for an exact PDF; history never becomes a future default. */
+  pdfTextSource?: PdfIndexTextSource;
 }
 
 export type ItemIndexOutcome =
@@ -29,6 +32,7 @@ export interface ItemIndexAttempt {
   indexingMode: IndexingMode;
   force: boolean;
   pdfAttachmentKey?: string;
+  pdfTextSource?: PdfIndexTextSource;
   outcome: Exclude<ItemIndexOutcome, 'busy'>;
   attemptedAt: string;
   reason?: ItemIndexReason;
@@ -79,6 +83,7 @@ export interface ItemPdfAttemptDiagnostic {
   indexingMode: IndexingMode;
   attemptedAt: string;
   pdfAttachmentKey?: string;
+  pdfTextSource?: PdfIndexTextSource;
   outcome: ItemIndexAttempt['outcome'];
   reason?: ItemIndexReason;
   pdfDiagnostic: PdfExtractionDiagnostic;
@@ -135,6 +140,7 @@ export async function writeItemIndexAttempt(
     indexingMode: attempt.indexingMode,
     attemptedAt: attempt.attemptedAt,
     ...(attempt.pdfAttachmentKey ? { pdfAttachmentKey: attempt.pdfAttachmentKey } : {}),
+    ...(attempt.pdfTextSource ? { pdfTextSource: attempt.pdfTextSource } : {}),
     outcome: attempt.outcome,
     ...(attempt.reason ? { reason: attempt.reason } : {}),
     pdfDiagnostic: attempt.pdfDiagnostic,

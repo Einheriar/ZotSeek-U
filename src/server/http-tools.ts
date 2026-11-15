@@ -186,6 +186,8 @@ export interface GetItemToolArgs {
   pdf_attachment_key?: string;
 }
 
+export type PdfTextSource = 'pdfworker' | 'zotero-fulltext-cache';
+
 export interface ItemNoteResult {
   noteKey: string;
   title?: string;
@@ -1327,13 +1329,14 @@ export class ItemIndexArgumentsError extends Error {}
 
 function itemIndexArguments(args: any, writable: boolean): {
   libraryKey: string; itemKey: string; force?: boolean; pdfAttachmentKey?: string;
+  pdfTextSource?: PdfTextSource;
 } {
   const operation = writable ? 'index_item' : 'get_item_index_status';
   if (!args || typeof args !== 'object' || Array.isArray(args)) {
     throw new ItemIndexArgumentsError(`${operation}: arguments must be an object`);
   }
   const allowed = writable
-    ? ['library_key', 'item_key', 'force', 'pdf_attachment_key']
+    ? ['library_key', 'item_key', 'force', 'pdf_attachment_key', 'pdf_text_source']
     : ['library_key', 'item_key'];
   if (Object.keys(args).some(key => !allowed.includes(key))) {
     throw new ItemIndexArgumentsError(`${operation}: unknown argument`);
@@ -1352,7 +1355,20 @@ function itemIndexArguments(args: any, writable: boolean): {
     }
     const pdfAttachmentKey = args.pdf_attachment_key === undefined ? undefined
       : itemKeyArg(args.pdf_attachment_key, operation, 'pdf_attachment_key');
-    return { libraryKey, itemKey, force: args.force ?? false, pdfAttachmentKey };
+    let pdfTextSource: PdfTextSource | undefined;
+    if (args.pdf_text_source !== undefined) {
+      if (args.pdf_text_source !== 'pdfworker' && args.pdf_text_source !== 'zotero-fulltext-cache') {
+        throw new Error('pdf_text_source must be "pdfworker" or "zotero-fulltext-cache"');
+      }
+      if (!pdfAttachmentKey) {
+        throw new Error('pdf_text_source requires pdf_attachment_key');
+      }
+      pdfTextSource = args.pdf_text_source;
+    }
+    return {
+      libraryKey, itemKey, force: args.force ?? false, pdfAttachmentKey,
+      ...(pdfTextSource ? { pdfTextSource } : {}),
+    };
   } catch (error: any) {
     throw new ItemIndexArgumentsError(`${operation}: ${error?.message || 'invalid arguments'}`);
   }

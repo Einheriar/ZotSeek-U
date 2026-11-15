@@ -8,9 +8,9 @@
 
 > **重要：ZotSeek-U 是 ZotSeek 的替代安装，不能与原版同时安装或同时使用。** 两者保留相同的 Zotero 插件 ID 和本地数据命名空间，因此安装 ZotSeek-U 会替换现有的 ZotSeek。
 
-ZotSeek-U 将从 `0.1.0` 重新开始独立版本编号。由于它低于继承自原项目的开发版本 `1.20.558`，Zotero 不会向现有安装自动推送 `0.1.0`，手动安装时也可能将其提示为降级安装。
+当前 ZotSeek-U 正式版本为 **v0.2.7**（2026-11-15）。该版本序列与上游 ZotSeek 分开。从原版 ZotSeek 迁移时，请将 ZotSeek-U 发布的 XPI 直接覆盖安装到现有插件上，以保留索引和设置。由于上游版本号较高，Zotero 可能会把首次安装提示为降级。
 
-如果希望保留现有索引和设置，请下载 ZotSeek-U XPI，并在 Zotero 的插件管理器中将它**直接覆盖安装到现有 ZotSeek 上**。不要先卸载 ZotSeek：真正卸载会执行清理，删除 `zotseek.sqlite` 和 `extensions.zotero.zotseek.*` 偏好。手动降级只在这次版本体系切换时需要；安装 `0.1.0` 后，后续 `0.1.1` 等 ZotSeek-U 版本即可正常自动更新。
+请勿先卸载现有插件：卸载清理会删除 `zotseek.sqlite` 和 `extensions.zotero.zotseek.*` 偏好。ZotSeek-U 会禁用后台插件自动更新，因此之后每次升级也需要从 Zotero 插件管理器手动安装对应版本的发布 XPI。安装后重启 Zotero。
 
 ## 项目宗旨
 

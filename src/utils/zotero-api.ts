@@ -66,7 +66,12 @@ export type RequestedPdfLookupErrorCode =
   | 'attachment_not_found'
   | 'attachment_invalid'
   | 'attachment_deleted'
-  | 'pdf_unavailable';
+  | 'pdf_unavailable'
+  | 'cache_unavailable'
+  | 'cache_invalid'
+  | 'cache_empty';
+
+export type PdfIndexTextSource = 'pdfworker' | 'zotero-fulltext-cache';
 
 export interface RequestedPdfText {
   selectedText: PdfAttachmentText | null;
@@ -313,6 +318,7 @@ export class ZoteroAPI {
           pagesTotal: null,
           pages: [],
           status: 'failed',
+          textSource: 'pdfworker',
         };
       }
 
@@ -347,6 +353,7 @@ export class ZoteroAPI {
         status: hasText
           ? failedPages > 0 ? 'degraded' : 'ok'
           : failedPages > 0 ? 'degraded' : 'empty',
+        textSource: 'pdfworker',
       };
     } catch (error) {
       debug(`Failed to probe PDF attachment ${attachment.id}: ${error}`);
@@ -357,8 +364,160 @@ export class ZoteroAPI {
         pagesTotal: null,
         pages: [],
         status: 'failed',
+        textSource: 'pdfworker',
       };
     }
+  }
+
+  /** Read only a complete Zotero cache after anchoring its page count to PDFWorker. */
+  private async getCachedPdfTextByAttachment(
+    attachment: ZoteroAttachment,
+  ): Promise<RequestedPdfText> {
+    let fileName: string | undefined;
+    try {
+      const filePath = await attachment.getFilePath?.();
+      fileName = typeof filePath === 'string'
+        ? filePath.replace(/\\/g, '/').split('/').pop()
+        : undefined;
+    } catch {
+      // Filename is optional metadata and does not affect cache validity.
+    }
+
+    let physicalPageCount: number;
+    try {
+      const probe = await Zotero.PDFWorker.getFullText(attachment.id, [0], false, null);
+      physicalPageCount = Number(probe?.totalPages ?? 0);
+      if (!Number.isSafeInteger(physicalPageCount) || physicalPageCount <= 0) {
+        return {
+          selectedText: {
+            attachmentId: attachment.id,
+            attachmentKey: attachment.key,
+            fileName,
+            pagesTotal: null,
+            pages: [],
+            status: 'failed',
+            textSource: 'zotero-fulltext-cache',
+          },
+          errorCode: 'pdf_unavailable',
+        };
+      }
+      if (typeof probe?.text !== 'string' ||
+          (probe.extractedPages !== undefined && probe.extractedPages !== 1)) {
+        return {
+          selectedText: {
+            attachmentId: attachment.id,
+            attachmentKey: attachment.key,
+            fileName,
+            pagesTotal: null,
+            pages: [],
+            status: 'failed',
+            textSource: 'zotero-fulltext-cache',
+          },
+          errorCode: 'pdf_unavailable',
+        };
+      }
+    } catch {
+      return {
+        selectedText: {
+          attachmentId: attachment.id,
+          attachmentKey: attachment.key,
+          fileName,
+          pagesTotal: null,
+          pages: [],
+          status: 'failed',
+          textSource: 'zotero-fulltext-cache',
+        },
+        errorCode: 'pdf_unavailable',
+      };
+    }
+
+    let cachedText: unknown;
+    try {
+      const info = await Zotero.Fulltext?.getPages?.(attachment.id);
+      const indexedPages = Number(info?.indexedPages);
+      const cachePageCount = Number(info?.total ?? info?.totalPages);
+      if (!Number.isSafeInteger(indexedPages) || indexedPages <= 0 ||
+          !Number.isSafeInteger(cachePageCount) || cachePageCount <= 0) {
+        return {
+          selectedText: this.failedCachedPdfText(attachment, fileName, physicalPageCount),
+          errorCode: 'cache_unavailable',
+        };
+      }
+      // Cache text is accepted only when it covers every physical page. Mixing
+      // OCR cache pages with PDFWorker pages can silently change page content.
+      if (indexedPages !== physicalPageCount || cachePageCount !== physicalPageCount) {
+        return {
+          selectedText: this.failedCachedPdfText(attachment, fileName, physicalPageCount),
+          errorCode: 'cache_invalid',
+        };
+      }
+      const cacheFile = Zotero.Fulltext?.getItemCacheFile?.(attachment);
+      if (!cacheFile?.exists?.() || typeof Zotero.File?.getContentsAsync !== 'function') {
+        return {
+          selectedText: this.failedCachedPdfText(attachment, fileName, physicalPageCount),
+          errorCode: 'cache_unavailable',
+        };
+      }
+      cachedText = await Zotero.File.getContentsAsync(cacheFile.path, 'utf-8');
+    } catch {
+      return {
+        selectedText: this.failedCachedPdfText(attachment, fileName, physicalPageCount),
+        errorCode: 'cache_unavailable',
+      };
+    }
+
+    const mappedCachePages = mapPdfPageText(
+      cachedText,
+      Array.from({ length: physicalPageCount }, (_, index) => index + 1),
+    );
+    if (!mappedCachePages) {
+      return {
+        selectedText: this.failedCachedPdfText(attachment, fileName, physicalPageCount),
+        errorCode: 'cache_invalid',
+      };
+    }
+    const pages = mappedCachePages.map(page => ({ pageNumber: page.page, text: page.text }));
+    if (!pages.some(page => page.text.trim().length > 0)) {
+      return {
+        selectedText: {
+          attachmentId: attachment.id,
+          attachmentKey: attachment.key,
+          fileName,
+          pagesTotal: physicalPageCount,
+          pages,
+          status: 'empty',
+          textSource: 'zotero-fulltext-cache',
+        },
+        errorCode: 'cache_empty',
+      };
+    }
+    return {
+      selectedText: {
+        attachmentId: attachment.id,
+        attachmentKey: attachment.key,
+        fileName,
+        pagesTotal: physicalPageCount,
+        pages,
+        status: 'ok',
+        textSource: 'zotero-fulltext-cache',
+      },
+    };
+  }
+
+  private failedCachedPdfText(
+    attachment: ZoteroAttachment,
+    fileName: string | undefined,
+    pagesTotal: number,
+  ): PdfAttachmentText {
+    return {
+      attachmentId: attachment.id,
+      attachmentKey: attachment.key,
+      fileName,
+      pagesTotal,
+      pages: [],
+      status: 'failed',
+      textSource: 'zotero-fulltext-cache',
+    };
   }
 
   /**
@@ -735,6 +894,7 @@ export class ZoteroAPI {
   async getRequestedPdfText(
     itemId: number,
     attachmentKey: string,
+    textSource: PdfIndexTextSource = 'pdfworker',
   ): Promise<RequestedPdfText> {
     const parent = this.getItem(itemId) as any;
     if (!parent || parent.deleted === true || parent.isDeleted?.() === true) {
@@ -767,7 +927,12 @@ export class ZoteroAPI {
       return { selectedText: null, errorCode: 'attachment_deleted' };
     }
 
-    const selectedText = await this.getPdfWorkerTextByAttachment(attachment);
+    const selected: RequestedPdfText = textSource === 'zotero-fulltext-cache'
+      ? await this.getCachedPdfTextByAttachment(attachment)
+      : { selectedText: await this.getPdfWorkerTextByAttachment(attachment) };
+    if (selected.errorCode) return selected;
+    const selectedText = selected.selectedText;
+    if (!selectedText) return { selectedText: null, errorCode: 'pdf_unavailable' };
     if (selectedText.status === 'failed') {
       return { selectedText, errorCode: 'pdf_unavailable' };
     }

@@ -51,6 +51,53 @@ test('MCP and REST pass the same explicit item/PDF request and return the final 
   });
 });
 
+test('PDF text source is opt-in, validated, and passed through both transports', async () => {
+  const { calls } = setup();
+  await rpc('index_item', { item_key: 'PARENT01' });
+  assert.deepEqual(calls[0], {
+    libraryKey: 'user', itemKey: 'PARENT01', force: false, pdfAttachmentKey: undefined,
+  });
+
+  const response = await rpc('index_item', {
+    item_key: 'PARENT01', pdf_attachment_key: 'PDFKEY01',
+    pdf_text_source: 'zotero-fulltext-cache',
+  });
+  assert.notEqual(response.isError, true);
+  const [status] = await handleIndexItemRequest({ method: 'POST', headers: {}, data: {
+    itemKey: 'PARENT01', pdfAttachmentKey: 'PDFKEY01', pdfTextSource: 'zotero-fulltext-cache',
+  } });
+  assert.equal(status, 200);
+  assert.deepEqual(calls[1], calls[2]);
+  assert.deepEqual(calls[1], {
+    libraryKey: 'user', itemKey: 'PARENT01', force: false,
+    pdfAttachmentKey: 'PDFKEY01', pdfTextSource: 'zotero-fulltext-cache',
+  });
+
+  for (const args of [
+    { item_key: 'PARENT01', pdf_text_source: 'pdfworker' },
+    { item_key: 'PARENT01', pdf_attachment_key: 'PDFKEY01', pdf_text_source: 'unknown' },
+    { item_key: 'PARENT01', pdf_attachment_key: 'PDFKEY01', pdf_text_source: null },
+  ]) assert.equal((await rpc('index_item', args)).isError, true);
+  for (const data of [
+    { itemKey: 'PARENT01', pdfTextSource: 'pdfworker' },
+    { itemKey: 'PARENT01', pdfAttachmentKey: 'PDFKEY01', pdfTextSource: 'unknown' },
+    { itemKey: 'PARENT01', pdfAttachmentKey: 'PDFKEY01', pdfTextSource: null },
+  ]) assert.equal((await handleIndexItemRequest({ method: 'POST', headers: {}, data }))[0], 400);
+  assert.equal(calls.length, 3);
+});
+
+test('MCP source schema has a strict enum and no default', async () => {
+  const [status, , body] = await handleMcpRequest({ headers: {}, data: {
+    jsonrpc: '2.0', id: 1, method: 'tools/list',
+  } });
+  assert.equal(status, 200);
+  const tools = JSON.parse(body).result.tools;
+  const indexItem = tools.find((tool: any) => tool.name === 'index_item');
+  const source = indexItem.inputSchema.properties.pdf_text_source;
+  assert.deepEqual(source.enum, ['pdfworker', 'zotero-fulltext-cache']);
+  assert.equal(Object.prototype.hasOwnProperty.call(source, 'default'), false);
+});
+
 test('maintenance validates inputs and Origin before invoking the plugin', async () => {
   const { calls } = setup();
   for (const args of [

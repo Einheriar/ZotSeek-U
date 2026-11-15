@@ -23,6 +23,7 @@ export interface PdfAttachmentText {
   pagesTotal: number | null;
   pages: PageText[];
   status: PdfAttachmentTextStatus;
+  textSource?: 'pdfworker' | 'zotero-fulltext-cache';
 }
 export interface PdfAttachmentPrediction {
   attachmentId: number;

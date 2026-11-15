@@ -9,6 +9,7 @@
 
 import { Logger } from '../utils/logger';
 import {
+  PdfIndexTextSource,
   RequestedPdfLookupErrorCode,
   ZoteroAPI,
   ZoteroItem,
@@ -75,6 +76,7 @@ export interface ExtractionProgress {
 export interface PdfExtractionDiagnostic {
   status: 'selected' | 'abstained' | 'partial' | 'empty' | 'failed';
   attachmentKey?: string;
+  textSource?: PdfIndexTextSource;
   reason: string | null;
   pagesIndexed: number;
   pagesTotal: number | null;
@@ -86,6 +88,10 @@ export interface ExtractionErrorDiagnostic {
     | 'pdf_attachment_invalid'
     | 'pdf_attachment_failed'
     | 'pdf_attachment_empty'
+    | 'pdf_text_source_invalid'
+    | 'pdf_cache_unavailable'
+    | 'pdf_cache_invalid'
+    | 'pdf_cache_empty'
     | 'pdf_no_indexable_content'
     | 'no_extractable_content'
     | 'extraction_failed';
@@ -96,6 +102,7 @@ export interface ExtractionErrorDiagnostic {
 /** Request-scoped extraction overrides and machine-readable diagnostics. */
 export interface ExtractionContext {
   pdfAttachmentKey?: string;
+  pdfTextSource?: PdfIndexTextSource;
   onDiagnostic?: (diagnostic: PdfExtractionDiagnostic) => void;
   onError?: (error: ExtractionErrorDiagnostic) => void;
 }
@@ -109,6 +116,9 @@ const REQUESTED_PDF_ERROR_CODES: Record<RequestedPdfLookupErrorCode, ExtractionE
   attachment_invalid: 'pdf_attachment_invalid',
   attachment_deleted: 'pdf_attachment_invalid',
   pdf_unavailable: 'pdf_attachment_failed',
+  cache_unavailable: 'pdf_cache_unavailable',
+  cache_invalid: 'pdf_cache_invalid',
+  cache_empty: 'pdf_cache_empty',
 };
 
 const REQUESTED_PDF_ERROR_MESSAGES: Record<RequestedPdfLookupErrorCode, string> = {
@@ -118,6 +128,9 @@ const REQUESTED_PDF_ERROR_MESSAGES: Record<RequestedPdfLookupErrorCode, string> 
   attachment_invalid: 'The requested attachment is not a valid PDF for this item.',
   attachment_deleted: 'The requested PDF has been deleted.',
   pdf_unavailable: 'Zotero could not extract the requested PDF.',
+  cache_unavailable: 'The requested PDF has no readable complete Zotero full-text cache.',
+  cache_invalid: 'The Zotero full-text cache does not match the PDF physical page count or page boundaries.',
+  cache_empty: 'The Zotero full-text cache contains no searchable text.',
 };
 
 export class TextExtractor {
@@ -214,7 +227,12 @@ export class TextExtractor {
       const chunkOptions = await this.resolveChunkOptions(options);
 
       const reportDiagnostic = (diagnostic: PdfExtractionDiagnostic): void => {
-        try { context?.onDiagnostic?.(diagnostic); } catch (error: any) {
+        try { context?.onDiagnostic?.({
+          ...diagnostic,
+          ...(diagnostic.attachmentKey ? {
+            textSource: diagnostic.textSource ?? context?.pdfTextSource ?? 'pdfworker',
+          } : {}),
+        }); } catch (error: any) {
           this.logger.warn(`PDF diagnostic callback failed: ${error?.message || error}`);
         }
       };
@@ -224,6 +242,15 @@ export class TextExtractor {
         }
       };
 
+      if (context?.pdfTextSource !== undefined &&
+          (!['pdfworker', 'zotero-fulltext-cache'].includes(context.pdfTextSource) || !context.pdfAttachmentKey)) {
+        reportError({
+          code: 'pdf_text_source_invalid',
+          stage: 'validate',
+          message: 'A PDF text source requires an exact PDF attachment and a supported source value.',
+        });
+        return null;
+      }
       if (context?.pdfAttachmentKey && indexingMode !== 'full') {
         reportError({
           code: 'pdf_mode_required',
@@ -247,6 +274,7 @@ export class TextExtractor {
           const requested = await this.zoteroAPI.getRequestedPdfText(
             item.id,
             context.pdfAttachmentKey,
+            context.pdfTextSource,
           );
           if (requested.errorCode) {
             const diagnostic = {
@@ -314,6 +342,7 @@ export class TextExtractor {
           pendingPdfDiagnostic = {
             status: pdfText.status === 'degraded' ? 'partial' : 'selected',
             attachmentKey: pdfText.attachmentKey,
+            textSource: pdfText.textSource ?? context.pdfTextSource ?? 'pdfworker',
             reason: pdfText.status === 'degraded' ? 'pdf_partial' : null,
             pagesIndexed: 0,
             pagesTotal: pdfText.pagesTotal,
@@ -328,6 +357,7 @@ export class TextExtractor {
             pendingPdfDiagnostic = {
               status: pdfText.status === 'degraded' ? 'partial' : 'selected',
               attachmentKey: pdfText.attachmentKey,
+              textSource: pdfText.textSource ?? 'pdfworker',
               reason: pdfText.status === 'degraded' ? 'pdf_partial' : null,
               pagesIndexed: 0,
               pagesTotal: pdfText.pagesTotal,
@@ -426,6 +456,7 @@ export class TextExtractor {
           pendingPdfDiagnostic = {
             status: 'partial',
             attachmentKey: pdfText.attachmentKey,
+            textSource: pdfText.textSource ?? context?.pdfTextSource ?? 'pdfworker',
             reason,
             pagesIndexed: 0,
             pagesTotal: pdfText.pagesTotal,
