@@ -4,6 +4,34 @@ All notable changes to ZotSeek-U will be documented in this file.
 
 ## Unreleased
 
+## [0.2.6] - 2026-11-15
+
+### Added
+- Per-item indexing and status tools for MCP (`index_item` and
+  `get_item_index_status`), with matching REST and JavaScript APIs.
+- Optional PDF attachment selection for a single Full-mode indexing call,
+  without changing the document's future default attachment.
+- Persistent recent-attempt and PDF extraction diagnostics so agents can
+  inspect failures and decide when to retry manually.
+
+### Behavior
+- Indexing requests finish synchronously without opening progress UI or
+  creating a queue. No automatic re-index retry is added.
+- Explicit PDF failures, including an empty result after filtering or chunk
+  limits, preserve the previous index. Automatic PDF selection can still
+  index available metadata and notes while reporting a partial PDF result.
+- PDF file changes are still not detected automatically; callers must request
+  re-extraction when needed.
+
+### Compatibility and validation
+- Retains Zotero 9.0–10.0.* support and existing local-server access controls.
+- 618 unit tests passed; type checking reported no new errors against the
+  existing baseline, and version/build checks passed.
+- Isolated Windows Zotero 10.0.8 checks passed with synthetic items and PDFs,
+  bundled E5 embeddings, SQLite, REST/MCP, restart persistence, manual retry,
+  and incremental note indexing. Cloud providers, real group libraries, and
+  the user's main profile were not part of this acceptance run.
+
 ## [0.2.5] - 2026-10-15
 
 ### Fixed
